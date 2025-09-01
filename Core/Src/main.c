@@ -12,7 +12,7 @@
   * This software is licensed under terms that can be found in the LICENSE file
   * in the root directory of this software component.
   * If no LICENSE file comes with this software, it is provided AS-IS.
-  * Dev branch test
+  *
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -22,6 +22,21 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "lis2dux12_reg.h"
+#include <string.h>
+#include <stdio.h>
+
+#define SENSOR_BUS hi2c1
+
+#define LIS2DUX_ADDRESS 0x19
+#define BQ25_ADDRESS 0x6A
+#define BQ25186_ADDR (0x6A << 1)
+
+static uint32_t pulse_value = 0;
+static uint8_t pulse_direction = 1; // 1 = increasing, 0 = decreasing
+static uint8_t charging_active = 0;
+static uint32_t pulse_step = 5; // Adjust for pulse speed (smaller = slower)
+
+static uint8_t whoamI;
 
 /** Please note that is MANDATORY: return 0 -> no Error.**/
 int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp, uint16_t len);
@@ -61,6 +76,40 @@ static void MX_TIM2_Init(void);
 static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
 
+/** Please note that is MANDATORY: return 0 -> no Error.**/
+int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp, uint16_t len) {
+	reg |= 0x80;
+	HAL_I2C_Mem_Write(handle, LIS2DUX_ADDRESS, reg, 1, (uint8_t*) bufp, len, 1000); //define 8bit
+}
+
+int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t len) {
+	reg |= 0x80;
+	HAL_I2C_Mem_Read(handle, LIS2DUX_ADDRESS, reg, 1, bufp, len, 1000);
+}
+
+uint8_t readBQ25186Register(uint8_t regAddr) {
+    uint8_t data = 0;
+
+    // Step 1: Set the register pointer (write operation)
+    if (HAL_I2C_Master_Transmit(&hi2c1, BQ25186_ADDR, &regAddr, 1, HAL_MAX_DELAY) != HAL_OK) {
+        // Error handling
+        return 0xFF; // Indicate error
+    }
+
+    // Step 2: Read the register data
+    if (HAL_I2C_Master_Receive(&hi2c1, BQ25186_ADDR | 0x01, &data, 1, HAL_MAX_DELAY) != HAL_OK) {
+        // Error handling
+        return 0xFF; // Indicate error
+    }
+
+    return data;
+}
+
+void BQgetData() {
+    readBQ25186Register(0x00); // Read Status Register
+    readBQ25186Register(0x00); // Read Status Register
+}
+
 void playTone(uint32_t frequency_hz, uint32_t duration_ms, uint32_t system_clock_hz) {
     if (frequency_hz == 0 || system_clock_hz == 0 || duration_ms == 0) return;
 
@@ -77,33 +126,51 @@ void playTone(uint32_t frequency_hz, uint32_t duration_ms, uint32_t system_clock
     }
 }
 
-HAL_StatusTypeDef initLEDPWM(TIM_HandleTypeDef *htim, uint32_t system_clock_hz) {
-    if (htim == NULL || system_clock_hz == 0) return HAL_ERROR;
+void Handle_Pulsing_LED(void)
+{
+    if (1)
+    {
+        if (!charging_active)
+        {
+            charging_active = 1;
+            pulse_value = 0;
+            pulse_direction = 1;
+        }
 
-    // Configure TIM2 for 1 kHz PWM
-    uint32_t prescaler = 63; // System clock / (prescaler + 1) = 1 MHz
-    uint32_t period = system_clock_hz / (prescaler + 1) / 1000 - 1; // 1 kHz PWM
+        if (pulse_direction)
+        {
+            pulse_value += pulse_step;
+            if (pulse_value >= htim2.Init.Period)
+            {
+                pulse_value = htim2.Init.Period;
+                pulse_direction = 0;
+            }
+        }
+        else
+        {
+            if (pulse_value >= pulse_step)
+            {
+                pulse_value -= pulse_step;
+            }
+            else
+            {
+                pulse_value = 0;
+                pulse_direction = 1;
+            }
+        }
 
-    htim->Init.Prescaler = prescaler;
-    htim->Init.Period = period;
-    htim->Init.CounterMode = TIM_COUNTERMODE_UP;
-    htim->Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-    htim->Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
-
-    if (HAL_TIM_PWM_Init(htim) != HAL_OK) return HAL_ERROR;
-
-    // Configure PWM for Channel 3 (PA8)
-    TIM_OC_InitTypeDef sConfigOC = {0};
-    sConfigOC.OCMode = TIM_OCMODE_PWM1;
-    sConfigOC.Pulse = 0; // Start with 0% duty cycle (LED off for active-low)
-    sConfigOC.OCPolarity = TIM_OCPOLARITY_LOW; // Active-low PWM
-    sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-
-    if (HAL_TIM_PWM_ConfigChannel(htim, &sConfigOC, TIM_CHANNEL_3) != HAL_OK) return HAL_ERROR;
-
-    if (HAL_TIM_PWM_Start(htim, TIM_CHANNEL_3) != HAL_OK) return HAL_ERROR;
-
-    return HAL_OK;
+        // Direct duty cycle (works with OCPolarity = LOW for active low LED)
+        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pulse_value);
+    }
+    else
+    {
+        if (charging_active)
+        {
+            charging_active = 0;
+            pulse_value = 0;
+            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 0); // LED off
+        }
+    }
 }
 
 /**
@@ -111,38 +178,46 @@ HAL_StatusTypeDef initLEDPWM(TIM_HandleTypeDef *htim, uint32_t system_clock_hz) 
  * @param htim Pointer to TIM2 handle.
  * @param pulse_period_ms Duration of one pulse cycle in milliseconds (e.g., 2000 for 2 seconds).
  */
-void pulseLED(TIM_HandleTypeDef *htim, uint32_t pulse_period_ms) {
-    if (htim == NULL || pulse_period_ms == 0) return;
 
-    uint32_t step_time = pulse_period_ms / 100; // Time per step (e.g., 20 ms for 100 steps)
-    uint32_t max_duty = htim->Init.Period / 2 ; // 50% duty cycle (50% brightness)
-    uint32_t min_duty = htim->Init.Period * 9 / 10; // 90% duty cycle (10% brightness)
-    uint32_t duty;
-
-    while (1) { // Pulse indefinitely while called
-        // Fade in (10% to 50% brightness, 90% to 50% duty cycle)
-        for (duty = min_duty; duty >= max_duty; duty -= (min_duty - max_duty) / 50) {
-            __HAL_TIM_SET_COMPARE(htim, TIM_CHANNEL_3, duty);
-            uint32_t step_start = HAL_GetTick();
-            while (HAL_GetTick() - step_start < step_time) {}
-        }
-
-        // Fade out (50% to 10% brightness, 50% to 90% duty cycle)
-        for (duty = max_duty; duty <= min_duty; duty += (min_duty - max_duty) / 50) {
-            __HAL_TIM_SET_COMPARE(htim, TIM_CHANNEL_3, duty);
-            uint32_t step_start = HAL_GetTick();
-            while (HAL_GetTick() - step_start < step_time) {}
-        }
-    }
-
-    // Ensure LED is off when exiting (unreachable unless loop is broken)
-    __HAL_TIM_SET_COMPARE(htim, TIM_CHANNEL_3, htim->Init.Period); // 100% duty = off
-}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+void twiScan(void) {
+    for (uint8_t i = 0; i < 128; i++) {
+        uint16_t address = (uint16_t)(i << 1);
+        if (HAL_I2C_IsDeviceReady(&hi2c1, address, 3, 5) == HAL_OK) {
+            //HAL_GPIO_WritePin(GPIOA, LED_Pin, 0); // LED on
+            HAL_Delay(1000);
+        } else {
+        	//HAL_GPIO_WritePin(GPIOA, LED_Pin, 1); // LED on
+        }
+    }
+}
+
+void forceScan(uint8_t address) {
+    // Ensure the address is a valid 7-bit I2C address (0x00 to 0x7F)
+    if (address > 0x7F) {
+        return; // Invalid address, exit
+    }
+
+    // Shift the address left by 1 to align for I2C protocol
+    uint16_t i2c_address = (uint16_t)(address << 1);
+
+    // Continuously try to communicate with the specified address
+    while (1) {
+        if (HAL_I2C_IsDeviceReady(&hi2c1, i2c_address, 3, 5) == HAL_OK) {
+            // Device acknowledged
+            //HAL_GPIO_WritePin(GPIOA, LED_Pin, 0); // Turn on LED
+        } else {
+            // No acknowledgment
+            //HAL_GPIO_WritePin(GPIOA, LED_Pin, 1); // Turn off LED
+        }
+        // Optional: Add a small delay to prevent overwhelming the I2C bus
+        HAL_Delay(1); // 100ms delay, adjust as needed
+    }
+}
 /* USER CODE END 0 */
 
 /**
@@ -180,10 +255,9 @@ int main(void)
   MX_TIM2_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-  // Initialize PWM
-  if (initLEDPWM(&htim2, 8000000) != HAL_OK) {
-	  Error_Handler();
-  }
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
+
+  twiScan();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -193,9 +267,11 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-//	  playTone(12, 50, 8000000);
-//	  playTone(18, 50, 8000000);
-	  pulseLED(&htim2, 1);
+	  if ((HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == GPIO_PIN_SET) || 1){
+		  Handle_Pulsing_LED();
+		  HAL_Delay(5);
+	  }
+
   }
   /* USER CODE END 3 */
 }
@@ -351,11 +427,17 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7|GPIO_PIN_6, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : CHARGE_Pin */
+  GPIO_InitStruct.Pin = CHARGE_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(CHARGE_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PB7 PB6 */
   GPIO_InitStruct.Pin = GPIO_PIN_7|GPIO_PIN_6;
@@ -365,10 +447,10 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /**/
-  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_7|PWR_GPIO_BIT_6);
+  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_3|PWR_GPIO_BIT_7|PWR_GPIO_BIT_6);
 
   /**/
-  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_7|PWR_GPIO_BIT_6);
+  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_3|PWR_GPIO_BIT_7|PWR_GPIO_BIT_6);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 

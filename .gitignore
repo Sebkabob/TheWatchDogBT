@@ -1,0 +1,28 @@
+# ---- CubeIDE metadata ----
+.cproject
+.project
+.mxproject
+.settings/
+*.launch
+
+# ---- Build artifacts ----
+Debug/
+Release/
+*.o
+*.obj
+*.d
+*.map
+*.elf
+*.hex
+*.bin
+*.list
+*.su
+*.cfg
+
+# ---- Optional: ignore RAM linker if unused ----
+STM32WB05KZVX_FLASH.ld
+
+# ---- OS clutter ----
+.DS_Store
+Thumbs.db
+

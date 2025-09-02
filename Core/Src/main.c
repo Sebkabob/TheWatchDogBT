@@ -4,14 +4,12 @@
   * @file           : main.c
   * @brief          : Main program body
   ******************************************************************************
-  * @attention
   *
-  * Copyright (c) 2025 STMicroelectronics.
-  * All rights reserved.
+  * Sebastian Forenza
+  * The WatchDogBT
   *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
+  * This code is firmware for the WatchDogBT
+  * Not MISRA compliant
   *
   ******************************************************************************
   */
@@ -22,6 +20,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "lis2dux12_reg.h"
+#include "bq25186_reg.h"
+#include "buzzer.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,7 +36,6 @@
 
 static uint32_t pulse_value = 0;
 static uint8_t pulse_direction = 1; // 1 = increasing, 0 = decreasing
-static uint8_t charging_active = 0;
 static uint32_t pulse_step = 5; // Adjust for pulse speed (smaller = slower)
 
 stmdev_ctx_t dev_ctx;
@@ -118,22 +117,6 @@ uint8_t readBQ25186Register(uint8_t regAddr) {
 void BQgetData() {
     readBQ25186Register(0x00); // Read Status Register
     readBQ25186Register(0x00); // Read Status Register
-}
-
-void playTone(uint32_t frequency_hz, uint32_t duration_ms, uint32_t system_clock_hz) {
-    if (frequency_hz == 0 || system_clock_hz == 0 || duration_ms == 0) return;
-
-    uint32_t cycles_per_half_period = system_clock_hz / (2 * frequency_hz); // CPU cycles for half period
-    uint32_t start_time = HAL_GetTick();
-
-    // Play tone for the specified duration
-    while (HAL_GetTick() - start_time < duration_ms) {
-        for (volatile uint32_t i = 0; i < cycles_per_half_period; i++); // High phase
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6 | GPIO_PIN_7, GPIO_PIN_SET);
-
-        for (volatile uint32_t i = 0; i < cycles_per_half_period; i++); // Low phase
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6 | GPIO_PIN_7, GPIO_PIN_RESET);
-    }
 }
 
 ///////////////////Claude slop/////////////////////////////
@@ -265,13 +248,13 @@ void LIS2DUX12_Debug(void) {
             if (who_am_i == LIS2DUX12_ID) {
                 // Success with address test_addr
                 for (int i = 0; i < (addr_idx + 1); i++) {
-                    playTone(1000, 50, 8000000);
+                    playTone(1000, 50);
                     HAL_Delay(100);
                 }
                 return;
             } else {
                 // Wrong WHO_AM_I value
-                playTone(500, 50, 8000000); // Mid tone = wrong ID
+                playTone(500, 50); // Mid tone = wrong ID
                 HAL_Delay(100);
             }
         } else {
@@ -286,7 +269,7 @@ void LIS2DUX12_Debug(void) {
             if (status == HAL_OK && who_am_i == LIS2DUX12_ID) {
                 // Power-up sequence worked
                 for (int i = 0; i < (addr_idx + 3); i++) {  // 3+ beeps for power-up success
-                    playTone(1000, 50, 8000000);
+                    playTone(1000, 50);
                     HAL_Delay(100);
                 }
                 return;
@@ -295,7 +278,7 @@ void LIS2DUX12_Debug(void) {
     }
 
     // All tests failed
-    playTone(200, 500, 8000000);  // Long low tone = total failure
+    playTone(200, 500);  // Long low tone = total failure
 }
 
 /* Simple I2C scanner - Add to USER CODE BEGIN 4 */
@@ -308,7 +291,7 @@ void I2C_Scanner(void) {
         if (status == HAL_OK) {
             found_devices++;
             // Beep for each device found, with frequency based on address
-            playTone(400 + (addr * 5), 100, 8000000);
+            playTone(400 + (addr * 5), 20);
             HAL_Delay(200);
         }
     }
@@ -316,65 +299,32 @@ void I2C_Scanner(void) {
     if (found_devices == 0) {
         // No devices found - 3 low beeps
         for (int i = 0; i < 3; i++) {
-            playTone(200, 200, 8000000);
+            playTone(200, 200);
             HAL_Delay(300);
         }
     }
 }
 ///////////////////Claude slop////////////////////////////
 
-void Handle_Pulsing_LED(void)
+void Handle_Pulsing_LED(int ms_delay)
 {
-    if (1)
-    {
-        if (!charging_active)
-        {
-            charging_active = 1;
-            pulse_value = 0;
-            pulse_direction = 1;
+    // Simple breathing effect - goes from 0 to max brightness and back
+    if (pulse_direction) {
+        pulse_value += pulse_step;
+        if (pulse_value >= htim2.Init.Period) {
+            pulse_direction = 0;  // Start decreasing
         }
-
-        if (pulse_direction)
-        {
-            pulse_value += pulse_step;
-            if (pulse_value >= htim2.Init.Period)
-            {
-                pulse_value = htim2.Init.Period;
-                pulse_direction = 0;
-            }
-        }
-        else
-        {
-            if (pulse_value >= pulse_step)
-            {
-                pulse_value -= pulse_step;
-            }
-            else
-            {
-                pulse_value = 0;
-                pulse_direction = 1;
-            }
-        }
-
-        // Direct duty cycle (works with OCPolarity = LOW for active low LED)
-        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pulse_value);
-    }
-    else
-    {
-        if (charging_active)
-        {
-            charging_active = 0;
-            pulse_value = 0;
-            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 0); // LED off
+    } else {
+        pulse_value -= pulse_step;
+        if (pulse_value <= 0) {
+            pulse_direction = 1;  // Start increasing
         }
     }
+
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pulse_value);
+
+    HAL_Delay(ms_delay);
 }
-
-/**
- * @brief Creates a continuous soft pulsing effect on an active-low LED (10% to 50% brightness).
- * @param htim Pointer to TIM2 handle.
- * @param pulse_period_ms Duration of one pulse cycle in milliseconds (e.g., 2000 for 2 seconds).
- */
 
 /* USER CODE END PFP */
 
@@ -386,7 +336,7 @@ void twiScan(void) {
         uint16_t address = (uint16_t)(i << 1);
         if (HAL_I2C_IsDeviceReady(&hi2c1, address, 3, 5) == HAL_OK) {
         } else {
-        	//HAL_GPIO_WritePin(GPIOA, LED_Pin, 1); // LED on
+
         }
     }
 }
@@ -429,26 +379,10 @@ int main(void)
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   I2C_Scanner();        // First scan for any I2C devices
-  HAL_Delay(1000);
-  LIS2DUX12_Debug();    // Then specifically test LIS2DUX12
+  HAL_Delay(100);
+  //LIS2DUX12_Debug();    // Then specifically test LIS2DUX12
 
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
-
-
-//  playTone(440, 25, 8000000);
-//  HAL_Delay(50);
-//  playTone(880, 25, 8000000);
-//
-  // Initialize LIS2DUX12
-//  if (LIS2DUX12_Init() == HAL_OK) {
-//      // Success - play high tone
-//      playTone(1000, 100, 8000000);
-//  } else {
-//      // Failed - play low tone
-//      playTone(200, 500, 8000000);
-//  }
-
-  //twiScan();
 
 
   /* USER CODE END 2 */
@@ -458,9 +392,8 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-
+	  Handle_Pulsing_LED(10);
     /* USER CODE BEGIN 3 */
-	  //LIS2DUX12_Test();
 
 
   }

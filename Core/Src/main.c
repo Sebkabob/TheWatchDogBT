@@ -102,6 +102,56 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
   return 0;
 }
 
+void BQ25186_SetChargeCurrent(uint16_t current_mA) {
+    uint8_t ichg_code;
+
+    // Calculate ICHG code based on desired current
+    if (current_mA <= 35) {
+        ichg_code = current_mA - 5;  // For currents 5-35mA
+    } else if (current_mA >= 40) {
+        ichg_code = 31 + ((current_mA - 40) / 10);  // For currents 40mA+
+    } else {
+        ichg_code = 30;  // Default to 35mA for invalid range
+    }
+
+    // Ensure we don't exceed maximum
+    if (ichg_code > 127) ichg_code = 127;  // Max code for 1000mA
+
+    // Write to ICHG_CTRL register (0x4)
+    // Bit 7 = 0 (charging enabled), Bits 6-0 = ichg_code
+    uint8_t reg_value = ichg_code & 0x7F;  // Ensure bit 7 is 0
+
+    // I2C write to register 0x4
+    HAL_I2C_Mem_Write(&hi2c1, BQ25186_ADDR, 0x04,
+                      I2C_MEMADD_SIZE_8BIT, &reg_value, 1, HAL_MAX_DELAY);
+}
+
+void BQ25186_SetBatteryVoltage(float voltage_V) {
+    uint8_t vbat_code;
+
+    // Clamp voltage to valid range
+    if (voltage_V < 3.5f) voltage_V = 3.5f;
+    if (voltage_V > 4.65f) voltage_V = 4.65f;
+
+    // Calculate VBATREG code
+    vbat_code = (uint8_t)((voltage_V - 3.5f) / 0.01f);  // 0.01V = 10mV steps
+
+    // Ensure we don't exceed 7-bit range
+    if (vbat_code > 127) vbat_code = 127;
+
+    // Read current register to preserve PG_MODE bit
+    uint8_t current_reg;
+    HAL_I2C_Mem_Read(&hi2c1, BQ25186_ADDR, 0x03,
+                     I2C_MEMADD_SIZE_8BIT, &current_reg, 1, HAL_MAX_DELAY);
+
+    // Preserve bit 7 (PG_MODE), update bits 6-0
+    uint8_t new_reg = (current_reg & 0x80) | (vbat_code & 0x7F);
+
+    // Write to VBAT_CTRL register
+    HAL_I2C_Mem_Write(&hi2c1, BQ25186_ADDR, 0x03,
+                      I2C_MEMADD_SIZE_8BIT, &new_reg, 1, HAL_MAX_DELAY);
+}
+
 int32_t LIS2DUX12_ProperInit(void) {
     // Initialize device context
     dev_ctx.write_reg = platform_write;
@@ -132,10 +182,6 @@ uint8_t readBQ25186Register(uint8_t regAddr) {
     return data;
 }
 
-void BQgetData() {
-    readBQ25186Register(0x00); // Read Status Register
-    readBQ25186Register(0x00); // Read Status Register
-}
 
 // Dynamic gradient impact detection with smooth buzzer response
 void LIS2DUX12_ImpactDetection_Dynamic(void) {
@@ -220,24 +266,58 @@ void LIS2DUX12_ImpactDetection_Dynamic(void) {
 }
 
 
-void Handle_Pulsing_LED(int ms_delay)
+void ChargeLED(int ms_delay)
 {
-    // Simple breathing effect - goes from 0 to max brightness and back
-    if (pulse_direction) {
-        pulse_value += pulse_step;
-        if (pulse_value >= htim2.Init.Period) {
-            pulse_direction = 0;  // Start decreasing
-        }
-    } else {
-        pulse_value -= pulse_step;
-        if (pulse_value <= 0) {
-            pulse_direction = 1;  // Start increasing
-        }
+    // Read Power Good status (LOW = good power present)
+    int power_good = (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == GPIO_PIN_RESET);
+
+    // Read charging status from BQ25186
+    uint8_t stat0 = readBQ25186Register(0x00);
+    uint8_t charge_status = (stat0 >> 5) & 0x03;
+    int is_charging = (charge_status == 0x01 || charge_status == 0x02); // CC or CV
+
+    // Static variable to track previous charging state
+    static int was_charging = 0;
+
+    // Check if we just started charging (transition from not charging to charging)
+    if (power_good && is_charging && !was_charging) {
+        // Reset pulse variables for smooth start
+        pulse_value = 10;  // Start at minimum (LED off for active low)
+        pulse_direction = 1;  // Start increasing (getting brighter)
     }
 
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pulse_value);
+    // Update the previous state
+    was_charging = (power_good && is_charging);
 
-    HAL_Delay(ms_delay);
+    // Only pulse LED when power is good AND actively charging
+    if (power_good && is_charging) {
+        // Start PWM if not already running
+        HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
+
+        // Keep pulse range away from extremes to avoid hardware timing issues
+        uint32_t min_pulse = 0;   // Don't go below 10
+        uint32_t max_pulse = htim2.Init.Period - 200;  // Don't go above 989
+
+        if (pulse_direction) {
+            pulse_value += pulse_step;
+            if (pulse_value >= max_pulse) {
+                pulse_direction = 0;  // Start decreasing
+            }
+        } else {
+            pulse_value -= pulse_step;
+            if (pulse_value <= min_pulse) {
+                pulse_direction = 1;  // Start increasing
+            }
+        }
+
+        // For active low LED: invert the PWM value
+        uint32_t inverted_pulse = htim2.Init.Period - pulse_value;
+        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, inverted_pulse);
+        HAL_Delay(ms_delay);
+    } else {
+        // Stop PWM completely to turn off LED and save power
+        HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
+    }
 }
 
 /* USER CODE END PFP */
@@ -292,12 +372,10 @@ int main(void)
   MX_TIM2_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-  //twiScan();
-  //I2C_Scanner();        // First scan for any I2C devices
+  twiScan();
   LIS2DUX12_ProperInit();
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
-
-
+  BQ25186_SetChargeCurrent(150);   // Set to 150mA for liPo, 0.5C
+  BQ25186_SetBatteryVoltage(4.2f);   // charge to 90% for safety
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -305,10 +383,10 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-	  //Handle_Pulsing_LED(10);
-	    LIS2DUX12_ImpactDetection_Dynamic();
-    /* USER CODE BEGIN 3 */
 
+    /* USER CODE BEGIN 3 */
+	  ChargeLED(5);
+	  //LIS2DUX12_ImpactDetection_Dynamic();
 
   }
   /* USER CODE END 3 */
@@ -441,6 +519,14 @@ static void MX_TIM2_Init(void)
   sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
   if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
   {
     Error_Handler();
@@ -468,27 +554,14 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7|GPIO_PIN_6, GPIO_PIN_RESET);
-
   /*Configure GPIO pin : CHARGE_Pin */
   GPIO_InitStruct.Pin = CHARGE_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(CHARGE_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB7 PB6 */
-  GPIO_InitStruct.Pin = GPIO_PIN_7|GPIO_PIN_6;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
   /**/
-  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_3|PWR_GPIO_BIT_7|PWR_GPIO_BIT_6);
-
-  /**/
-  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_3|PWR_GPIO_BIT_7|PWR_GPIO_BIT_6);
+  HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_3);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 

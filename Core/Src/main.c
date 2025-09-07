@@ -29,24 +29,24 @@
 #define SENSOR_BUS hi2c1
 
 #define LIS2DUX_ADDRESS 0x19
-#define LIS2DUX12_I2C_ADDRESS_LOW   0x18   // When SA0/SDO = GND
 #define LIS2DUX12_I2C_ADDRESS_HIGH  0x19   // When SA0/SDO = VDD
+
 #define BQ25_ADDRESS 0x6A
 #define BQ25186_ADDR (0x6A << 1)
+
 
 static uint32_t pulse_value = 0;
 static uint8_t pulse_direction = 1; // 1 = increasing, 0 = decreasing
 static uint32_t pulse_step = 5; // Adjust for pulse speed (smaller = slower)
 
 stmdev_ctx_t dev_ctx;
-static uint8_t lis2dux12_address = 0x19; // Start with your current address
 
 /** Please note that is MANDATORY: return 0 -> no Error.**/
-int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp, uint16_t len);
-int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t len);
-HAL_StatusTypeDef LIS2DUX12_PowerUp(void);
-HAL_StatusTypeDef LIS2DUX12_Init(void);
-HAL_StatusTypeDef LIS2DUX12_ReadAccel(int16_t *x_mg, int16_t *y_mg, int16_t *z_mg);
+static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
+                              uint16_t len);
+static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
+                             uint16_t len);
+int32_t LIS2DUX12_ProperInit(void);
 void LIS2DUX12_Test(void);
 /* USER CODE END Includes */
 
@@ -84,16 +84,34 @@ static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /** Please note that is MANDATORY: return 0 -> no Error.**/
-int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp, uint16_t len) {
-    HAL_StatusTypeDef status = HAL_I2C_Mem_Write(handle, (lis2dux12_address << 1), reg,
-                                                 I2C_MEMADD_SIZE_8BIT, (uint8_t*)bufp, len, 1000);
-    return (status == HAL_OK) ? 0 : 1;  // Return 0 for success, 1 for error
+static int32_t platform_write(void *handle, uint8_t reg,
+                              const uint8_t *bufp, uint16_t len)
+{
+  HAL_I2C_Mem_Write(handle, LIS2DUX12_I2C_ADD_H, reg,
+                    I2C_MEMADD_SIZE_8BIT, (uint8_t*) bufp, len, 1000);
+  return 0;
 }
 
-int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t len) {
-    HAL_StatusTypeDef status = HAL_I2C_Mem_Read(handle, (lis2dux12_address << 1), reg,
-                                                I2C_MEMADD_SIZE_8BIT, bufp, len, 1000);
-    return (status == HAL_OK) ? 0 : 1;  // Return 0 for success, 1 for error
+static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
+                             uint16_t len)
+{
+
+  HAL_I2C_Mem_Read(handle, LIS2DUX12_I2C_ADD_H, reg,
+                   I2C_MEMADD_SIZE_8BIT, bufp, len, 1000);
+
+  return 0;
+}
+
+int32_t LIS2DUX12_ProperInit(void) {
+    // Initialize device context
+    dev_ctx.write_reg = platform_write;
+    dev_ctx.read_reg = platform_read;
+    dev_ctx.handle = &hi2c1;
+
+    // Add actual sensor configuration here
+    // Check WHO_AM_I register, configure ODR, etc.
+
+    return 0; // Return 0 for success
 }
 
 uint8_t readBQ25186Register(uint8_t regAddr) {
@@ -119,192 +137,88 @@ void BQgetData() {
     readBQ25186Register(0x00); // Read Status Register
 }
 
-///////////////////Claude slop/////////////////////////////
-// Power-up sequence for LIS2DUX12
-HAL_StatusTypeDef LIS2DUX12_PowerUp(void) {
-    HAL_StatusTypeDef status;
-    uint8_t dummy_data = 0;
+// Dynamic gradient impact detection with smooth buzzer response
+void LIS2DUX12_ImpactDetection_Dynamic(void) {
+    static lis2dux12_xl_data_t xl_data;
+    static float prev_magnitude = 1000.0f;
+    static uint32_t last_beep_time = 0;
+    static uint32_t last_read_time = 0;
+    lis2dux12_status_t status;
+    int32_t ret;
 
-    // Step 1: Send power-up command - this will NACK (expected behavior)
-    status = HAL_I2C_Master_Transmit(&hi2c1, (lis2dux12_address << 1), &dummy_data, 0, 100);
-    // Don't check status here - NACK is expected
+    uint32_t current_time = HAL_GetTick();
 
-    // Step 2: Wait 25ms for power-up completion
-    HAL_Delay(25);
+    // Read data every 20ms for better responsiveness
+    if (current_time - last_read_time < 20) {
+        return;
+    }
+    last_read_time = current_time;
 
-    // Step 3: Try to read WHO_AM_I to verify communication
-    uint8_t who_am_i = 0;
-    status = HAL_I2C_Mem_Read(&hi2c1, (lis2dux12_address << 1), LIS2DUX12_WHO_AM_I,
-                              I2C_MEMADD_SIZE_8BIT, &who_am_i, 1, 1000);
-
-    if (status != HAL_OK) {
-        return status;
+    // Prevent beep spam - minimum 150ms between beeps
+    if (current_time - last_beep_time < 150) {
+        return;
     }
 
-    if (who_am_i != LIS2DUX12_ID) {  // Should be 0x47
-        return HAL_ERROR;
+    ret = lis2dux12_status_get(&dev_ctx, &status);
+    if (ret != 0 || !status.drdy) {
+        return;
     }
 
-    return HAL_OK;
+    lis2dux12_md_t md = {
+        .fs = LIS2DUX12_2g,
+        .odr = LIS2DUX12_100Hz_LP,
+        .bw = LIS2DUX12_ODR_div_2
+    };
+
+    ret = lis2dux12_xl_data_get(&dev_ctx, &md, &xl_data);
+    if (ret != 0) {
+        return;
+    }
+
+    // Calculate current magnitude
+    float x_g = xl_data.mg[0];
+    float y_g = xl_data.mg[1];
+    float z_g = xl_data.mg[2];
+    float current_magnitude = sqrtf(x_g*x_g + y_g*y_g + z_g*z_g);
+
+    // Look for sudden changes in acceleration (impact detection)
+    float magnitude_change = fabsf(current_magnitude - prev_magnitude);
+
+    // Dynamic threshold - minimum impact to trigger
+    float min_threshold = 100.0f;
+    float max_threshold = 2000.0f; // Maximum expected impact
+
+    if (magnitude_change > min_threshold) {
+        // Normalize impact to 0-1 range
+        float normalized_impact = (magnitude_change - min_threshold) / (max_threshold - min_threshold);
+
+        // Clamp to 0-1 range
+        if (normalized_impact > 1.0f) normalized_impact = 1.0f;
+        if (normalized_impact < 0.0f) normalized_impact = 0.0f;
+
+        // Dynamic frequency calculation (200Hz to 2000Hz)
+        uint16_t min_frequency = 200;
+        uint16_t max_frequency = 2000;
+        uint16_t frequency = min_frequency + (uint16_t)(normalized_impact * (max_frequency - min_frequency));
+
+        // Dynamic duration calculation (30ms to 250ms)
+        uint16_t min_duration = 30;
+        uint16_t max_duration = 250;
+        uint16_t duration = min_duration + (uint16_t)(normalized_impact * (max_duration - min_duration));
+
+        // Optional: Add exponential scaling for more dramatic effect
+        // float exponential_impact = normalized_impact * normalized_impact; // Square for exponential curve
+        // frequency = min_frequency + (uint16_t)(exponential_impact * (max_frequency - min_frequency));
+        // duration = min_duration + (uint16_t)(exponential_impact * (max_duration - min_duration));
+
+        playTone(frequency, duration);
+        last_beep_time = current_time;
+    }
+
+    // Update previous magnitude for next comparison
+    prev_magnitude = current_magnitude;
 }
 
-// LIS2DUX12 initialization function
-HAL_StatusTypeDef LIS2DUX12_Init(void) {
-    HAL_StatusTypeDef status;
-
-    // Try power-up with current address (0x19)
-    status = LIS2DUX12_PowerUp();
-    if (status != HAL_OK) {
-        // Try the other address (0x18)
-        lis2dux12_address = LIS2DUX12_I2C_ADDRESS_LOW;
-        status = LIS2DUX12_PowerUp();
-        if (status != HAL_OK) {
-            return status;  // Both addresses failed
-        }
-    }
-
-    // Initialize the device context
-    dev_ctx.write_reg = platform_write;
-    dev_ctx.read_reg = platform_read;
-    dev_ctx.handle = &hi2c1;
-
-    // Configure the sensor using direct register writes (simpler approach)
-    uint8_t reg_value;
-
-    // Set CTRL5 register: 100Hz ODR, ±2g full scale
-    // ODR[3:0] = 1000 (100Hz), BW[1:0] = 00, FS[1:0] = 00 (±2g)
-    reg_value = 0x80;
-    if (platform_write(&hi2c1, LIS2DUX12_CTRL5, &reg_value, 1) != 0) {
-        return HAL_ERROR;
-    }
-
-    HAL_Delay(10);  // Small delay after configuration
-
-    return HAL_OK;
-}
-
-// Read acceleration data using basic register reads
-HAL_StatusTypeDef LIS2DUX12_ReadAccel(int16_t *x_mg, int16_t *y_mg, int16_t *z_mg) {
-    uint8_t raw_data[6];
-    int16_t raw_x, raw_y, raw_z;
-
-    // Read 6 bytes starting from OUT_X_L
-    if (platform_read(&hi2c1, LIS2DUX12_OUT_X_L, raw_data, 6) != 0) {
-        return HAL_ERROR;
-    }
-
-    // Combine LSB and MSB for each axis
-    raw_x = (int16_t)((raw_data[1] << 8) | raw_data[0]);
-    raw_y = (int16_t)((raw_data[3] << 8) | raw_data[2]);
-    raw_z = (int16_t)((raw_data[5] << 8) | raw_data[4]);
-
-    // Convert to mg (for ±2g range, sensitivity is 0.061 mg/LSB)
-    *x_mg = (int16_t)((float)raw_x * 0.061f);
-    *y_mg = (int16_t)((float)raw_y * 0.061f);
-    *z_mg = (int16_t)((float)raw_z * 0.061f);
-
-    return HAL_OK;
-}
-
-// Test function to add to your main loop
-void LIS2DUX12_Test(void) {
-    static uint32_t last_read = 0;
-    int16_t x_mg, y_mg, z_mg;
-
-    // Read every 100ms
-    if (HAL_GetTick() - last_read > 100) {
-        last_read = HAL_GetTick();
-
-        HAL_StatusTypeDef status = LIS2DUX12_ReadAccel(&x_mg, &y_mg, &z_mg);
-
-        if (status == HAL_OK) {
-            // Data read successfully - set breakpoint here to see values
-            // x_mg, y_mg, z_mg contain acceleration in milligrams
-
-            // Optional: Toggle LED to indicate successful reading
-            HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_7);
-        } else {
-            // Error reading data - set breakpoint here to debug
-        }
-    }
-}
-
-void LIS2DUX12_Debug(void) {
-    uint8_t who_am_i = 0;
-    HAL_StatusTypeDef status;
-
-    // Test both I2C addresses
-    uint8_t addresses[2] = {0x18, 0x19};  // Both possible addresses
-
-    for (int addr_idx = 0; addr_idx < 2; addr_idx++) {
-        uint8_t test_addr = addresses[addr_idx];
-
-        // First try direct communication (no power-up sequence)
-        status = HAL_I2C_Mem_Read(&hi2c1, (test_addr << 1), LIS2DUX12_WHO_AM_I,
-                                  I2C_MEMADD_SIZE_8BIT, &who_am_i, 1, 1000);
-
-        if (status == HAL_OK) {
-            // Direct read worked - device might already be powered up
-            if (who_am_i == LIS2DUX12_ID) {
-                // Success with address test_addr
-                for (int i = 0; i < (addr_idx + 1); i++) {
-                    playTone(1000, 50);
-                    HAL_Delay(100);
-                }
-                return;
-            } else {
-                // Wrong WHO_AM_I value
-                playTone(500, 50); // Mid tone = wrong ID
-                HAL_Delay(100);
-            }
-        } else {
-            // Direct read failed - try power-up sequence
-            uint8_t dummy = 0;
-            HAL_I2C_Master_Transmit(&hi2c1, (test_addr << 1), &dummy, 0, 100);
-            HAL_Delay(25);
-
-            status = HAL_I2C_Mem_Read(&hi2c1, (test_addr << 1), LIS2DUX12_WHO_AM_I,
-                                      I2C_MEMADD_SIZE_8BIT, &who_am_i, 1, 1000);
-
-            if (status == HAL_OK && who_am_i == LIS2DUX12_ID) {
-                // Power-up sequence worked
-                for (int i = 0; i < (addr_idx + 3); i++) {  // 3+ beeps for power-up success
-                    playTone(1000, 50);
-                    HAL_Delay(100);
-                }
-                return;
-            }
-        }
-    }
-
-    // All tests failed
-    playTone(200, 500);  // Long low tone = total failure
-}
-
-/* Simple I2C scanner - Add to USER CODE BEGIN 4 */
-void I2C_Scanner(void) {
-    HAL_StatusTypeDef status;
-    uint8_t found_devices = 0;
-
-    for (uint8_t addr = 1; addr < 128; addr++) {
-        status = HAL_I2C_IsDeviceReady(&hi2c1, (addr << 1), 3, 5);
-        if (status == HAL_OK) {
-            found_devices++;
-            // Beep for each device found, with frequency based on address
-            playTone(400 + (addr * 5), 20);
-            HAL_Delay(200);
-        }
-    }
-
-    if (found_devices == 0) {
-        // No devices found - 3 low beeps
-        for (int i = 0; i < 3; i++) {
-            playTone(200, 200);
-            HAL_Delay(300);
-        }
-    }
-}
-///////////////////Claude slop////////////////////////////
 
 void Handle_Pulsing_LED(int ms_delay)
 {
@@ -378,10 +292,9 @@ int main(void)
   MX_TIM2_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-  I2C_Scanner();        // First scan for any I2C devices
-  HAL_Delay(100);
-  //LIS2DUX12_Debug();    // Then specifically test LIS2DUX12
-
+  //twiScan();
+  //I2C_Scanner();        // First scan for any I2C devices
+  LIS2DUX12_ProperInit();
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
 
 
@@ -392,7 +305,8 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-	  Handle_Pulsing_LED(10);
+	  //Handle_Pulsing_LED(10);
+	    LIS2DUX12_ImpactDetection_Dynamic();
     /* USER CODE BEGIN 3 */
 
 

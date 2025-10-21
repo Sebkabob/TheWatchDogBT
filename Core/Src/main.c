@@ -9,7 +9,7 @@
   * The WatchDogBT
   *
   * This code is firmware for the WatchDogBT
-  * Not MISRA compliant
+  * probably not MISRA compliant
   *
   ******************************************************************************
   */
@@ -21,43 +21,25 @@
 /* USER CODE BEGIN Includes */
 #include "lis2dux12_reg.h"
 #include "bq25186_reg.h"
+#include "battery.h"
 #include "buzzer.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+/* USER CODE END Includes */
 
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
 #define SENSOR_BUS hi2c1
 
 #define LIS2DUX_ADDRESS 0x19
 #define LIS2DUX12_I2C_ADDRESS_HIGH  0x19   // When SA0/SDO = VDD
 
-#define BQ25_ADDRESS 0x6A
-#define BQ25186_ADDR (0x6A << 1)
-
-
-static uint32_t pulse_value = 0;
-static uint8_t pulse_direction = 1; // 1 = increasing, 0 = decreasing
-static uint32_t pulse_step = 5; // Adjust for pulse speed (smaller = slower)
-
 stmdev_ctx_t dev_ctx;
-
-/** Please note that is MANDATORY: return 0 -> no Error.**/
-static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
-                              uint16_t len);
-static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
-                             uint16_t len);
-int32_t LIS2DUX12_ProperInit(void);
-void LIS2DUX12_Test(void);
-/* USER CODE END Includes */
-
-/* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
-
-/* USER CODE END PTD */
-
-/* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
-
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -69,7 +51,13 @@ void LIS2DUX12_Test(void);
 
 I2C_HandleTypeDef hi2c1;
 
+PKA_HandleTypeDef hpka;
+
+RNG_HandleTypeDef hrng;
+
 TIM_HandleTypeDef htim2;
+
+UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 
@@ -81,107 +69,243 @@ void PeriphCommonClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_RNG_Init(void);
+static void MX_RADIO_Init(void);
+static void MX_RADIO_TIMER_Init(void);
+static void MX_PKA_Init(void);
 /* USER CODE BEGIN PFP */
+/** Please note that is MANDATORY: return 0 -> no Error.**/
+static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp, uint16_t len);
+static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t len);
+int32_t LIS2DUX12_ProperInit(void);
+void LIS2DUX12_Test(void);
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+void LIS2DUX12_ClearAllInterrupts(void) {
+    // Clear wake-up interrupt by reading the wake-up source register
+    lis2dux12_wake_up_src_t wake_src;
+    lis2dux12_read_reg(&dev_ctx, LIS2DUX12_WAKE_UP_SRC, (uint8_t*)&wake_src, 1);
+
+    // Clear all other interrupt sources
+    lis2dux12_all_int_src_t all_int_src;
+    lis2dux12_read_reg(&dev_ctx, LIS2DUX12_ALL_INT_SRC, (uint8_t*)&all_int_src, 1);
+
+    // Clear tap interrupt
+    lis2dux12_tap_src_t tap_src;
+    lis2dux12_read_reg(&dev_ctx, LIS2DUX12_TAP_SRC, (uint8_t*)&tap_src, 1);
+
+    // Clear 6D interrupt
+    lis2dux12_sixd_src_t sixd_src;
+    lis2dux12_read_reg(&dev_ctx, LIS2DUX12_SIXD_SRC, (uint8_t*)&sixd_src, 1);
+}
+
+void HAL_GPIO_EXTI_Callback(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin)
+{
+    if (GPIOx == GPIOB && GPIO_Pin == GPIO_PIN_0) {
+        playTone(1000, 200);  // Indicate wake-up
+
+        // Clear ALL sensor interrupts to reset the INT1 pin
+        LIS2DUX12_ClearAllInterrupts();
+
+        // Small delay to ensure interrupt is cleared
+        HAL_Delay(1);
+    }
+}
+
+void twiScan(void) {
+    for (uint8_t i = 0; i < 128; i++) {
+        uint16_t address = (uint16_t)(i << 1);
+        if (HAL_I2C_IsDeviceReady(&hi2c1, address, 3, 5) == HAL_OK) {
+        } else {
+
+        }
+    }
+}
 
 /** Please note that is MANDATORY: return 0 -> no Error.**/
-static int32_t platform_write(void *handle, uint8_t reg,
-                              const uint8_t *bufp, uint16_t len)
-{
-  HAL_I2C_Mem_Write(handle, LIS2DUX12_I2C_ADD_H, reg,
-                    I2C_MEMADD_SIZE_8BIT, (uint8_t*) bufp, len, 1000);
+static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp, uint16_t len) {
+  HAL_I2C_Mem_Write(handle, LIS2DUX12_I2C_ADD_H, reg, I2C_MEMADD_SIZE_8BIT, (uint8_t*) bufp, len, 1000);
   return 0;
 }
 
-static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
-                             uint16_t len)
-{
-
-  HAL_I2C_Mem_Read(handle, LIS2DUX12_I2C_ADD_H, reg,
-                   I2C_MEMADD_SIZE_8BIT, bufp, len, 1000);
-
+static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t len) {
+  HAL_I2C_Mem_Read(handle, LIS2DUX12_I2C_ADD_H, reg, I2C_MEMADD_SIZE_8BIT, bufp, len, 1000);
   return 0;
 }
 
-void BQ25186_SetChargeCurrent(uint16_t current_mA) {
-    uint8_t ichg_code;
-
-    // Calculate ICHG code based on desired current
-    if (current_mA <= 35) {
-        ichg_code = current_mA - 5;  // For currents 5-35mA
-    } else if (current_mA >= 40) {
-        ichg_code = 31 + ((current_mA - 40) / 10);  // For currents 40mA+
-    } else {
-        ichg_code = 30;  // Default to 35mA for invalid range
-    }
-
-    // Ensure we don't exceed maximum
-    if (ichg_code > 127) ichg_code = 127;  // Max code for 1000mA
-
-    // Write to ICHG_CTRL register (0x4)
-    // Bit 7 = 0 (charging enabled), Bits 6-0 = ichg_code
-    uint8_t reg_value = ichg_code & 0x7F;  // Ensure bit 7 is 0
-
-    // I2C write to register 0x4
-    HAL_I2C_Mem_Write(&hi2c1, BQ25186_ADDR, 0x04,
-                      I2C_MEMADD_SIZE_8BIT, &reg_value, 1, HAL_MAX_DELAY);
-}
-
-void BQ25186_SetBatteryVoltage(float voltage_V) {
-    uint8_t vbat_code;
-
-    // Clamp voltage to valid range
-    if (voltage_V < 3.5f) voltage_V = 3.5f;
-    if (voltage_V > 4.65f) voltage_V = 4.65f;
-
-    // Calculate VBATREG code
-    vbat_code = (uint8_t)((voltage_V - 3.5f) / 0.01f);  // 0.01V = 10mV steps
-
-    // Ensure we don't exceed 7-bit range
-    if (vbat_code > 127) vbat_code = 127;
-
-    // Read current register to preserve PG_MODE bit
-    uint8_t current_reg;
-    HAL_I2C_Mem_Read(&hi2c1, BQ25186_ADDR, 0x03,
-                     I2C_MEMADD_SIZE_8BIT, &current_reg, 1, HAL_MAX_DELAY);
-
-    // Preserve bit 7 (PG_MODE), update bits 6-0
-    uint8_t new_reg = (current_reg & 0x80) | (vbat_code & 0x7F);
-
-    // Write to VBAT_CTRL register
-    HAL_I2C_Mem_Write(&hi2c1, BQ25186_ADDR, 0x03,
-                      I2C_MEMADD_SIZE_8BIT, &new_reg, 1, HAL_MAX_DELAY);
-}
-
+// Modified LIS2DUX12_ProperInit with initial interrupt clearing
 int32_t LIS2DUX12_ProperInit(void) {
     // Initialize device context
     dev_ctx.write_reg = platform_write;
     dev_ctx.read_reg = platform_read;
     dev_ctx.handle = &hi2c1;
 
-    // Add actual sensor configuration here
-    // Check WHO_AM_I register, configure ODR, etc.
-
-    return 0; // Return 0 for success
-}
-
-uint8_t readBQ25186Register(uint8_t regAddr) {
-    uint8_t data = 0;
-
-    // Step 1: Set the register pointer (write operation)
-    if (HAL_I2C_Master_Transmit(&hi2c1, BQ25186_ADDR, &regAddr, 1, HAL_MAX_DELAY) != HAL_OK) {
-        // Error handling
-        return 0xFF; // Indicate error
+    // Check WHO_AM_I register
+    uint8_t whoami;
+    int32_t ret = lis2dux12_device_id_get(&dev_ctx, &whoami);
+    if (ret != 0 || whoami != LIS2DUX12_ID) {
+        return -1;
     }
 
-    // Step 2: Read the register data
-    if (HAL_I2C_Master_Receive(&hi2c1, BQ25186_ADDR | 0x01, &data, 1, HAL_MAX_DELAY) != HAL_OK) {
-        // Error handling
-        return 0xFF; // Indicate error
-    }
+    // Initialize the sensor
+    ret = lis2dux12_init_set(&dev_ctx, LIS2DUX12_SENSOR_ONLY_ON);
+    if (ret != 0) return -1;
 
-    return data;
+    // Clear any existing interrupts before configuration
+    LIS2DUX12_ClearAllInterrupts();
+
+    // Set output data rate and power mode for low power operation
+    lis2dux12_md_t md = {
+        .fs = LIS2DUX12_2g,        // ±2g full scale
+        .odr = LIS2DUX12_25Hz_LP,  // 25Hz low power mode
+        .bw = LIS2DUX12_ODR_div_2  // Bandwidth ODR/2
+    };
+    ret = lis2dux12_mode_set(&dev_ctx, &md);
+    if (ret != 0) return -1;
+
+    // Configure wake-up detection
+    lis2dux12_wakeup_config_t wake_cfg = {
+        .wake_enable = LIS2DUX12_SLEEP_ON,    // Enable sleep/wake functionality
+        .wake_ths = 8,                        // Increased threshold to reduce false triggers
+        .wake_ths_weight = 0,                 // Weight: 1 LSB = FS_XL/64
+        .wake_dur = LIS2DUX12_1_ODR,         // Wake duration: 1 ODR time
+        .sleep_dur = 1,                       // Sleep duration (1 = 512 ODR cycles)
+        .inact_odr = LIS2DUX12_ODR_NO_CHANGE  // Keep same ODR during inactivity
+    };
+    ret = lis2dux12_wakeup_config_set(&dev_ctx, wake_cfg);
+    if (ret != 0) return -1;
+
+    // Enable wake-up detection on all axes
+    lis2dux12_ctrl1_t ctrl1_reg;
+    ret = lis2dux12_read_reg(&dev_ctx, LIS2DUX12_CTRL1, (uint8_t*)&ctrl1_reg, 1);
+    if (ret != 0) return -1;
+
+    ctrl1_reg.wu_x_en = PROPERTY_ENABLE;
+    ctrl1_reg.wu_y_en = PROPERTY_ENABLE;
+    ctrl1_reg.wu_z_en = PROPERTY_ENABLE;
+
+    ret = lis2dux12_write_reg(&dev_ctx, LIS2DUX12_CTRL1, (uint8_t*)&ctrl1_reg, 1);
+    if (ret != 0) return -1;
+
+    // Configure interrupt settings
+    lis2dux12_int_config_t int_cfg = {
+        .int_cfg = LIS2DUX12_INT_LATCHED,     // Latched interrupt mode
+        .dis_rst_lir_all_int = 0,             // Allow reset of latched interrupts
+        .sleep_status_on_int = 0              // Don't route sleep status to interrupt
+    };
+    ret = lis2dux12_int_config_set(&dev_ctx, &int_cfg);
+    if (ret != 0) return -1;
+
+    // Route wake-up interrupt to INT1 pin
+    lis2dux12_pin_int_route_t int_route = {0};
+    int_route.wake_up = PROPERTY_ENABLE;      // Enable wake-up interrupt on INT1
+    ret = lis2dux12_pin_int1_route_set(&dev_ctx, &int_route);
+    if (ret != 0) return -1;
+
+    // Configure interrupt pin polarity (active high)
+    ret = lis2dux12_int_pin_polarity_set(&dev_ctx, LIS2DUX12_ACTIVE_HIGH);
+    if (ret != 0) return -1;
+
+    // Configure pin settings for push-pull output
+    lis2dux12_pin_conf_t pin_conf = {
+        .int1_int2_push_pull = PROPERTY_ENABLE,  // Push-pull mode
+        .int1_pull_down = PROPERTY_DISABLE,      // DISABLE pull-down for INT1
+        .int2_pull_down = PROPERTY_ENABLE,       // Enable pull-down for INT2
+        .cs_pull_up = PROPERTY_ENABLE,           // Enable CS pull-up
+        .sda_pull_up = PROPERTY_DISABLE,         // Disable SDA pull-up (external)
+        .sdo_pull_up = PROPERTY_DISABLE          // Disable SDO pull-up
+    };
+    ret = lis2dux12_pin_conf_set(&dev_ctx, &pin_conf);
+    if (ret != 0) return -1;
+
+    // Final interrupt clear after configuration
+    LIS2DUX12_ClearAllInterrupts();
+
+    return 0;
 }
 
+void Configure_Wakeup(void) {
+    // Enable PB0 as wakeup pin with rising edge polarity
+    LL_PWR_EnableWakeUpPin(LL_PWR_WAKEUP_PB0);
+    LL_PWR_SetWakeUpPinPolarityHigh(LL_PWR_WAKEUP_PB0);
+
+    // Clear PB0 wakeup flag
+    __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF0);
+
+    // Clear any pending EXTI interrupt - CORRECTED VERSION
+    __HAL_GPIO_EXTI_CLEAR_IT(GPIOB, GPIO_PIN_0);
+}
+
+void Enter_Sleep_Mode(void) {
+    // Clear any pending sensor interrupts before sleep
+    LIS2DUX12_ClearAllInterrupts();
+
+    Configure_Wakeup();
+
+    // Properly deinitialize I2C since it will lose power anyway
+    HAL_I2C_DeInit(&hi2c1);
+    HAL_TIM_Base_Stop(&htim2);
+
+    // Configure DEEPSTOP mode
+    PWR_DEEPSTOPTypeDef deepstop_config;
+    deepstop_config.deepStopMode = PWR_DEEPSTOP_WITH_SLOW_CLOCK_OFF;
+    HAL_PWR_ConfigDEEPSTOP(&deepstop_config);
+
+    // Enter DEEPSTOP mode
+    HAL_PWR_EnterDEEPSTOPMode();
+
+    // After wakeup from DEEPSTOP
+    playTone(600,50);
+    playTone(700,70);
+    playTone(800,90);
+
+    // Reinitialize everything
+    SystemClock_Config();
+    MX_GPIO_Init();  // Reinitialize GPIO including interrupt
+    MX_I2C1_Init();
+
+    // Re-initialize the sensor after wake-up
+    LIS2DUX12_ProperInit();
+
+    // Clear any interrupts that may have occurred during reinitialization
+    LIS2DUX12_ClearAllInterrupts();
+}
+
+void testLED(int ms_delay)
+{
+    // Static variables to maintain pulse state
+    static uint32_t pulse_value = 0;
+    static int pulse_direction = 1;  // 1 = increasing, 0 = decreasing
+    static uint8_t pulse_step = 20;
+
+    // Start PWM if not already running
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
+
+    // Define pulse range
+    uint32_t min_pulse = 0;
+    uint32_t max_pulse = htim2.Init.Period - 100; // Leave some headroom
+
+    // Update pulse value
+    if (pulse_direction) {
+        pulse_value += pulse_step;
+        if (pulse_value >= max_pulse) {
+            pulse_direction = 0; // Start decreasing
+        }
+    } else {
+        pulse_value -= pulse_step;
+        if (pulse_value <= min_pulse) {
+            pulse_direction = 1; // Start increasing
+        }
+    }
+
+    // For active low LED: invert the PWM value
+    uint32_t inverted_pulse = htim2.Init.Period - pulse_value;
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, inverted_pulse);
+
+    HAL_Delay(ms_delay);
+}
 
 // Dynamic gradient impact detection with smooth buzzer response
 void LIS2DUX12_ImpactDetection_Dynamic(void) {
@@ -264,77 +388,6 @@ void LIS2DUX12_ImpactDetection_Dynamic(void) {
     // Update previous magnitude for next comparison
     prev_magnitude = current_magnitude;
 }
-
-
-void ChargeLED(int ms_delay)
-{
-    // Read Power Good status (LOW = good power present)
-    int power_good = (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == GPIO_PIN_RESET);
-
-    // Read charging status from BQ25186
-    uint8_t stat0 = readBQ25186Register(0x00);
-    uint8_t charge_status = (stat0 >> 5) & 0x03;
-    int is_charging = (charge_status == 0x01 || charge_status == 0x02); // CC or CV
-
-    // Static variable to track previous charging state
-    static int was_charging = 0;
-
-    // Check if we just started charging (transition from not charging to charging)
-    if (power_good && is_charging && !was_charging) {
-        // Reset pulse variables for smooth start
-        pulse_value = 10;  // Start at minimum (LED off for active low)
-        pulse_direction = 1;  // Start increasing (getting brighter)
-    }
-
-    // Update the previous state
-    was_charging = (power_good && is_charging);
-
-    // Only pulse LED when power is good AND actively charging
-    if (power_good && is_charging) {
-        // Start PWM if not already running
-        HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
-
-        // Keep pulse range away from extremes to avoid hardware timing issues
-        uint32_t min_pulse = 0;   // Don't go below 10
-        uint32_t max_pulse = htim2.Init.Period - 200;  // Don't go above 989
-
-        if (pulse_direction) {
-            pulse_value += pulse_step;
-            if (pulse_value >= max_pulse) {
-                pulse_direction = 0;  // Start decreasing
-            }
-        } else {
-            pulse_value -= pulse_step;
-            if (pulse_value <= min_pulse) {
-                pulse_direction = 1;  // Start increasing
-            }
-        }
-
-        // For active low LED: invert the PWM value
-        uint32_t inverted_pulse = htim2.Init.Period - pulse_value;
-        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, inverted_pulse);
-        HAL_Delay(ms_delay);
-    } else {
-        // Stop PWM completely to turn off LED and save power
-        HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
-    }
-}
-
-/* USER CODE END PFP */
-
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
-
-void twiScan(void) {
-    for (uint8_t i = 0; i < 128; i++) {
-        uint16_t address = (uint16_t)(i << 1);
-        if (HAL_I2C_IsDeviceReady(&hi2c1, address, 3, 5) == HAL_OK) {
-        } else {
-
-        }
-    }
-}
-
 /* USER CODE END 0 */
 
 /**
@@ -371,21 +424,39 @@ int main(void)
   MX_GPIO_Init();
   MX_TIM2_Init();
   MX_I2C1_Init();
+  MX_RNG_Init();
+  MX_RADIO_Init();
+  MX_RADIO_TIMER_Init();
+  MX_PKA_Init();
   /* USER CODE BEGIN 2 */
+  playTone(300,5);
   twiScan();
   LIS2DUX12_ProperInit();
-  BQ25186_SetChargeCurrent(150);   // Set to 150mA for liPo, 0.5C
-  BQ25186_SetBatteryVoltage(4.2f);   // charge to 90% for safety
+  batteryInit();
+
+  if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == GPIO_PIN_RESET){
+	  playTone(400,5);
+	  playTone(500,7);
+	  playTone(600,9);
+  } else {
+	  HAL_Delay(100);
+	  //Enter_Sleep_Mode();
+  }
   /* USER CODE END 2 */
+
+  /* Init code for STM32_BLE */
+  MX_APPE_Init(NULL);
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
     /* USER CODE END WHILE */
+    MX_APPE_Process();
 
     /* USER CODE BEGIN 3 */
-	  ChargeLED(5);
+       //ChargeLED(10);
+       testLED(30);
 	  //LIS2DUX12_ImpactDetection_Dynamic();
 
   }
@@ -398,14 +469,25 @@ int main(void)
   */
 void SystemClock_Config(void)
 {
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
   /** Configure the SYSCLKSource and SYSCLKDivider
   */
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
-  RCC_ClkInitStruct.SYSCLKDivider = RCC_RC64MPLL_DIV1;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_DIRECT_HSE;
+  RCC_ClkInitStruct.SYSCLKDivider = RCC_DIRECT_HSE_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_WAIT_STATES_1) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_WAIT_STATES_0) != HAL_OK)
   {
     Error_Handler();
   }
@@ -479,6 +561,132 @@ static void MX_I2C1_Init(void)
 }
 
 /**
+  * @brief PKA Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_PKA_Init(void)
+{
+
+  /* USER CODE BEGIN PKA_Init 0 */
+
+  /* USER CODE END PKA_Init 0 */
+
+  /* USER CODE BEGIN PKA_Init 1 */
+
+  /* USER CODE END PKA_Init 1 */
+  hpka.Instance = PKA;
+  if (HAL_PKA_Init(&hpka) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN PKA_Init 2 */
+
+  /* USER CODE END PKA_Init 2 */
+
+}
+
+/**
+  * @brief RADIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_RADIO_Init(void)
+{
+
+  /* USER CODE BEGIN RADIO_Init 0 */
+
+  /* USER CODE END RADIO_Init 0 */
+
+  RADIO_HandleTypeDef hradio = {0};
+
+  /* USER CODE BEGIN RADIO_Init 1 */
+
+  /* USER CODE END RADIO_Init 1 */
+
+  if (__HAL_RCC_RADIO_IS_CLK_DISABLED())
+  {
+    /* Radio Peripheral reset */
+    __HAL_RCC_RADIO_FORCE_RESET();
+    __HAL_RCC_RADIO_RELEASE_RESET();
+
+    /* Enable Radio peripheral clock */
+    __HAL_RCC_RADIO_CLK_ENABLE();
+  }
+  hradio.Instance = RADIO;
+  HAL_RADIO_Init(&hradio);
+  /* USER CODE BEGIN RADIO_Init 2 */
+
+  /* USER CODE END RADIO_Init 2 */
+
+}
+
+/**
+  * @brief RADIO_TIMER Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_RADIO_TIMER_Init(void)
+{
+
+  /* USER CODE BEGIN RADIO_TIMER_Init 0 */
+
+  /* USER CODE END RADIO_TIMER_Init 0 */
+
+  RADIO_TIMER_InitTypeDef RADIO_TIMER_InitStruct = {0};
+
+  /* USER CODE BEGIN RADIO_TIMER_Init 1 */
+
+  /* USER CODE END RADIO_TIMER_Init 1 */
+
+  if (__HAL_RCC_RADIO_IS_CLK_DISABLED())
+  {
+    /* Radio Peripheral reset */
+    __HAL_RCC_RADIO_FORCE_RESET();
+    __HAL_RCC_RADIO_RELEASE_RESET();
+
+    /* Enable Radio peripheral clock */
+    __HAL_RCC_RADIO_CLK_ENABLE();
+  }
+  /* Wait to be sure that the Radio Timer is active */
+  while(LL_RADIO_TIMER_GetAbsoluteTime(WAKEUP) < 0x10);
+  RADIO_TIMER_InitStruct.XTAL_StartupTime = 320;
+  RADIO_TIMER_InitStruct.enableInitialCalibration = FALSE;
+  RADIO_TIMER_InitStruct.periodicCalibrationInterval = 0;
+  HAL_RADIO_TIMER_Init(&RADIO_TIMER_InitStruct);
+  /* USER CODE BEGIN RADIO_TIMER_Init 2 */
+
+  /* USER CODE END RADIO_TIMER_Init 2 */
+
+}
+
+/**
+  * @brief RNG Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_RNG_Init(void)
+{
+
+  /* USER CODE BEGIN RNG_Init 0 */
+
+  /* USER CODE END RNG_Init 0 */
+
+  /* USER CODE BEGIN RNG_Init 1 */
+
+  /* USER CODE END RNG_Init 1 */
+  hrng.Instance = RNG;
+  if (HAL_RNG_Init(&hrng) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN RNG_Init 2 */
+
+  /* USER CODE END RNG_Init 2 */
+
+}
+
+/**
   * @brief TIM2 Initialization Function
   * @param None
   * @retval None
@@ -539,6 +747,54 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart1.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart1, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart1, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -560,8 +816,17 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(CHARGE_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : PB0 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
   /**/
   HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_3);
+
+  /*RT DEBUG GPIO_Init */
+  RT_DEBUG_GPIO_Init();
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 

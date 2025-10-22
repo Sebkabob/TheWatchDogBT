@@ -28,6 +28,10 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32wb0x_hal.h"
+#include "app_entry.h"
+#include "app_common.h"
+#include "app_debug.h"
+#include "compiler.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -53,12 +57,15 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
+void MX_USART1_UART_Init(void);
 
 /* USER CODE BEGIN EFP */
 
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define CHARGE_Pin GPIO_PIN_3
+#define CHARGE_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

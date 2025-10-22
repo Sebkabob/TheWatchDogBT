@@ -40,16 +40,16 @@
 /*#define HAL_I2S_MODULE_ENABLED   */
 /*#define HAL_IRDA_MODULE_ENABLED   */
 /*#define HAL_IWDG_MODULE_ENABLED   */
-/*#define HAL_PKA_MODULE_ENABLED   */
-/*#define HAL_RADIO_MODULE_ENABLED   */
-/*#define HAL_RADIO_TIMER_MODULE_ENABLED   */
-/*#define HAL_RNG_MODULE_ENABLED   */
+#define HAL_PKA_MODULE_ENABLED
+#define HAL_RADIO_MODULE_ENABLED
+#define HAL_RADIO_TIMER_MODULE_ENABLED
+#define HAL_RNG_MODULE_ENABLED
 /*#define HAL_RTC_MODULE_ENABLED   */
 /*#define HAL_SMARTCARD_MODULE_ENABLED   */
 /*#define HAL_SMBUS_MODULE_ENABLED   */
 /*#define HAL_SPI_MODULE_ENABLED   */
 #define HAL_TIM_MODULE_ENABLED
-/*#define HAL_UART_MODULE_ENABLED   */
+#define HAL_UART_MODULE_ENABLED
 /*#define HAL_USART_MODULE_ENABLED   */
 #define HAL_CORTEX_MODULE_ENABLED
 #define HAL_DMA_MODULE_ENABLED
@@ -68,7 +68,7 @@
 #define USE_HAL_SMBUS_REGISTER_CALLBACKS     0u
 #define USE_HAL_SPI_REGISTER_CALLBACKS       0u
 #define USE_HAL_TIM_REGISTER_CALLBACKS       0u
-#define USE_HAL_UART_REGISTER_CALLBACKS      0u
+#define USE_HAL_UART_REGISTER_CALLBACKS      1u
 #define USE_HAL_USART_REGISTER_CALLBACKS     0u
 
 /* ########################## Oscillator Values adaptation ####################*/
@@ -178,6 +178,9 @@
   * @brief This macro must be set to 0 when BLE stack is used. Set to 1 to use
   * radio proprietary protocol with action packets.
   */
+#if !defined (USE_RADIO_PROPRIETARY_DRIVER)
+#define USE_RADIO_PROPRIETARY_DRIVER  0U
+#endif /* USE_RADIO_PROPRIETARY_DRIVER */
 
 /* Includes ------------------------------------------------------------------*/
 /**

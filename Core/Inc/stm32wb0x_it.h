@@ -51,6 +51,10 @@ void HardFault_Handler(void);
 void SVC_Handler(void);
 void PendSV_Handler(void);
 void SysTick_Handler(void);
+void RADIO_TIMER_CPU_WKUP_IRQHandler(void);
+void RADIO_TIMER_ERROR_IRQHandler(void);
+void RADIO_TXRX_IRQHandler(void);
+void RADIO_TXRX_SEQ_IRQHandler(void);
 /* USER CODE BEGIN EFP */
 
 /* USER CODE END EFP */

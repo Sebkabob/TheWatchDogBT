@@ -33,8 +33,6 @@
 #include "blenvm.h"
 #include "pka_manager.h"
 #include "stm32_seq.h"
-#include "p2p_server.h"
-#include "p2p_server_app.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
@@ -150,8 +148,6 @@ typedef struct
 NO_INIT(uint32_t dyn_alloc_a[BLE_DYN_ALLOC_SIZE>>2]);
 
 static BleApplicationContext_t bleAppContext;
-
-P2P_SERVER_APP_ConnHandleNotEvt_t P2P_SERVERHandleNotification;
 
 static const char a_GapDeviceName[] = {  'W', 'a', 't', 'c', 'h', 'D', 'o', 'g' }; /* Gap Device Name */
 
@@ -516,11 +512,6 @@ void APP_BLE_Init(void)
   /**
   * Initialize Services and Characteristics.
   */
-  APP_DBG_MSG("\n");
-  APP_DBG_MSG("Services and Characteristics creation\n");
-  P2P_SERVER_APP_Init();
-  APP_DBG_MSG("End of Services and Characteristics creation\n");
-  APP_DBG_MSG("\n");
 
   /* USER CODE BEGIN APP_BLE_Init_3 */
 
@@ -589,9 +580,6 @@ void BLEEVT_App_Notification(const hci_pckt *hci_pckt)
       /* USER CODE BEGIN EVT_DISCONN_COMPLETE_1 */
 
       /* USER CODE END EVT_DISCONN_COMPLETE_1 */
-      P2P_SERVERHandleNotification.EvtOpcode = P2P_SERVER_DISCON_HANDLE_EVT;
-      P2P_SERVERHandleNotification.ConnectionHandle = p_disconnection_complete_event->Connection_Handle;
-      P2P_SERVER_APP_EvtRx(&P2P_SERVERHandleNotification);
       /* USER CODE BEGIN EVT_DISCONN_COMPLETE */
       APP_BLE_Procedure_Gap_Peripheral(PROC_GAP_PERIPH_ADVERTISE_START_FAST);
       /* USER CODE END EVT_DISCONN_COMPLETE */
@@ -867,10 +855,6 @@ static void connection_complete_event(uint8_t Status,
     bleAppContext.Device_Connection_Status = APP_BLE_CONNECTED_SERVER;
   }
   bleAppContext.BleApplicationContext_legacy.connectionHandle = Connection_Handle;
-
-  P2P_SERVERHandleNotification.EvtOpcode = P2P_SERVER_CONN_HANDLE_EVT;
-  P2P_SERVERHandleNotification.ConnectionHandle = Connection_Handle;
-  P2P_SERVER_APP_EvtRx(&P2P_SERVERHandleNotification);
 
   /* USER CODE BEGIN HCI_EVT_LE_CONN_COMPLETE */
 

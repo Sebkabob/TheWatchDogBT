@@ -31,7 +31,7 @@
 /**
  * Define to 1 if LSE is used, otherwise set it to 0.
  */
-#define CFG_LSCLK_LSE                       (0)
+#define CFG_LSCLK_LSE                       (1)
 
 /******************************************************************************
  * Application Config
@@ -120,7 +120,7 @@
  * Maximum number of attributes that can be stored in the GATT database in addition to the attributes number already defined for the GATT and GAP services
  * (BLE_STACK_NUM_GATT_MANDATORY_ATTRIBUTES value on STM32_BLE middleware, ble_stack.h header file).
  */
-#define CFG_BLE_NUM_GATT_ATTRIBUTES                     (20)
+#define CFG_BLE_NUM_GATT_ATTRIBUTES                     (0)
 
 /**
  * Maximum number of concurrent Client's Procedures. This value must be less

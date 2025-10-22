@@ -70,9 +70,9 @@ static void MX_GPIO_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_RNG_Init(void);
+static void MX_PKA_Init(void);
 static void MX_RADIO_Init(void);
 static void MX_RADIO_TIMER_Init(void);
-static void MX_PKA_Init(void);
 /* USER CODE BEGIN PFP */
 /** Please note that is MANDATORY: return 0 -> no Error.**/
 static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp, uint16_t len);
@@ -425,9 +425,9 @@ int main(void)
   MX_TIM2_Init();
   MX_I2C1_Init();
   MX_RNG_Init();
+  MX_PKA_Init();
   MX_RADIO_Init();
   MX_RADIO_TIMER_Init();
-  MX_PKA_Init();
   /* USER CODE BEGIN 2 */
   playTone(300,5);
   twiScan();
@@ -475,8 +475,9 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE|RCC_OSCILLATORTYPE_LSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -650,7 +651,7 @@ static void MX_RADIO_TIMER_Init(void)
   }
   /* Wait to be sure that the Radio Timer is active */
   while(LL_RADIO_TIMER_GetAbsoluteTime(WAKEUP) < 0x10);
-  RADIO_TIMER_InitStruct.XTAL_StartupTime = 320;
+  RADIO_TIMER_InitStruct.XTAL_StartupTime = 1000;
   RADIO_TIMER_InitStruct.enableInitialCalibration = FALSE;
   RADIO_TIMER_InitStruct.periodicCalibrationInterval = 0;
   HAL_RADIO_TIMER_Init(&RADIO_TIMER_InitStruct);

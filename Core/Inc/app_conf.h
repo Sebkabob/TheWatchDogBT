@@ -103,6 +103,7 @@
 
 /* USER CODE BEGIN Specific_Parameters */
 
+
 /* USER CODE END Specific_Parameters */
 
 /******************************************************************************
@@ -120,7 +121,7 @@
  * Maximum number of attributes that can be stored in the GATT database in addition to the attributes number already defined for the GATT and GAP services
  * (BLE_STACK_NUM_GATT_MANDATORY_ATTRIBUTES value on STM32_BLE middleware, ble_stack.h header file).
  */
-#define CFG_BLE_NUM_GATT_ATTRIBUTES                     (0)
+#define CFG_BLE_NUM_GATT_ATTRIBUTES                     (20)
 
 /**
  * Maximum number of concurrent Client's Procedures. This value must be less

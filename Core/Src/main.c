@@ -277,8 +277,18 @@ void testLED(int ms_delay)
 {
     // Static variables to maintain pulse state
     static uint32_t pulse_value = 0;
-    static int pulse_direction = 1;  // 1 = increasing, 0 = decreasing
+    static int pulse_direction = 1; // 1 = increasing, 0 = decreasing
     static uint8_t pulse_step = 20;
+    static uint32_t last_update = 0;  // Track last update time
+
+    // Check if enough time has passed since last update
+    uint32_t current_time = HAL_GetTick();
+    if ((current_time - last_update) < ms_delay) {
+        return;  // Not enough time has passed, exit early
+    }
+
+    // Update the timestamp
+    last_update = current_time;
 
     // Start PWM if not already running
     HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
@@ -304,7 +314,7 @@ void testLED(int ms_delay)
     uint32_t inverted_pulse = htim2.Init.Period - pulse_value;
     __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, inverted_pulse);
 
-    HAL_Delay(ms_delay);
+    // NO HAL_Delay() - function returns immediately!
 }
 
 // Dynamic gradient impact detection with smooth buzzer response
@@ -429,7 +439,12 @@ int main(void)
   MX_RADIO_Init();
   MX_RADIO_TIMER_Init();
   /* USER CODE BEGIN 2 */
-  playTone(300,5);
+  //playTone(300,5);
+  playTone(260*2,40);
+  HAL_Delay(15);
+  playTone(330*2,50);
+  HAL_Delay(15);
+  playTone(392*2,70);
   twiScan();
   LIS2DUX12_ProperInit();
   batteryInit();
@@ -455,8 +470,7 @@ int main(void)
     MX_APPE_Process();
 
     /* USER CODE BEGIN 3 */
-       //ChargeLED(10);
-       testLED(30);
+      testLED(30);
 	  //LIS2DUX12_ImpactDetection_Dynamic();
 
   }

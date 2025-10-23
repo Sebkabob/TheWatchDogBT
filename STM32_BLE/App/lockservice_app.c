@@ -122,13 +122,17 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification)
     case LOCKSERVICE_CONN_HANDLE_EVT :
       LOCKSERVICE_APP_Context.ConnectionHandle = p_Notification->ConnectionHandle;
       /* USER CODE BEGIN Service1_APP_CENTR_CONN_HANDLE_EVT */
-
+      //playTone(392*2,70);
       /* USER CODE END Service1_APP_CENTR_CONN_HANDLE_EVT */
       break;
     case LOCKSERVICE_DISCON_HANDLE_EVT :
       LOCKSERVICE_APP_Context.ConnectionHandle = 0xFFFF;
       /* USER CODE BEGIN Service1_APP_DISCON_HANDLE_EVT */
-
+      playTone(880,40);
+      HAL_Delay(15);
+      playTone(780,50);
+      HAL_Delay(15);
+      playTone(700,70);
       /* USER CODE END Service1_APP_DISCON_HANDLE_EVT */
       break;
 

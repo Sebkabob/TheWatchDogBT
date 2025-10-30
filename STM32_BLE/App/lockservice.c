@@ -37,7 +37,7 @@
 
 typedef struct{
   uint16_t  LockserviceSvcHdle;				/**< Lockservice Service Handle */
-  uint16_t  ArmlockCharHdle;			/**< ARMLOCK Characteristic Handle */
+  uint16_t  CharwriteCharHdle;			/**< CHARWRITE Characteristic Handle */
 /* USER CODE BEGIN Context */
   /* Place holder for Characteristic Descriptors Handle*/
 
@@ -59,7 +59,7 @@ typedef struct{
 /* Private macros ------------------------------------------------------------*/
 #define CHARACTERISTIC_DESCRIPTOR_ATTRIBUTE_OFFSET        2
 #define CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET             1
-#define ARMLOCK_SIZE        1	/* ArmLock Characteristic size */
+#define CHARWRITE_SIZE        2	/* charWrite Characteristic size */
 /* USER CODE BEGIN PM */
 
 /* USER CODE END PM */
@@ -69,7 +69,7 @@ typedef struct{
 static LOCKSERVICE_Context_t LOCKSERVICE_Context;
 
 /* USER CODE BEGIN PV */
-
+extern volatile uint8_t lockState;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -89,29 +89,29 @@ static LOCKSERVICE_Context_t LOCKSERVICE_Context;
  * UUIDs for LockService service
  */
 #define LOCKSERVICE_UUID			0x8f,0xe5,0xb3,0xd5,0x2e,0x7f,0x4a,0x98,0x2a,0x48,0x7a,0xcc,0x40,0xfe,0x00,0x00
-#define ARMLOCK_UUID			0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+#define CHARWRITE_UUID			0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
 
 /* USER CODE BEGIN DESCRIPTORS DECLARATION */
 
 /* USER CODE END DESCRIPTORS DECLARATION */
 
-uint8_t armlock_val_buffer[ARMLOCK_SIZE];
+uint8_t charwrite_val_buffer[CHARWRITE_SIZE];
 
-static ble_gatt_val_buffer_def_t armlock_val_buffer_def = {
-  .op_flags = BLE_GATT_SRV_OP_MODIFIED_EVT_ENABLE_FLAG,
-  .val_len = ARMLOCK_SIZE,
-  .buffer_len = sizeof(armlock_val_buffer),
-  .buffer_p = armlock_val_buffer
+static ble_gatt_val_buffer_def_t charwrite_val_buffer_def = {
+  .op_flags = BLE_GATT_SRV_OP_MODIFIED_EVT_ENABLE_FLAG | BLE_GATT_SRV_OP_VALUE_VAR_LENGTH_FLAG,
+  .val_len = CHARWRITE_SIZE,
+  .buffer_len = sizeof(charwrite_val_buffer),
+  .buffer_p = charwrite_val_buffer
 };
 
 /* LockService service characteristics definition */
 static const ble_gatt_chr_def_t lockservice_chars[] = {
 	{
-        .properties = BLE_GATT_SRV_CHAR_PROP_NONE,
+        .properties = BLE_GATT_SRV_CHAR_PROP_WRITE,
         .permissions = BLE_GATT_SRV_PERM_NONE,
         .min_key_size = 0x10,
-        .uuid = BLE_UUID_INIT_128(ARMLOCK_UUID),
-        .val_buffer_p = &armlock_val_buffer_def
+        .uuid = BLE_UUID_INIT_128(CHARWRITE_UUID),
+        .val_buffer_p = &charwrite_val_buffer_def
     },
 };
 
@@ -137,6 +137,8 @@ static const ble_gatt_srv_def_t lockservice_service = {
 static BLEEVT_EvtAckStatus_t LOCKSERVICE_EventHandler(aci_blecore_event *p_evt)
 {
   BLEEVT_EvtAckStatus_t return_value = BLEEVT_NoAck;
+  aci_gatt_srv_attribute_modified_event_rp0 *p_attribute_modified;
+  LOCKSERVICE_NotificationEvt_t notification;
   /* USER CODE BEGIN Service1_EventHandler_1 */
 
   /* USER CODE END Service1_EventHandler_1 */
@@ -148,6 +150,21 @@ static BLEEVT_EvtAckStatus_t LOCKSERVICE_EventHandler(aci_blecore_event *p_evt)
       /* USER CODE BEGIN EVT_BLUE_GATT_ATTRIBUTE_MODIFIED_BEGIN */
 
       /* USER CODE END EVT_BLUE_GATT_ATTRIBUTE_MODIFIED_BEGIN */
+      p_attribute_modified = (aci_gatt_srv_attribute_modified_event_rp0*)p_evt->data;
+      notification.ConnectionHandle         = p_attribute_modified->Connection_Handle;
+      notification.AttributeHandle          = p_attribute_modified->Attr_Handle;
+      notification.DataTransfered.Length    = p_attribute_modified->Attr_Data_Length;
+      notification.DataTransfered.p_Payload = p_attribute_modified->Attr_Data;
+      if(p_attribute_modified->Attr_Handle == (LOCKSERVICE_Context.CharwriteCharHdle + CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET))
+      {
+        return_value = BLEEVT_Ack;
+
+        notification.EvtOpcode = LOCKSERVICE_CHARWRITE_WRITE_EVT;
+        /* USER CODE BEGIN Service1_Char_1_ACI_GATT_ATTRIBUTE_MODIFIED_VSEVT_CODE */
+
+        /* USER CODE END Service1_Char_1_ACI_GATT_ATTRIBUTE_MODIFIED_VSEVT_CODE */
+        LOCKSERVICE_Notification(&notification);
+      } /* if(p_attribute_modified->Attr_Handle == (LOCKSERVICE_Context.CharwriteCharHdle + CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET))*/
 
       /* USER CODE BEGIN EVT_BLUE_GATT_ATTRIBUTE_MODIFIED_END */
 
@@ -248,7 +265,7 @@ void LOCKSERVICE_Init(void)
   }
 
   LOCKSERVICE_Context.LockserviceSvcHdle = aci_gatt_srv_get_service_handle((ble_gatt_srv_def_t *) &lockservice_service);
-  LOCKSERVICE_Context.ArmlockCharHdle = aci_gatt_srv_get_char_decl_handle((ble_gatt_chr_def_t *)&lockservice_chars[0]);
+  LOCKSERVICE_Context.CharwriteCharHdle = aci_gatt_srv_get_char_decl_handle((ble_gatt_chr_def_t *)&lockservice_chars[0]);
 
   /* USER CODE BEGIN InitService1Svc_2 */
 
@@ -278,8 +295,8 @@ tBleStatus LOCKSERVICE_UpdateValue(LOCKSERVICE_CharOpcode_t CharOpcode, LOCKSERV
 
   switch(CharOpcode)
   {
-    case LOCKSERVICE_ARMLOCK:
-      memcpy(armlock_val_buffer, pData->p_Payload, MIN(pData->Length, sizeof(armlock_val_buffer)));
+    case LOCKSERVICE_CHARWRITE:
+      memcpy(charwrite_val_buffer, pData->p_Payload, MIN(pData->Length, sizeof(charwrite_val_buffer)));
       /* USER CODE BEGIN Service1_Char_Value_1*/
 
       /* USER CODE END Service1_Char_Value_1*/

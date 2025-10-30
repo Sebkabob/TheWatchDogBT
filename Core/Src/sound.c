@@ -1,11 +1,19 @@
 /*
+ * sound.c
+ *
+ *  Created on: Oct 29, 2025
+ *      Author: sebkabob
+ */
+
+
+/*
  * buzzer.c
  *
  *  Created on: Sep 1, 2025
  *      Author: sebkabob
  */
 #include "main.h"
-#include "buzzer.h"
+#include "sound.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>

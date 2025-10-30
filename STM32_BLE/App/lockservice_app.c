@@ -29,7 +29,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "sound.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -75,7 +75,7 @@ static LOCKSERVICE_APP_Context_t LOCKSERVICE_APP_Context;
 uint8_t a_LOCKSERVICE_UpdateCharData[247];
 
 /* USER CODE BEGIN PV */
-
+extern volatile uint8_t lockState;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -95,6 +95,40 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
     /* USER CODE BEGIN Service1_Notification_Service1_EvtOpcode */
 
     /* USER CODE END Service1_Notification_Service1_EvtOpcode */
+
+    case LOCKSERVICE_CHARWRITE_WRITE_EVT:
+      /* USER CODE BEGIN Service1Char1_WRITE_EVT */
+    	uint8_t *received_data = p_Notification->DataTransfered.p_Payload;
+    	  uint8_t data_length = p_Notification->DataTransfered.Length;
+
+    	  if(data_length > 0)
+    	  {
+    	    switch(received_data[0])
+    	    {
+    	      case 0xF:
+    	    	  lockState = 0;
+    	        break;
+
+    	      case 0x1:
+    	    	  lockState = 1;
+    	        break;
+
+    	      case 0x2:
+    	    	  lockState = 2;
+    	        break;
+
+    	      case 0x3:
+
+    	        break;
+
+    	      default:
+    	        // Unknown command - ignore or send error response
+    	        break;
+    	    }
+    	  }
+    	  break;
+      /* USER CODE END Service1Char1_WRITE_EVT */
+      break;
 
     default:
       /* USER CODE BEGIN Service1_Notification_default */
@@ -128,11 +162,11 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification)
     case LOCKSERVICE_DISCON_HANDLE_EVT :
       LOCKSERVICE_APP_Context.ConnectionHandle = 0xFFFF;
       /* USER CODE BEGIN Service1_APP_DISCON_HANDLE_EVT */
-      playTone(880,40);
-      HAL_Delay(15);
-      playTone(780,50);
-      HAL_Delay(15);
-      playTone(700,70);
+      playTone(880,30);
+      HAL_Delay(10);
+      playTone(780,40);
+      HAL_Delay(10);
+      playTone(700,60);
       /* USER CODE END Service1_APP_DISCON_HANDLE_EVT */
       break;
 

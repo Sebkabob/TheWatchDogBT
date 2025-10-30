@@ -1,12 +1,12 @@
 /*
- * buzzer.h
+ * sound.h
  *
- *  Created on: Sep 1, 2025
+ *  Created on: Oct 29, 2025
  *      Author: sebkabob
  */
 
-#ifndef INC_BUZZER_H_
-#define INC_BUZZER_H_
+#ifndef INC_SOUND_H_
+#define INC_SOUND_H_
 
 #include <stdint.h>
 
@@ -15,4 +15,5 @@ extern TIM_HandleTypeDef htim2;
 void playTone(uint32_t frequency_hz, uint32_t duration_ms);
 //void playSong();
 
-#endif /* INC_BUZZER_H_ */
+
+#endif /* INC_SOUND_H_ */

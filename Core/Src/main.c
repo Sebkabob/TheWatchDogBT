@@ -396,19 +396,21 @@ int main(void)
   MX_RADIO_Init();
   MX_RADIO_TIMER_Init();
   /* USER CODE BEGIN 2 */
-  playTone(260*2,40);
-  HAL_Delay(15);
-  playTone(330*2,50);
-  HAL_Delay(15);
-  playTone(392*2,70);
-  twiScan();
+  // In main(), after MX_TIM2_Init():
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+  firstBootTone();
+  HAL_Delay(100);
+  //twiScan();
   LIS2DUX12_ProperInit();
   batteryInit();
 
-  if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == GPIO_PIN_RESET){
-	  playTone(400,5);
-	  playTone(500,7);
-	  playTone(600,9);
+  // Safe boot mode in case of sleep loop
+  if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0){
+	  HAL_Delay(500);
+	  playTone(400,10);
+	  playTone(500,20);
+	  playTone(600,20);
   } else {
 	  HAL_Delay(100);
 	  //Enter_Sleep_Mode();
@@ -426,6 +428,7 @@ int main(void)
     MX_APPE_Process();
 
     /* USER CODE BEGIN 3 */
+    //States();
     //Sounds()
     Lights();
     //Motion()

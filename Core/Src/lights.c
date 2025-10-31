@@ -7,6 +7,7 @@
 
 #include "main.h"
 #include "lights.h"
+#include "sound.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -124,7 +125,8 @@ void Lights(){
         testLED(10);
     }
     else if (lockState == 2) {
-    	testLED(3);
+    	playTone(4000,50);
+    	lockState = 0;
     }
     else {
         // Stop PWM and turn off LED

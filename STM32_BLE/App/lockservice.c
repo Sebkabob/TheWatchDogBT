@@ -88,7 +88,7 @@ extern volatile uint8_t lockState;
 /*
  * UUIDs for LockService service
  */
-#define LOCKSERVICE_UUID			0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+#define LOCKSERVICE_UUID			(0x183e)
 #define CHARWRITE_UUID			0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
 
 /* USER CODE BEGIN DESCRIPTORS DECLARATION */
@@ -118,7 +118,7 @@ static const ble_gatt_chr_def_t lockservice_chars[] = {
 /* LockService service definition */
 static const ble_gatt_srv_def_t lockservice_service = {
    .type = BLE_GATT_SRV_PRIMARY_SRV_TYPE,
-   .uuid = BLE_UUID_INIT_128(LOCKSERVICE_UUID),
+   .uuid = BLE_UUID_INIT_16(LOCKSERVICE_UUID),
    .chrs = {
        .chrs_p = (ble_gatt_chr_def_t *)lockservice_chars,
        .chr_count = 1U,

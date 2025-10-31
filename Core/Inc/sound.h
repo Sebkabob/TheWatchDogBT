@@ -13,6 +13,7 @@
 extern TIM_HandleTypeDef htim2;
 
 void playTone(uint32_t frequency_hz, uint32_t duration_ms);
+void firstBootTone();
 //void playSong();
 
 

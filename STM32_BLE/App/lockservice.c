@@ -38,6 +38,7 @@
 typedef struct{
   uint16_t  LockserviceSvcHdle;				/**< Lockservice Service Handle */
   uint16_t  CharwriteCharHdle;			/**< CHARWRITE Characteristic Handle */
+  uint16_t  DevicestatusCharHdle;			/**< DEVICESTATUS Characteristic Handle */
 /* USER CODE BEGIN Context */
   /* Place holder for Characteristic Descriptors Handle*/
 
@@ -60,6 +61,7 @@ typedef struct{
 #define CHARACTERISTIC_DESCRIPTOR_ATTRIBUTE_OFFSET        2
 #define CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET             1
 #define CHARWRITE_SIZE        2	/* charWrite Characteristic size */
+#define DEVICESTATUS_SIZE        1	/* DeviceStatus Characteristic size */
 /* USER CODE BEGIN PM */
 
 /* USER CODE END PM */
@@ -90,6 +92,10 @@ extern volatile uint8_t lockState;
  */
 #define LOCKSERVICE_UUID			(0x183e)
 #define CHARWRITE_UUID			0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+#define DEVICESTATUS_UUID			0x00,0x09,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+
+BLE_GATT_SRV_CCCD_DECLARE(devicestatus, CFG_BLE_NUM_RADIO_TASKS, BLE_GATT_SRV_CCCD_PERM_DEFAULT,
+                          BLE_GATT_SRV_OP_MODIFIED_EVT_ENABLE_FLAG);
 
 /* USER CODE BEGIN DESCRIPTORS DECLARATION */
 
@@ -104,7 +110,16 @@ static ble_gatt_val_buffer_def_t charwrite_val_buffer_def = {
   .buffer_p = charwrite_val_buffer
 };
 
-/* LockService service characteristics definition */
+uint8_t devicestatus_val_buffer[DEVICESTATUS_SIZE];
+
+static ble_gatt_val_buffer_def_t devicestatus_val_buffer_def = {
+  .op_flags = BLE_GATT_SRV_OP_MODIFIED_EVT_ENABLE_FLAG,
+  .val_len = DEVICESTATUS_SIZE,
+  .buffer_len = sizeof(devicestatus_val_buffer),
+  .buffer_p = devicestatus_val_buffer
+};
+
+/* LockService service DEVICESTATUS (notification) characteristics definition */
 static const ble_gatt_chr_def_t lockservice_chars[] = {
 	{
         .properties = BLE_GATT_SRV_CHAR_PROP_WRITE,
@@ -112,6 +127,17 @@ static const ble_gatt_chr_def_t lockservice_chars[] = {
         .min_key_size = 0x10,
         .uuid = BLE_UUID_INIT_128(CHARWRITE_UUID),
         .val_buffer_p = &charwrite_val_buffer_def
+    },
+	{
+        .properties = BLE_GATT_SRV_CHAR_PROP_NOTIFY,
+        .permissions = BLE_GATT_SRV_PERM_NONE,
+        .min_key_size = 0x10,
+        .uuid = BLE_UUID_INIT_128(DEVICESTATUS_UUID),
+        .descrs = {
+            .descrs_p = &BLE_GATT_SRV_CCCD_DEF_NAME(devicestatus),
+            .descr_count = 1U,
+        },
+        .val_buffer_p = &devicestatus_val_buffer_def
     },
 };
 
@@ -121,7 +147,7 @@ static const ble_gatt_srv_def_t lockservice_service = {
    .uuid = BLE_UUID_INIT_16(LOCKSERVICE_UUID),
    .chrs = {
        .chrs_p = (ble_gatt_chr_def_t *)lockservice_chars,
-       .chr_count = 1U,
+       .chr_count = 2U,
    },
 };
 
@@ -155,7 +181,51 @@ static BLEEVT_EvtAckStatus_t LOCKSERVICE_EventHandler(aci_blecore_event *p_evt)
       notification.AttributeHandle          = p_attribute_modified->Attr_Handle;
       notification.DataTransfered.Length    = p_attribute_modified->Attr_Data_Length;
       notification.DataTransfered.p_Payload = p_attribute_modified->Attr_Data;
-      if(p_attribute_modified->Attr_Handle == (LOCKSERVICE_Context.CharwriteCharHdle + CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET))
+      if(p_attribute_modified->Attr_Handle == (LOCKSERVICE_Context.DevicestatusCharHdle + CHARACTERISTIC_DESCRIPTOR_ATTRIBUTE_OFFSET))
+      {
+        return_value = BLEEVT_Ack;
+        /* USER CODE BEGIN Service1_Char_2 */
+
+        /* USER CODE END Service1_Char_2 */
+        switch(p_attribute_modified->Attr_Data[0])
+		{
+          /* USER CODE BEGIN Service1_Char_2_attribute_modified */
+
+          /* USER CODE END Service1_Char_2_attribute_modified */
+
+          /* Disabled Notification management */
+        case (!BLE_GATT_SRV_CCCD_NOTIFICATION):
+          /* USER CODE BEGIN Service1_Char_2_Disabled_BEGIN */
+
+          /* USER CODE END Service1_Char_2_Disabled_BEGIN */
+          notification.EvtOpcode = LOCKSERVICE_DEVICESTATUS_NOTIFY_DISABLED_EVT;
+          LOCKSERVICE_Notification(&notification);
+          /* USER CODE BEGIN Service1_Char_2_Disabled_END */
+
+          /* USER CODE END Service1_Char_2_Disabled_END */
+          break;
+
+          /* Enabled Notification management */
+        case BLE_GATT_SRV_CCCD_NOTIFICATION:
+          /* USER CODE BEGIN Service1_Char_2_COMSVC_Notification_BEGIN */
+
+          /* USER CODE END Service1_Char_2_COMSVC_Notification_BEGIN */
+          notification.EvtOpcode = LOCKSERVICE_DEVICESTATUS_NOTIFY_ENABLED_EVT;
+          LOCKSERVICE_Notification(&notification);
+          /* USER CODE BEGIN Service1_Char_2_COMSVC_Notification_END */
+
+          /* USER CODE END Service1_Char_2_COMSVC_Notification_END */
+          break;
+
+        default:
+          /* USER CODE BEGIN Service1_Char_2_default */
+
+          /* USER CODE END Service1_Char_2_default */
+          break;
+        }
+      }  /* if(p_attribute_modified->Attr_Handle == (LOCKSERVICE_Context.DevicestatusCharHdle + CHARACTERISTIC_DESCRIPTOR_ATTRIBUTE_OFFSET))*/
+
+      else if(p_attribute_modified->Attr_Handle == (LOCKSERVICE_Context.CharwriteCharHdle + CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET))
       {
         return_value = BLEEVT_Ack;
 
@@ -266,6 +336,7 @@ void LOCKSERVICE_Init(void)
 
   LOCKSERVICE_Context.LockserviceSvcHdle = aci_gatt_srv_get_service_handle((ble_gatt_srv_def_t *) &lockservice_service);
   LOCKSERVICE_Context.CharwriteCharHdle = aci_gatt_srv_get_char_decl_handle((ble_gatt_chr_def_t *)&lockservice_chars[0]);
+  LOCKSERVICE_Context.DevicestatusCharHdle = aci_gatt_srv_get_char_decl_handle((ble_gatt_chr_def_t *)&lockservice_chars[1]);
 
   /* USER CODE BEGIN InitService1Svc_2 */
 
@@ -329,6 +400,27 @@ tBleStatus LOCKSERVICE_NotifyValue(LOCKSERVICE_CharOpcode_t CharOpcode, LOCKSERV
 
   switch(CharOpcode)
   {
+
+    case LOCKSERVICE_DEVICESTATUS:
+      memcpy(devicestatus_val_buffer, pData->p_Payload, MIN(pData->Length, sizeof(devicestatus_val_buffer)));
+      ret = aci_gatt_srv_notify(ConnectionHandle,
+                                BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                                LOCKSERVICE_Context.DevicestatusCharHdle + 1,
+                                GATT_NOTIFICATION,
+                                pData->Length, /* charValueLen */
+                                (uint8_t *)pData->p_Payload);
+      if (ret != BLE_STATUS_SUCCESS)
+      {
+        APP_DBG_MSG("  Fail   : aci_gatt_srv_notify DEVICESTATUS command, error code: 0x%2X\n", ret);
+      }
+      else
+      {
+        APP_DBG_MSG("  Success: aci_gatt_srv_notify DEVICESTATUS command\n");
+      }
+      /* USER CODE BEGIN Service1_Char_Value_2*/
+
+      /* USER CODE END Service1_Char_Value_2*/
+      break;
 
     default:
       break;

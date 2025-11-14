@@ -125,7 +125,16 @@ void Lights(){
         testLED(10);
     }
     else if (lockState == 2) {
-    	playTone(4000,50);
+    	playTone(4186,400);
+    	playTone(3520,400);
+    	playTone(4186,400);
+    	playTone(3520,400);
+    	playTone(4186,400);
+    	playTone(3520,400);
+    	playTone(4186,400);
+    	playTone(3520,400);
+    	playTone(4186,400);
+    	playTone(3520,400);
     	lockState = 0;
     }
     else {

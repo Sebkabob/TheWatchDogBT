@@ -40,6 +40,8 @@
 
 typedef enum
 {
+  Devicestatus_NOTIFICATION_OFF,
+  Devicestatus_NOTIFICATION_ON,
   /* USER CODE BEGIN Service1_APP_SendInformation_t */
 
   /* USER CODE END Service1_APP_SendInformation_t */
@@ -48,6 +50,7 @@ typedef enum
 
 typedef struct
 {
+  LOCKSERVICE_APP_SendInformation_t     Devicestatus_Notification_Status;
   /* USER CODE BEGIN Service1_APP_Context_t */
 
   /* USER CODE END Service1_APP_Context_t */
@@ -79,6 +82,7 @@ extern volatile uint8_t lockState;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
+static void LOCKSERVICE_Devicestatus_SendNotification(void);
 
 /* USER CODE BEGIN PFP */
 
@@ -130,6 +134,18 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
       /* USER CODE END Service1Char1_WRITE_EVT */
       break;
 
+    case LOCKSERVICE_DEVICESTATUS_NOTIFY_ENABLED_EVT:
+      /* USER CODE BEGIN Service1Char2_NOTIFY_ENABLED_EVT */
+
+      /* USER CODE END Service1Char2_NOTIFY_ENABLED_EVT */
+      break;
+
+    case LOCKSERVICE_DEVICESTATUS_NOTIFY_DISABLED_EVT:
+      /* USER CODE BEGIN Service1Char2_NOTIFY_DISABLED_EVT */
+
+      /* USER CODE END Service1Char2_NOTIFY_DISABLED_EVT */
+      break;
+
     default:
       /* USER CODE BEGIN Service1_Notification_default */
 
@@ -162,11 +178,11 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification)
     case LOCKSERVICE_DISCON_HANDLE_EVT :
       LOCKSERVICE_APP_Context.ConnectionHandle = 0xFFFF;
       /* USER CODE BEGIN Service1_APP_DISCON_HANDLE_EVT */
-      playTone(880,30);
+      playTone(880,10);
       HAL_Delay(10);
-      playTone(780,40);
+      playTone(780,15);
       HAL_Delay(10);
-      playTone(700,60);
+      playTone(700,20);
       /* USER CODE END Service1_APP_DISCON_HANDLE_EVT */
       break;
 
@@ -204,6 +220,29 @@ void LOCKSERVICE_APP_Init(void)
  * LOCAL FUNCTIONS
  *
  *************************************************************/
+__USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notification */
+{
+  LOCKSERVICE_APP_SendInformation_t notification_on_off = Devicestatus_NOTIFICATION_OFF;
+  LOCKSERVICE_Data_t lockservice_notification_data;
+
+  lockservice_notification_data.p_Payload = (uint8_t*)a_LOCKSERVICE_UpdateCharData;
+  lockservice_notification_data.Length = 0;
+
+  /* USER CODE BEGIN Service1Char2_NS_1*/
+
+  /* USER CODE END Service1Char2_NS_1*/
+
+  if (notification_on_off != Devicestatus_NOTIFICATION_OFF && LOCKSERVICE_APP_Context.ConnectionHandle != 0xFFFF)
+  {
+    LOCKSERVICE_NotifyValue(LOCKSERVICE_DEVICESTATUS, &lockservice_notification_data, LOCKSERVICE_APP_Context.ConnectionHandle);
+  }
+
+  /* USER CODE BEGIN Service1Char2_NS_Last*/
+
+  /* USER CODE END Service1Char2_NS_Last*/
+
+  return;
+}
 
 /* USER CODE BEGIN FD_LOCAL_FUNCTIONS*/
 

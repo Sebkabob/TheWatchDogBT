@@ -408,9 +408,9 @@ int main(void)
   // Safe boot mode in case of sleep loop
   if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0){
 	  HAL_Delay(500);
-	  playTone(400,10);
-	  playTone(500,20);
-	  playTone(600,20);
+	  playTone(400,5);
+	  playTone(500,10);
+	  playTone(600,10);
   } else {
 	  HAL_Delay(100);
 	  //Enter_Sleep_Mode();

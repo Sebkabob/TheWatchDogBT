@@ -79,6 +79,7 @@ uint8_t a_LOCKSERVICE_UpdateCharData[247];
 
 /* USER CODE BEGIN PV */
 extern volatile uint8_t lockState;
+extern volatile uint8_t deviceInfo;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -102,35 +103,16 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
 
     case LOCKSERVICE_CHARWRITE_WRITE_EVT:
       /* USER CODE BEGIN Service1Char1_WRITE_EVT */
+    	LOCKSERVICE_SendStatusUpdate();
     	uint8_t *received_data = p_Notification->DataTransfered.p_Payload;
-    	  uint8_t data_length = p_Notification->DataTransfered.Length;
+    	uint8_t data_length = p_Notification->DataTransfered.Length;
 
-    	  if(data_length > 0)
-    	  {
-    	    switch(received_data[0])
-    	    {
-    	      case 0xF:
-    	    	  lockState = 0;
-    	        break;
-
-    	      case 0x1:
-    	    	  lockState = 1;
-    	        break;
-
-    	      case 0x2:
-    	    	  lockState = 2;
-    	        break;
-
-    	      case 0x3:
-
-    	        break;
-
-    	      default:
-    	        // Unknown command - ignore or send error response
-    	        break;
-    	    }
-    	  }
-    	  break;
+    	if(data_length > 0)
+    	{
+    	  // Simply set lockState to the received value
+    	  lockState = received_data[0];
+    	}
+    	break;
       /* USER CODE END Service1Char1_WRITE_EVT */
       break;
 
@@ -212,7 +194,10 @@ void LOCKSERVICE_APP_Init(void)
 }
 
 /* USER CODE BEGIN FD */
-
+void LOCKSERVICE_SendStatusUpdate(void)
+{
+	LOCKSERVICE_Devicestatus_SendNotification();
+}
 /* USER CODE END FD */
 
 /*************************************************************
@@ -229,7 +214,14 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
   lockservice_notification_data.Length = 0;
 
   /* USER CODE BEGIN Service1Char2_NS_1*/
+  // Set notification to ON so it actually sends
+  notification_on_off = Devicestatus_NOTIFICATION_ON;
 
+  // Populate the data you want to send
+  a_LOCKSERVICE_UpdateCharData[0] = deviceInfo;  // Send current lock state
+
+  // Set the actual length of data you're sending
+  lockservice_notification_data.Length = 1;  // 1 byte for lockState
   /* USER CODE END Service1Char2_NS_1*/
 
   if (notification_on_off != Devicestatus_NOTIFICATION_OFF && LOCKSERVICE_APP_Context.ConnectionHandle != 0xFFFF)

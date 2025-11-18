@@ -76,7 +76,7 @@ typedef struct
 void LOCKSERVICE_APP_Init(void);
 void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification);
 /* USER CODE BEGIN EF */
-
+void LOCKSERVICE_SendStatusUpdate(void);
 /* USER CODE END EF */
 
 #ifdef __cplusplus

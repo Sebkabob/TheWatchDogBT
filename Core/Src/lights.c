@@ -8,12 +8,14 @@
 #include "main.h"
 #include "lights.h"
 #include "sound.h"
+#include "lockservice_app.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 extern TIM_HandleTypeDef htim2;
 extern uint8_t lockState;
+extern uint8_t deviceInfo;
 
 void testLED(int ms_delay)
 {
@@ -57,6 +59,15 @@ void testLED(int ms_delay)
     __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, inverted_pulse);
 
     // NO HAL_Delay() - function returns immediately!
+}
+
+void turnOffLED(void)
+{
+    // Stop PWM
+    HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
+
+    // Set GPIO HIGH to turn off LED (active low)
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
 }
 
 void chargeLED(int ms_delay)
@@ -118,30 +129,5 @@ void chargeLED(int ms_delay)
 }
 
 void Lights(){
-	if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0){
-		chargeLED(50);
-	}
-	else if (lockState == 1){
-        testLED(10);
-    }
-    else if (lockState == 2) {
-    	playTone(4186,400);
-    	playTone(3520,400);
-    	playTone(4186,400);
-    	playTone(3520,400);
-    	playTone(4186,400);
-    	playTone(3520,400);
-    	playTone(4186,400);
-    	playTone(3520,400);
-    	playTone(4186,400);
-    	playTone(3520,400);
-    	lockState = 0;
-    }
-    else {
-        // Stop PWM and turn off LED
-        HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
 
-        // Set LED pin HI (since your LED is active low, this turns it off)
-        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 1);
-    }
 }

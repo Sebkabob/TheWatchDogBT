@@ -20,7 +20,11 @@ uint8_t readBQ25186Register(uint8_t regAddr);
 
 void ChargeLED(int ms_delay);
 
+bool Battery_IsCharging(void);
+
 void BQ25186_SetChargeCurrent(uint16_t current_mA);
+
+void BQ25186_DisablePrechargeLimit(void);
 
 void BQ25186_SetBatteryVoltage(float voltage_V);
 

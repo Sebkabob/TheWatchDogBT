@@ -12,5 +12,6 @@
 
 void Lights(void);
 void testLED(int ms_delay);
+void turnOffLED(void);
 
 #endif /* INC_LIGHTS_H_ */

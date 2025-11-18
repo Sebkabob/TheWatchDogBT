@@ -19,6 +19,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "state_machine.h"
 #include "lis2dux12_reg.h"
 #include "bq25186_reg.h"
 #include "battery.h"
@@ -61,7 +62,6 @@ TIM_HandleTypeDef htim2;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-volatile uint8_t lockState = 0;  // 0 = off, 1 = on
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -119,6 +119,8 @@ void twiScan(void) {
     for (uint8_t i = 0; i < 128; i++) {
         uint16_t address = (uint16_t)(i << 1);
         if (HAL_I2C_IsDeviceReady(&hi2c1, address, 3, 5) == HAL_OK) {
+        	playTone(address*4, 25);  // Indicate wake-up
+        	HAL_Delay(300);
         } else {
 
         }
@@ -136,7 +138,6 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t 
   return 0;
 }
 
-// Modified LIS2DUX12_ProperInit with initial interrupt clearing
 int32_t LIS2DUX12_ProperInit(void) {
     // Initialize device context
     dev_ctx.write_reg = platform_write;
@@ -147,12 +148,20 @@ int32_t LIS2DUX12_ProperInit(void) {
     uint8_t whoami;
     int32_t ret = lis2dux12_device_id_get(&dev_ctx, &whoami);
     if (ret != 0 || whoami != LIS2DUX12_ID) {
+        // Error indication - play error tone
+        playTone(200, 300);
         return -1;
     }
 
+    // Success - device found
+    playTone(800, 50);
+
     // Initialize the sensor
     ret = lis2dux12_init_set(&dev_ctx, LIS2DUX12_SENSOR_ONLY_ON);
-    if (ret != 0) return -1;
+    if (ret != 0) {
+        playTone(300, 300);
+        return -1;
+    }
 
     // Clear any existing interrupts before configuration
     LIS2DUX12_ClearAllInterrupts();
@@ -164,65 +173,94 @@ int32_t LIS2DUX12_ProperInit(void) {
         .bw = LIS2DUX12_ODR_div_2  // Bandwidth ODR/2
     };
     ret = lis2dux12_mode_set(&dev_ctx, &md);
-    if (ret != 0) return -1;
+    if (ret != 0) {
+        playTone(400, 300);
+        return -1;
+    }
 
     // Configure wake-up detection
     lis2dux12_wakeup_config_t wake_cfg = {
-        .wake_enable = LIS2DUX12_SLEEP_ON,    // Enable sleep/wake functionality
-        .wake_ths = 8,                        // Increased threshold to reduce false triggers
-        .wake_ths_weight = 0,                 // Weight: 1 LSB = FS_XL/64
-        .wake_dur = LIS2DUX12_1_ODR,         // Wake duration: 1 ODR time
-        .sleep_dur = 1,                       // Sleep duration (1 = 512 ODR cycles)
-        .inact_odr = LIS2DUX12_ODR_NO_CHANGE  // Keep same ODR during inactivity
+        .wake_enable = LIS2DUX12_SLEEP_ON,
+        .wake_ths = 8,
+        .wake_ths_weight = 0,
+        .wake_dur = LIS2DUX12_1_ODR,
+        .sleep_dur = 1,
+        .inact_odr = LIS2DUX12_ODR_NO_CHANGE
     };
     ret = lis2dux12_wakeup_config_set(&dev_ctx, wake_cfg);
-    if (ret != 0) return -1;
+    if (ret != 0) {
+        playTone(500, 300);
+        return -1;
+    }
 
     // Enable wake-up detection on all axes
     lis2dux12_ctrl1_t ctrl1_reg;
     ret = lis2dux12_read_reg(&dev_ctx, LIS2DUX12_CTRL1, (uint8_t*)&ctrl1_reg, 1);
-    if (ret != 0) return -1;
+    if (ret != 0) {
+        playTone(600, 300);
+        return -1;
+    }
 
     ctrl1_reg.wu_x_en = PROPERTY_ENABLE;
     ctrl1_reg.wu_y_en = PROPERTY_ENABLE;
     ctrl1_reg.wu_z_en = PROPERTY_ENABLE;
 
     ret = lis2dux12_write_reg(&dev_ctx, LIS2DUX12_CTRL1, (uint8_t*)&ctrl1_reg, 1);
-    if (ret != 0) return -1;
+    if (ret != 0) {
+        playTone(700, 300);
+        return -1;
+    }
 
     // Configure interrupt settings
     lis2dux12_int_config_t int_cfg = {
-        .int_cfg = LIS2DUX12_INT_LATCHED,     // Latched interrupt mode
-        .dis_rst_lir_all_int = 0,             // Allow reset of latched interrupts
-        .sleep_status_on_int = 0              // Don't route sleep status to interrupt
+        .int_cfg = LIS2DUX12_INT_LATCHED,
+        .dis_rst_lir_all_int = 0,
+        .sleep_status_on_int = 0
     };
     ret = lis2dux12_int_config_set(&dev_ctx, &int_cfg);
-    if (ret != 0) return -1;
+    if (ret != 0) {
+        playTone(800, 300);
+        return -1;
+    }
 
     // Route wake-up interrupt to INT1 pin
     lis2dux12_pin_int_route_t int_route = {0};
-    int_route.wake_up = PROPERTY_ENABLE;      // Enable wake-up interrupt on INT1
+    int_route.wake_up = PROPERTY_ENABLE;
     ret = lis2dux12_pin_int1_route_set(&dev_ctx, &int_route);
-    if (ret != 0) return -1;
+    if (ret != 0) {
+        playTone(900, 300);
+        return -1;
+    }
 
     // Configure interrupt pin polarity (active high)
     ret = lis2dux12_int_pin_polarity_set(&dev_ctx, LIS2DUX12_ACTIVE_HIGH);
-    if (ret != 0) return -1;
+    if (ret != 0) {
+        playTone(1000, 300);
+        return -1;
+    }
 
     // Configure pin settings for push-pull output
     lis2dux12_pin_conf_t pin_conf = {
-        .int1_int2_push_pull = PROPERTY_ENABLE,  // Push-pull mode
-        .int1_pull_down = PROPERTY_DISABLE,      // DISABLE pull-down for INT1
-        .int2_pull_down = PROPERTY_ENABLE,       // Enable pull-down for INT2
-        .cs_pull_up = PROPERTY_ENABLE,           // Enable CS pull-up
-        .sda_pull_up = PROPERTY_DISABLE,         // Disable SDA pull-up (external)
-        .sdo_pull_up = PROPERTY_DISABLE          // Disable SDO pull-up
+        .int1_int2_push_pull = PROPERTY_ENABLE,
+        .int1_pull_down = PROPERTY_DISABLE,
+        .int2_pull_down = PROPERTY_ENABLE,
+        .cs_pull_up = PROPERTY_ENABLE,
+        .sda_pull_up = PROPERTY_DISABLE,
+        .sdo_pull_up = PROPERTY_DISABLE
     };
     ret = lis2dux12_pin_conf_set(&dev_ctx, &pin_conf);
-    if (ret != 0) return -1;
+    if (ret != 0) {
+        playTone(1100, 300);
+        return -1;
+    }
 
     // Final interrupt clear after configuration
     LIS2DUX12_ClearAllInterrupts();
+
+    // All initialization successful!
+    playTone(1200, 100);
+    HAL_Delay(50);
+    playTone(1400, 100);
 
     return 0;
 }
@@ -402,18 +440,15 @@ int main(void)
   firstBootTone();
   HAL_Delay(100);
   //twiScan();
-  LIS2DUX12_ProperInit();
+  //LIS2DUX12_ProperInit();
   batteryInit();
 
   // Safe boot mode in case of sleep loop
   if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0){
-	  HAL_Delay(500);
-	  playTone(400,5);
-	  playTone(500,10);
-	  playTone(600,10);
-  } else {
-	  HAL_Delay(100);
-	  //Enter_Sleep_Mode();
+	  playTone(400,20);
+	  playTone(500,30);
+	  playTone(600,50);
+	  HAL_Delay(15000);
   }
   /* USER CODE END 2 */
 
@@ -422,18 +457,16 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  StateMachine_Init();
   while (1)
   {
     /* USER CODE END WHILE */
     MX_APPE_Process();
 
     /* USER CODE BEGIN 3 */
-    //States();
-    //Sounds()
-    Lights();
-    //Motion()
-    //LIS2DUX12_ImpactDetection_Dynamic();
+    StateMachine_Run();
 
+    //sensorUpdates();
   }
   /* USER CODE END 3 */
 }

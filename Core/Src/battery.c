@@ -16,7 +16,7 @@ static uint32_t pulse_step = 5; // Adjust for pulse speed (smaller = slower)
 #define BQ25186_ADDR (0x6A << 1)
 
 void batteryInit(){
-	  BQ25186_SetChargeCurrent(150);   // Set to 150mA for liPo, 0.5C
+	  BQ25186_DisablePrechargeLimit();
 	  BQ25186_SetBatteryVoltage(4.2f);   // charge to 90% for safety
 }
 
@@ -36,6 +36,15 @@ uint8_t readBQ25186Register(uint8_t regAddr) {
     }
 
     return data;
+}
+
+bool Battery_IsCharging(void)
+{
+	if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0){
+		return true;
+	} else {
+		return false;
+	}
 }
 
 void ChargeLED(int ms_delay)
@@ -112,6 +121,72 @@ void BQ25186_SetChargeCurrent(uint16_t current_mA) {
     uint8_t reg_value = ichg_code & 0x7F;  // Ensure bit 7 is 0
 
     // I2C write to register 0x4
+    HAL_I2C_Mem_Write(&hi2c1, BQ25186_ADDR, 0x04,
+                      I2C_MEMADD_SIZE_8BIT, &reg_value, 1, HAL_MAX_DELAY);
+}
+
+void BQ25186_DisablePrechargeLimit(void) {
+    uint8_t reg_value;
+
+    // 1. Set fast charge current to maximum safe value for 300mAh battery
+    // For a 300mAh battery, 1C rate = 300mA
+    // Let's use 300mA for fast charging (1C rate is safe)
+    // ICHG = 300mA corresponds to code 67 (from register 0x04)
+    // Formula: For ICHG > 35mA: ICHG = 40 + ((code-31)*10)
+    // 300 = 40 + ((code-31)*10) → code = 57
+    reg_value = 0x80 | 57;  // Enable current monitoring + 300mA code
+    HAL_I2C_Mem_Write(&hi2c1, BQ25186_ADDR, 0x04,
+                      I2C_MEMADD_SIZE_8BIT, &reg_value, 1, HAL_MAX_DELAY);
+
+    // 2. Configure precharge current (20% of fast charge = 60mA)
+    // Set IPRECHG = 0 (precharge is 2x termination current)
+    // Read register 0x05 first
+    HAL_I2C_Mem_Read(&hi2c1, BQ25186_ADDR, 0x05,
+                     I2C_MEMADD_SIZE_8BIT, &reg_value, 1, HAL_MAX_DELAY);
+
+    // Clear bit 6 (IPRECHG = 0, precharge is 2x term)
+    // Set termination to 10% (bits 5:4 = 10b) for 30mA term, 60mA precharge
+    reg_value &= ~(0x01 << 6);  // IPRECHG = 0 (2x term)
+    reg_value &= ~(0x03 << 4);  // Clear ITERM bits
+    reg_value |= (0x02 << 4);   // ITERM = 10% (30mA)
+
+    HAL_I2C_Mem_Write(&hi2c1, BQ25186_ADDR, 0x05,
+                      I2C_MEMADD_SIZE_8BIT, &reg_value, 1, HAL_MAX_DELAY);
+
+    // 3. Set battery regulation voltage to 4.2V (assuming Li-ion)
+    // VBATREG = 3.5V + (code * 10mV)
+    // 4.2V = 3.5V + (70 * 10mV)
+    reg_value = 70;  // 0x46
+    HAL_I2C_Mem_Write(&hi2c1, BQ25186_ADDR, 0x03,
+                      I2C_MEMADD_SIZE_8BIT, &reg_value, 1, HAL_MAX_DELAY);
+
+    // 4. Set input current limit to support the charge current
+    // Need at least 300mA + system load
+    // Set ILIM to 500mA (register 0x08, bits 2:0 = 101b)
+    HAL_I2C_Mem_Read(&hi2c1, BQ25186_ADDR, 0x08,
+                     I2C_MEMADD_SIZE_8BIT, &reg_value, 1, HAL_MAX_DELAY);
+
+    reg_value &= ~(0x07);  // Clear ILIM bits
+    reg_value |= 0x05;     // Set to 500mA (101b)
+
+    HAL_I2C_Mem_Write(&hi2c1, BQ25186_ADDR, 0x08,
+                      I2C_MEMADD_SIZE_8BIT, &reg_value, 1, HAL_MAX_DELAY);
+
+    // 5. Set safety timer to 3 hours (register 0x07, bits 3:2 = 00b)
+    HAL_I2C_Mem_Read(&hi2c1, BQ25186_ADDR, 0x07,
+                     I2C_MEMADD_SIZE_8BIT, &reg_value, 1, HAL_MAX_DELAY);
+
+    reg_value &= ~(0x03 << 2);  // Set safety timer to 3 hours
+
+    HAL_I2C_Mem_Write(&hi2c1, BQ25186_ADDR, 0x07,
+                      I2C_MEMADD_SIZE_8BIT, &reg_value, 1, HAL_MAX_DELAY);
+
+    // 6. Enable charging (register 0x04, bit 7 = 0)
+    HAL_I2C_Mem_Read(&hi2c1, BQ25186_ADDR, 0x04,
+                     I2C_MEMADD_SIZE_8BIT, &reg_value, 1, HAL_MAX_DELAY);
+
+    reg_value &= ~(0x01 << 7);  // CHG_DIS = 0 (enable charging)
+
     HAL_I2C_Mem_Write(&hi2c1, BQ25186_ADDR, 0x04,
                       I2C_MEMADD_SIZE_8BIT, &reg_value, 1, HAL_MAX_DELAY);
 }

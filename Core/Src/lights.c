@@ -14,7 +14,7 @@
 #include <stdlib.h>
 
 extern TIM_HandleTypeDef htim2;
-extern uint8_t lockState;
+extern uint8_t deviceState;
 extern uint8_t deviceInfo;
 
 void testLED(int ms_delay)

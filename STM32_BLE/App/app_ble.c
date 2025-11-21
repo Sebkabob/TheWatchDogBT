@@ -161,7 +161,7 @@ static const char a_GapDeviceName[] = {  'W', 'a', 't', 'c', 'h', 'D', 'o', 'g' 
 uint8_t a_AdvData[] =
 {
   2, AD_TYPE_FLAGS, FLAG_BIT_LE_GENERAL_DISCOVERABLE_MODE|FLAG_BIT_BR_EDR_NOT_SUPPORTED,
-  11, AD_TYPE_COMPLETE_LOCAL_NAME, 'W', 'a', 't', 'c', 'h', 'D', 'o', 'g', '_', 'P',  /* Complete name */
+  11, AD_TYPE_COMPLETE_LOCAL_NAME, 'W', 'a', 't', 'c', 'h', 'D', 'o', 'g', 'g', 'y',  /* Complete name */
   3, AD_TYPE_16_BIT_SERV_UUID_CMPLT_LIST, 0x3E, 0x18,
   11, AD_TYPE_MANUFACTURER_SPECIFIC_DATA, 0xFF, 0xFF, 0x53 /*  */, 0x65 /*  */, 0x62 /*  */, 0x6B /*  */, 0x61 /*  */, 0x62 /*  */, 0x6F /*  */, 0x62 /*  */,
 };

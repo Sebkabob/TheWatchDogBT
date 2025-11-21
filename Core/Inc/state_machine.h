@@ -7,15 +7,15 @@
 // State definitions
 typedef enum {
     STATE_SLEEP,
-    STATE_ARMED,
     STATE_ALARM_ACTIVE,
-    STATE_CHARGING,
+	STATE_ARMED,
+	STATE_DISCONNECTED_IDLE,
     STATE_CONNECTED_IDLE
 } SystemState_t;
 
 // Global state variables
 extern volatile SystemState_t currentState;
-extern volatile uint8_t lockState;
+extern volatile uint8_t deviceState;
 
 // Function prototypes
 void StateMachine_Init(void);

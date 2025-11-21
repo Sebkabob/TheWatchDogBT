@@ -78,8 +78,9 @@ static LOCKSERVICE_APP_Context_t LOCKSERVICE_APP_Context;
 uint8_t a_LOCKSERVICE_UpdateCharData[247];
 
 /* USER CODE BEGIN PV */
-extern volatile uint8_t lockState;
+extern volatile uint8_t deviceState;
 extern volatile uint8_t deviceInfo;
+//static uint8_t lastSentDeviceInfo = 0xFF;  // Track last sent value (0xFF = never sent)
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -110,7 +111,9 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
     	if(data_length > 0)
     	{
     	  // Simply set lockState to the received value
-    	  lockState = received_data[0];
+    	  deviceState = received_data[0];
+    	  HAL_Delay(5);
+    	  LOCKSERVICE_ForceStatusUpdate();
     	}
     	break;
       /* USER CODE END Service1Char1_WRITE_EVT */
@@ -118,7 +121,7 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
 
     case LOCKSERVICE_DEVICESTATUS_NOTIFY_ENABLED_EVT:
       /* USER CODE BEGIN Service1Char2_NOTIFY_ENABLED_EVT */
-
+    	LOCKSERVICE_ForceStatusUpdate();
       /* USER CODE END Service1Char2_NOTIFY_ENABLED_EVT */
       break;
 
@@ -154,7 +157,7 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification)
     case LOCKSERVICE_CONN_HANDLE_EVT :
       LOCKSERVICE_APP_Context.ConnectionHandle = p_Notification->ConnectionHandle;
       /* USER CODE BEGIN Service1_APP_CENTR_CONN_HANDLE_EVT */
-      //playTone(392*2,70);
+      LOCKSERVICE_ForceStatusUpdate();  // Force send on connection
       /* USER CODE END Service1_APP_CENTR_CONN_HANDLE_EVT */
       break;
     case LOCKSERVICE_DISCON_HANDLE_EVT :
@@ -196,7 +199,19 @@ void LOCKSERVICE_APP_Init(void)
 /* USER CODE BEGIN FD */
 void LOCKSERVICE_SendStatusUpdate(void)
 {
-	LOCKSERVICE_Devicestatus_SendNotification();
+    // Only send if the state has actually changed OR if it's the first time
+    //if (deviceInfo != lastSentDeviceInfo)
+    //{
+        LOCKSERVICE_Devicestatus_SendNotification();
+        //lastSentDeviceInfo = deviceInfo;  // Update the last sent value
+    //}
+}
+
+void LOCKSERVICE_ForceStatusUpdate(void)
+{
+    // Force send regardless of state change (for initial connection)
+    LOCKSERVICE_Devicestatus_SendNotification();
+    //lastSentDeviceInfo = deviceInfo;
 }
 /* USER CODE END FD */
 
@@ -217,11 +232,12 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
   // Set notification to ON so it actually sends
   notification_on_off = Devicestatus_NOTIFICATION_ON;
 
-  // Populate the data you want to send
-  a_LOCKSERVICE_UpdateCharData[0] = deviceInfo;  // Send current lock state
+  // Send deviceState (not deviceInfo)
+  a_LOCKSERVICE_UpdateCharData[0] = deviceState;
+  a_LOCKSERVICE_UpdateCharData[1] = 100;
 
   // Set the actual length of data you're sending
-  lockservice_notification_data.Length = 1;  // 1 byte for lockState
+  lockservice_notification_data.Length = 2;
   /* USER CODE END Service1Char2_NS_1*/
 
   if (notification_on_off != Devicestatus_NOTIFICATION_OFF && LOCKSERVICE_APP_Context.ConnectionHandle != 0xFFFF)

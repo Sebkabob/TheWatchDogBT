@@ -102,16 +102,19 @@ void LIS2DUX12_ClearAllInterrupts(void) {
     lis2dux12_read_reg(&dev_ctx, LIS2DUX12_SIXD_SRC, (uint8_t*)&sixd_src, 1);
 }
 
-void HAL_GPIO_EXTI_Callback(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin)
-{
+volatile uint32_t interrupt_count = 0;
+
+void HAL_GPIO_EXTI_Callback(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin) {
     if (GPIOx == GPIOB && GPIO_Pin == GPIO_PIN_0) {
-        playTone(1000, 200);  // Indicate wake-up
+        interrupt_count++;  // Increment counter for debugging
 
-        // Clear ALL sensor interrupts to reset the INT1 pin
-        LIS2DUX12_ClearAllInterrupts();
+        // Read wake-up source to clear the latched interrupt
+        lis2dux12_all_sources_t all_sources;
+        lis2dux12_all_sources_get(&dev_ctx, &all_sources);
 
-        // Small delay to ensure interrupt is cleared
-        HAL_Delay(1);
+        // Debug: write the interrupt count to BLE GATT or serial
+        uint8_t count_low = (uint8_t)(interrupt_count & 0xFF);
+        HAL_I2C_Mem_Write(&hi2c1, LIS2DUX12_I2C_ADD_H, 0xF0, I2C_MEMADD_SIZE_8BIT, &count_low, 1, 1000);
     }
 }
 
@@ -119,8 +122,8 @@ void twiScan(void) {
     for (uint8_t i = 0; i < 128; i++) {
         uint16_t address = (uint16_t)(i << 1);
         if (HAL_I2C_IsDeviceReady(&hi2c1, address, 3, 5) == HAL_OK) {
-        	playTone(address*4, 25);  // Indicate wake-up
-        	HAL_Delay(300);
+        	//playTone(address*4, 25);  // Indicate wake-up
+        	//HAL_Delay(300);
         } else {
 
         }
@@ -138,80 +141,114 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t 
   return 0;
 }
 
+void LIS2DUX12_DebugStatus(void) {
+    uint8_t status;
+    int16_t accel[3];
+    uint8_t data[6];
+
+    // Read STATUS first
+    lis2dux12_read_reg(&dev_ctx, 0x27, &status, 1);
+    HAL_I2C_Mem_Write(&hi2c1, LIS2DUX12_I2C_ADD_H, 0xF2, I2C_MEMADD_SIZE_8BIT, &status, 1, 1000);
+
+    // Read acceleration data (this should clear DRDY if it was set)
+    lis2dux12_read_reg(&dev_ctx, 0x25, data, 6);  // OUTX_L to OUTZ_H
+
+    accel[0] = (int16_t)((data[1] << 8) | data[0]);
+    accel[1] = (int16_t)((data[3] << 8) | data[2]);
+    accel[2] = (int16_t)((data[5] << 8) | data[4]);
+
+    // Write X-axis data to I2C for debugging
+    HAL_I2C_Mem_Write(&hi2c1, LIS2DUX12_I2C_ADD_H, 0xE0, I2C_MEMADD_SIZE_8BIT, &data[0], 1, 1000);
+    HAL_I2C_Mem_Write(&hi2c1, LIS2DUX12_I2C_ADD_H, 0xE1, I2C_MEMADD_SIZE_8BIT, &data[1], 1, 1000);
+
+    // Read STATUS again to see if DRDY changed
+    lis2dux12_read_reg(&dev_ctx, 0x27, &status, 1);
+    HAL_I2C_Mem_Write(&hi2c1, LIS2DUX12_I2C_ADD_H, 0xF3, I2C_MEMADD_SIZE_8BIT, &status, 1, 1000);
+}
+
+void LIS2DUX12_TestMotion(void) {
+    // Read acceleration data
+    int16_t accel_raw[3];
+    uint8_t data[6];
+
+    // Read all 6 bytes of acceleration data (X, Y, Z)
+    lis2dux12_read_reg(&dev_ctx, 0x25, data, 6);  // OUTX_L register
+
+    accel_raw[0] = (int16_t)((data[1] << 8) | data[0]);
+    accel_raw[1] = (int16_t)((data[3] << 8) | data[2]);
+    accel_raw[2] = (int16_t)((data[5] << 8) | data[4]);
+
+    // Write raw values to I2C for debugging (just X-axis high byte)
+    uint8_t debug_val = (uint8_t)(accel_raw[0] >> 8);
+    HAL_I2C_Mem_Write(&hi2c1, LIS2DUX12_I2C_ADD_H, 0xFE, I2C_MEMADD_SIZE_8BIT, &debug_val, 1, 1000);
+}
+
 int32_t LIS2DUX12_ProperInit(void) {
-    // Initialize device context
     dev_ctx.write_reg = platform_write;
     dev_ctx.read_reg = platform_read;
     dev_ctx.handle = &hi2c1;
 
-    // Check WHO_AM_I register
+    HAL_Delay(50);
+
+    // Check WHO_AM_I
     uint8_t whoami;
     int32_t ret = lis2dux12_device_id_get(&dev_ctx, &whoami);
-    if (ret != 0 || whoami != LIS2DUX12_ID) {
-        // Error indication - play error tone
-        playTone(200, 300);
+    if (ret != 0 || whoami != 0x47) {
+        uint8_t error_code = 0x00;
+        HAL_I2C_Mem_Write(&hi2c1, LIS2DUX12_I2C_ADD_H, 0xFF, I2C_MEMADD_SIZE_8BIT, &error_code, 1, 1000);
         return -1;
     }
 
-    // Success - device found
-    playTone(800, 50);
-
-    // Initialize the sensor
-    ret = lis2dux12_init_set(&dev_ctx, LIS2DUX12_SENSOR_ONLY_ON);
+    // Software reset
+    ret = lis2dux12_init_set(&dev_ctx, LIS2DUX12_RESET);
     if (ret != 0) {
-        playTone(300, 300);
+        uint8_t error_code = 0x01;
+        HAL_I2C_Mem_Write(&hi2c1, LIS2DUX12_I2C_ADD_H, 0xFF, I2C_MEMADD_SIZE_8BIT, &error_code, 1, 1000);
         return -1;
     }
 
-    // Clear any existing interrupts before configuration
-    LIS2DUX12_ClearAllInterrupts();
+    HAL_Delay(50);
 
-    // Set output data rate and power mode for low power operation
+    // Configure for faster response - 100Hz low power
     lis2dux12_md_t md = {
-        .fs = LIS2DUX12_2g,        // ±2g full scale
-        .odr = LIS2DUX12_25Hz_LP,  // 25Hz low power mode
-        .bw = LIS2DUX12_ODR_div_2  // Bandwidth ODR/2
+        .odr = LIS2DUX12_25Hz_LP,  // Changed to 100Hz for faster response
+        .fs = LIS2DUX12_2g,
+        .bw = LIS2DUX12_ODR_div_4   // Can use div_2 with 100Hz
     };
     ret = lis2dux12_mode_set(&dev_ctx, &md);
     if (ret != 0) {
-        playTone(400, 300);
+        uint8_t error_code = 0x02;
+        HAL_I2C_Mem_Write(&hi2c1, LIS2DUX12_I2C_ADD_H, 0xFF, I2C_MEMADD_SIZE_8BIT, &error_code, 1, 1000);
         return -1;
     }
 
-    // Configure wake-up detection
     lis2dux12_wakeup_config_t wake_cfg = {
         .wake_enable = LIS2DUX12_SLEEP_ON,
-        .wake_ths = 8,
+        .wake_ths = 2,              // Medium sensitivity (adjust to taste)
         .wake_ths_weight = 0,
         .wake_dur = LIS2DUX12_1_ODR,
         .sleep_dur = 1,
         .inact_odr = LIS2DUX12_ODR_NO_CHANGE
     };
+
     ret = lis2dux12_wakeup_config_set(&dev_ctx, wake_cfg);
     if (ret != 0) {
-        playTone(500, 300);
+        uint8_t error_code = 0x03;
+        HAL_I2C_Mem_Write(&hi2c1, LIS2DUX12_I2C_ADD_H, 0xFF, I2C_MEMADD_SIZE_8BIT, &error_code, 1, 1000);
         return -1;
     }
 
-    // Enable wake-up detection on all axes
-    lis2dux12_ctrl1_t ctrl1_reg;
-    ret = lis2dux12_read_reg(&dev_ctx, LIS2DUX12_CTRL1, (uint8_t*)&ctrl1_reg, 1);
+    // Route wake-up interrupt to INT1
+    lis2dux12_pin_int_route_t int_route = {0};
+    int_route.wake_up = PROPERTY_ENABLE;
+    ret = lis2dux12_pin_int1_route_set(&dev_ctx, &int_route);
     if (ret != 0) {
-        playTone(600, 300);
+        uint8_t error_code = 0x04;
+        HAL_I2C_Mem_Write(&hi2c1, LIS2DUX12_I2C_ADD_H, 0xFF, I2C_MEMADD_SIZE_8BIT, &error_code, 1, 1000);
         return -1;
     }
 
-    ctrl1_reg.wu_x_en = PROPERTY_ENABLE;
-    ctrl1_reg.wu_y_en = PROPERTY_ENABLE;
-    ctrl1_reg.wu_z_en = PROPERTY_ENABLE;
-
-    ret = lis2dux12_write_reg(&dev_ctx, LIS2DUX12_CTRL1, (uint8_t*)&ctrl1_reg, 1);
-    if (ret != 0) {
-        playTone(700, 300);
-        return -1;
-    }
-
-    // Configure interrupt settings
+    // Configure interrupt as latched
     lis2dux12_int_config_t int_cfg = {
         .int_cfg = LIS2DUX12_INT_LATCHED,
         .dis_rst_lir_all_int = 0,
@@ -219,48 +256,14 @@ int32_t LIS2DUX12_ProperInit(void) {
     };
     ret = lis2dux12_int_config_set(&dev_ctx, &int_cfg);
     if (ret != 0) {
-        playTone(800, 300);
+        uint8_t error_code = 0x05;
+        HAL_I2C_Mem_Write(&hi2c1, LIS2DUX12_I2C_ADD_H, 0xFF, I2C_MEMADD_SIZE_8BIT, &error_code, 1, 1000);
         return -1;
     }
 
-    // Route wake-up interrupt to INT1 pin
-    lis2dux12_pin_int_route_t int_route = {0};
-    int_route.wake_up = PROPERTY_ENABLE;
-    ret = lis2dux12_pin_int1_route_set(&dev_ctx, &int_route);
-    if (ret != 0) {
-        playTone(900, 300);
-        return -1;
-    }
-
-    // Configure interrupt pin polarity (active high)
-    ret = lis2dux12_int_pin_polarity_set(&dev_ctx, LIS2DUX12_ACTIVE_HIGH);
-    if (ret != 0) {
-        playTone(1000, 300);
-        return -1;
-    }
-
-    // Configure pin settings for push-pull output
-    lis2dux12_pin_conf_t pin_conf = {
-        .int1_int2_push_pull = PROPERTY_ENABLE,
-        .int1_pull_down = PROPERTY_DISABLE,
-        .int2_pull_down = PROPERTY_ENABLE,
-        .cs_pull_up = PROPERTY_ENABLE,
-        .sda_pull_up = PROPERTY_DISABLE,
-        .sdo_pull_up = PROPERTY_DISABLE
-    };
-    ret = lis2dux12_pin_conf_set(&dev_ctx, &pin_conf);
-    if (ret != 0) {
-        playTone(1100, 300);
-        return -1;
-    }
-
-    // Final interrupt clear after configuration
-    LIS2DUX12_ClearAllInterrupts();
-
-    // All initialization successful!
-    playTone(1200, 100);
-    HAL_Delay(50);
-    playTone(1400, 100);
+    // Success
+    uint8_t success_code = 0xAA;
+    HAL_I2C_Mem_Write(&hi2c1, LIS2DUX12_I2C_ADD_H, 0xFF, I2C_MEMADD_SIZE_8BIT, &success_code, 1, 1000);
 
     return 0;
 }
@@ -359,8 +362,8 @@ int main(void)
   firstBootTone();
   HAL_Delay(100);
   //twiScan();
-  //LIS2DUX12_ProperInit();
-  batteryInit();
+  LIS2DUX12_ProperInit();
+  //batteryInit();
 
   // Safe boot mode in case of sleep loop
   if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0){
@@ -384,6 +387,9 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     StateMachine_Run();
+
+    // Debug polling
+    //LIS2DUX12_DebugStatus();
 
     //sensorUpdates();
   }
@@ -755,6 +761,10 @@ static void MX_GPIO_Init(void)
 
   /*RT DEBUG GPIO_Init */
   RT_DEBUG_GPIO_Init();
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(GPIOB_IRQn, 1, 0);
+  HAL_NVIC_EnableIRQ(GPIOB_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 

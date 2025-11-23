@@ -3,12 +3,14 @@
 #include "sound.h"
 #include "battery.h"
 #include "lockservice_app.h"
+#include "accelerometer.h"
 
 // Global state variables
 volatile SystemState_t currentState = STATE_CONNECTED_IDLE;
 volatile SystemState_t previousState = STATE_CONNECTED_IDLE;
 volatile uint8_t deviceState = 0;  // This is the settings byte (from iOS or local changes)
 volatile uint8_t deviceInfo = 0;
+volatile uint8_t deviceBattery = 100;
 
 // Static variables for timing
 static uint32_t stateEntryTime = 0;
@@ -99,21 +101,19 @@ void State_Armed_Loop(){
     if (GET_LIGHTS_BIT(deviceState)) {
         testLED(10);
     } else {
-    	turnOffLED();
+        turnOffLED();
     }
 
-    // Check for motion detection (you'll need to implement this)
-    // For now, using a placeholder condition
-    uint8_t motion_detected = 0;  // TODO: Replace with actual motion detection
-
-    if (motion_detected) {
+    // Check for motion detection using accelerometer
+    if (LIS2DUX12_IsMotionDetected()) {
         // Log motion event if logging is enabled
         if (GET_LOGGING_BIT(deviceState)) {
-            // TODO: Log to EEPROM
+            // TODO: Log to EEPROM with timestamp
         }
 
         // Trigger alarm
         StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+        return;
     }
 
     // eventually time out and go to sleep after n seconds
@@ -153,19 +153,19 @@ void State_Alarm_Active_Loop(){
         case ALARM_CALM:
             // Play calm alarm (non-blocking)
             // TODO: Implement calm alarm sound
-            playTone(440, 100);  // Placeholder
+        	SOUND_CalmAlarm();
             break;
 
         case ALARM_NORMAL:
             // Play normal alarm (non-blocking)
             // TODO: Implement normal alarm sound
-            playTone(880, 100);  // Placeholder
+        	SOUND_NormalAlarm();
             break;
 
         case ALARM_LOUD:
             // Play loud alarm (non-blocking)
             // TODO: Implement loud alarm sound
-            playTone(1760, 100);  // Placeholder
+        	SOUND_LoudAlarm();
             break;
 
         default:
@@ -208,10 +208,21 @@ void StateMachine_ChangeState(SystemState_t newState)
 
 void StateMachine_Run(void)
 {
-    if (Battery_IsCharging()){
-        ChargeLED(50);
-        // TODO: update phone on battery life
-    }
+	// Track previous battery state (add this as a static variable or global)
+	static uint8_t previousBattery = 0xFF;  // Initialize to invalid value to force first update
+
+	if (Battery_IsCharging()) {
+	    deviceBattery |= 0b10000000;  // Set bit 7
+	    testLED(50);
+	} else {
+	    deviceBattery &= ~0b10000000;  // Clear bit 7
+	}
+
+	// Only send update if battery state changed
+	if (deviceBattery != previousBattery) {
+	    LOCKSERVICE_SendStatusUpdate();
+	    previousBattery = deviceBattery;
+	}
 
     switch(currentState)
     {

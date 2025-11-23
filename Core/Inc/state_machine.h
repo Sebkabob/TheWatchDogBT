@@ -16,6 +16,7 @@ typedef enum {
 // Global state variables
 extern volatile SystemState_t currentState;
 extern volatile uint8_t deviceState;
+extern volatile uint8_t deviceBattery;
 
 // Function prototypes
 void StateMachine_Init(void);

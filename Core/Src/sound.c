@@ -18,7 +18,7 @@ void playTone(uint32_t frequency_hz, uint32_t duration_ms) {
     // Calculate the period needed for this frequency
     // Timer clock = 64MHz / (__prescaler__ + 1) = 64MHz / 64 = 1MHz
     uint32_t timer_clock = 64000000 / 64;  // 1MHz
-    uint32_t period = timer_clock / frequency_hz;
+    uint32_t period = timer_clock / frequency_hz/2;
 
     // Limit period to reasonable bounds
     if (period > 65535) period = 65535;  // Max for 16-bit timer
@@ -52,9 +52,42 @@ void playTone(uint32_t frequency_hz, uint32_t duration_ms) {
 }
 
 void firstBootTone(){
-    playTone(260*2, 10);
+    playTone(260, 10);
     HAL_Delay(15);
-    playTone(330*2, 20);
+    playTone(330, 20);
     HAL_Delay(15);
-    playTone(392*2, 30);
+    playTone(392, 30);
+}
+
+void SOUND_CalmAlarm(){
+    playTone(415, 300);
+    HAL_Delay(15);
+    playTone(349, 300);
+    HAL_Delay(15);
+    playTone(415, 300);
+    HAL_Delay(15);
+    playTone(349, 300);
+    HAL_Delay(15);
+}
+
+void SOUND_NormalAlarm(){
+    playTone(1047, 300);
+    HAL_Delay(15);
+    playTone(880, 300);
+    HAL_Delay(15);
+    playTone(1047, 300);
+    HAL_Delay(15);
+    playTone(880, 300);
+    HAL_Delay(15);
+}
+
+void SOUND_LoudAlarm(){
+    playTone(4186, 300);
+    HAL_Delay(15);
+    playTone(3520, 300);
+    HAL_Delay(15);
+    playTone(4186, 300);
+    HAL_Delay(15);
+    playTone(3520, 300);
+    HAL_Delay(15);
 }

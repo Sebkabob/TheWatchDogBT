@@ -80,6 +80,7 @@ uint8_t a_LOCKSERVICE_UpdateCharData[247];
 /* USER CODE BEGIN PV */
 extern volatile uint8_t deviceState;
 extern volatile uint8_t deviceInfo;
+extern volatile uint8_t deviceBattery;
 //static uint8_t lastSentDeviceInfo = 0xFF;  // Track last sent value (0xFF = never sent)
 /* USER CODE END PV */
 
@@ -234,7 +235,7 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
 
   // Send deviceState (not deviceInfo)
   a_LOCKSERVICE_UpdateCharData[0] = deviceState;
-  a_LOCKSERVICE_UpdateCharData[1] = 100;
+  a_LOCKSERVICE_UpdateCharData[1] = deviceBattery;
 
   // Set the actual length of data you're sending
   lockservice_notification_data.Length = 2;

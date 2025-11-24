@@ -151,6 +151,7 @@ void SysTick_Handler(void)
 void GPIOB_IRQHandler(void)
 {
   /* USER CODE BEGIN GPIOB_IRQn 0 */
+	__HAL_GPIO_EXTI_CLEAR_IT(GPIOB, GPIO_PIN_0);
 
   /* USER CODE END GPIOB_IRQn 0 */
   HAL_GPIO_EXTI_IRQHandler(GPIOB,GPIO_PIN_0);

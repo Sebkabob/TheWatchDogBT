@@ -59,12 +59,12 @@
 #define ADV_LP_INTERVAL_MIN                 (0x0140)
 #define ADV_LP_INTERVAL_MAX                 (0x0280)
 #define ADV_TYPE                            (HCI_ADV_EVENT_PROP_LEGACY|HCI_ADV_EVENT_PROP_CONNECTABLE|HCI_ADV_EVENT_PROP_SCANNABLE)
-#define ADV_FILTER                          HCI_ADV_FILTER_NONE
+#define ADV_FILTER                          HCI_ADV_FILTER_ACCEPT_LIST_CONNECT
 
 /**
  * Define IO Authentication
  */
-#define CFG_BONDING_MODE                    (0)
+#define CFG_BONDING_MODE                    (1)
 #define CFG_FIXED_PIN                       (111111)
 #define CFG_ENCRYPTION_KEY_SIZE_MAX         (16)
 #define CFG_ENCRYPTION_KEY_SIZE_MIN         (8)

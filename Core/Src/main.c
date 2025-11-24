@@ -23,7 +23,9 @@
 #include "lis2dux12_reg.h"
 #include "bq25186_reg.h"
 #include "battery.h"
+#include "app_ble.h"
 #include "accelerometer.h"
+#include "power_management.h"
 #include "sound.h"
 #include "lights.h"
 #include <string.h>
@@ -78,7 +80,28 @@ static void MX_RADIO_TIMER_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void Enter_Sleep_Mode_Optimized(void) {
+    // Stop BLE if active
+    if (APP_BLE_Get_Server_Connection_Status() != APP_BLE_IDLE) {
+        APP_BLE_Procedure_Gap_Peripheral(PROC_GAP_PERIPH_ADVERTISE_STOP);
+        HAL_Delay(100);  // Allow BLE stack to settle
+    }
 
+    // Enter deep stop mode (sensor clearing is handled internally)
+    Enter_DeepStop_Mode();
+
+    // ---- System wakes up here ----
+
+    // Reinitialize after wakeup
+    Wakeup_System_Init();
+}
+
+void Reinitialize_Peripherals_After_Wakeup(void)
+{
+    MX_GPIO_Init();
+    MX_I2C1_Init();
+    MX_TIM2_Init();
+}
 /* USER CODE END 0 */
 
 /**
@@ -133,6 +156,8 @@ int main(void)
 	  playTone(500,30);
 	  playTone(600,50);
 	  HAL_Delay(15000);
+  } else {
+	  Enter_Sleep_Mode_Optimized();
   }
   /* USER CODE END 2 */
 

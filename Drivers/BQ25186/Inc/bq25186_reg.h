@@ -546,16 +546,6 @@ BQ25186_Status_t BQ25186_SetBatteryVoltage(BQ25186_Handle_t *handle,
                                             uint16_t voltage_mv);
 
 /**
- * @brief Get battery regulation voltage
- *
- * @param handle Pointer to device handle
- * @param voltage_mv Pointer to store voltage in mV
- * @return BQ25186_Status_t Status code
- */
-BQ25186_Status_t BQ25186_GetBatteryVoltage(BQ25186_Handle_t *handle,
-                                            uint16_t *voltage_mv);
-
-/**
  * @brief Set fast charge current
  *
  * @param handle Pointer to device handle

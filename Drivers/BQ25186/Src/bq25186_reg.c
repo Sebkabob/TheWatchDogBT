@@ -246,27 +246,6 @@ BQ25186_Status_t BQ25186_SetBatteryVoltage(BQ25186_Handle_t *handle,
                                    code);
 }
 
-BQ25186_Status_t BQ25186_GetBatteryVoltage(BQ25186_Handle_t *handle,
-                                            uint16_t *voltage_mv)
-{
-    if (handle == NULL || voltage_mv == NULL) {
-        return BQ25186_ERROR_INVALID_PARAM;
-    }
-
-    uint8_t reg_val;
-    BQ25186_Status_t status = BQ25186_ReadRegister(handle,
-                                                     BQ25186_REG_VBAT_CTRL,
-                                                     &reg_val);
-    if (status != BQ25186_OK) {
-        return status;
-    }
-
-    uint8_t code = reg_val & BQ25186_VBAT_CTRL_VBATREG_MASK;
-    *voltage_mv = BQ25186_CalculateVoltageFromCode(code);
-
-    return BQ25186_OK;
-}
-
 BQ25186_Status_t BQ25186_SetChargeCurrent(BQ25186_Handle_t *handle,
                                            uint16_t current_ma)
 {

@@ -208,11 +208,10 @@ void StateMachine_ChangeState(SystemState_t newState)
 
 void StateMachine_Run(void)
 {
-	// Track previous battery state (add this as a static variable or global)
 	static uint8_t previousBattery = 0xFF;  // Initialize to invalid value to force first update
 
 	if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3) == 0) {
-		Battery_IsCharging();
+		//Battery_IsCharging();
 	    deviceBattery |= 0b10000000;  // Set bit 7
 	    testLED(50);
 	} else {

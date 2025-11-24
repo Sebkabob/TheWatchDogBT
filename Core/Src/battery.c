@@ -5,6 +5,12 @@
 // Global handle for the BQ25186
 static BQ25186_Handle_t bq25186_handle;
 
+// External variable for battery percentage
+extern uint8_t deviceBattery;
+
+// Static variable to track last update time
+static uint32_t last_soc_update = 0;
+
 // I2C wrapper functions for the driver
 static int BQ25186_I2C_Write(uint8_t dev_addr, uint8_t reg_addr, uint8_t *data, uint16_t len) {
     // Implement using your I2C peripheral (e.g., hi2c1)
@@ -39,7 +45,6 @@ void Battery_Init(void) {
         // Handle initialization error
         // You might want to set an error flag or retry
         return;
-
     }
 
     // Configure default charging parameters
@@ -68,16 +73,6 @@ void Battery_Update(void) {
     BQ25186_ResetWatchdog(&bq25186_handle);
 }
 
-float Battery_GetVoltage(void) {
-    uint16_t voltage_mv;
-    BQ25186_Status_t status = BQ25186_GetBatteryVoltage(&bq25186_handle, &voltage_mv);
-
-    if (status == BQ25186_OK) {
-        return voltage_mv / 1000.0f;  // Convert to volts
-    }
-    return 0.0f;
-}
-
 float Battery_GetCurrent(void) {
     uint16_t current_ma;
     BQ25186_Status_t status = BQ25186_GetChargeCurrent(&bq25186_handle, &current_ma);
@@ -88,13 +83,11 @@ float Battery_GetCurrent(void) {
     return 0.0f;
 }
 
-uint8_t Battery_GetPercentage(void) {
-    // You'll need to implement battery percentage calculation
-    // This typically requires reading the fuel gauge (BQ27427) or
-    // calculating based on voltage
-    // Placeholder implementation:
-    return 50;  // TODO: Implement actual percentage calculation
-}
+/**
+ * @brief Convert battery voltage to State of Charge percentage
+ * @param voltage_v Battery voltage in volts
+ * @return SOC percentage (0-100)
+ */
 
 bool Battery_IsCharging(void) {
     BQ25186_Status_Regs_t status;

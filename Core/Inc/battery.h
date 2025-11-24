@@ -1,31 +1,27 @@
-/*
- * battery.h
- *
- *  Created on: Sep 7, 2025
- *      Author: sebkabob
- */
+#ifndef BATTERY_H
+#define BATTERY_H
 
-#ifndef INC_BATTERY_H_
-#define INC_BATTERY_H_
+#include <stdint.h>
+#include <stdbool.h>
+#include "bq25186_reg.h"  // Include the driver header
 
-#include "main.h"
-#include "bq25186_reg.h"
+// Battery Management Functions
+void Battery_Init(void);
+void Battery_Update(void);
 
-extern TIM_HandleTypeDef htim2;
-extern I2C_HandleTypeDef hi2c1;
-
-void batteryInit(void);
-
-uint8_t readBQ25186Register(uint8_t regAddr);
-
-void ChargeLED(int ms_delay);
-
+// Getters for battery status
+float Battery_GetVoltage(void);
+float Battery_GetCurrent(void);
+uint8_t Battery_GetPercentage(void);
 bool Battery_IsCharging(void);
+bool Battery_IsFault(void);
 
-void BQ25186_SetChargeCurrent(uint16_t current_mA);
+// Wrapper functions - renamed to avoid conflicts with driver
+void Battery_SetChargeCurrent(uint16_t current_mA);      // Changed from BQ25186_SetChargeCurrent
+void Battery_EnableCharging(bool enable);
+void Battery_SetBatteryVoltage(uint16_t voltage_mv);     // Changed from BQ25186_SetBatteryVoltage
 
-void BQ25186_DisablePrechargeLimit(void);
+// Get the handle for direct driver access if needed
+BQ25186_Handle_t* Battery_GetHandle(void);
 
-void BQ25186_SetBatteryVoltage(float voltage_V);
-
-#endif /* INC_BATTERY_H_ */
+#endif // BATTERY_H

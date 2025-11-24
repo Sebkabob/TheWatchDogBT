@@ -125,7 +125,7 @@ int main(void)
   firstBootTone();
   HAL_Delay(100);
   LIS2DUX12_Init();
-  //batteryInit();
+  Battery_Init();
 
   // Safe boot mode in case of sleep loop
   if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0){

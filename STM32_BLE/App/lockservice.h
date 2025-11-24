@@ -40,7 +40,7 @@ extern "C" {
 /* Exported types ------------------------------------------------------------*/
 typedef enum
 {
-  LOCKSERVICE_CHARWRITE,
+  LOCKSERVICE_APPTOWD,
   LOCKSERVICE_DEVICESTATUS,
 
   /* USER CODE BEGIN Service1_CharOpcode_t */
@@ -52,7 +52,7 @@ typedef enum
 
 typedef enum
 {
-  LOCKSERVICE_CHARWRITE_WRITE_EVT,
+  LOCKSERVICE_APPTOWD_WRITE_EVT,
   LOCKSERVICE_DEVICESTATUS_NOTIFY_ENABLED_EVT,
   LOCKSERVICE_DEVICESTATUS_NOTIFY_DISABLED_EVT,
 

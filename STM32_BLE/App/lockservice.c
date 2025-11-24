@@ -37,7 +37,7 @@
 
 typedef struct{
   uint16_t  LockserviceSvcHdle;				/**< Lockservice Service Handle */
-  uint16_t  CharwriteCharHdle;			/**< CHARWRITE Characteristic Handle */
+  uint16_t  ApptowdCharHdle;			/**< APPTOWD Characteristic Handle */
   uint16_t  DevicestatusCharHdle;			/**< DEVICESTATUS Characteristic Handle */
 /* USER CODE BEGIN Context */
   /* Place holder for Characteristic Descriptors Handle*/
@@ -60,7 +60,7 @@ typedef struct{
 /* Private macros ------------------------------------------------------------*/
 #define CHARACTERISTIC_DESCRIPTOR_ATTRIBUTE_OFFSET        2
 #define CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET             1
-#define CHARWRITE_SIZE        2	/* charWrite Characteristic size */
+#define APPTOWD_SIZE        2	/* AppToWD Characteristic size */
 #define DEVICESTATUS_SIZE        2	/* DeviceStatus Characteristic size */
 /* USER CODE BEGIN PM */
 
@@ -92,7 +92,7 @@ extern volatile uint8_t deviceBattery;
  * UUIDs for LockService service
  */
 #define LOCKSERVICE_UUID			(0x183e)
-#define CHARWRITE_UUID			0x20,0x02,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+#define APPTOWD_UUID			0x20,0x02,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
 #define DEVICESTATUS_UUID			0x00,0x09,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
 
 BLE_GATT_SRV_CCCD_DECLARE(devicestatus, CFG_BLE_NUM_RADIO_TASKS, BLE_GATT_SRV_CCCD_PERM_DEFAULT,
@@ -102,13 +102,13 @@ BLE_GATT_SRV_CCCD_DECLARE(devicestatus, CFG_BLE_NUM_RADIO_TASKS, BLE_GATT_SRV_CC
 
 /* USER CODE END DESCRIPTORS DECLARATION */
 
-uint8_t charwrite_val_buffer[CHARWRITE_SIZE];
+uint8_t apptowd_val_buffer[APPTOWD_SIZE];
 
-static ble_gatt_val_buffer_def_t charwrite_val_buffer_def = {
+static ble_gatt_val_buffer_def_t apptowd_val_buffer_def = {
   .op_flags = BLE_GATT_SRV_OP_MODIFIED_EVT_ENABLE_FLAG | BLE_GATT_SRV_OP_VALUE_VAR_LENGTH_FLAG,
-  .val_len = CHARWRITE_SIZE,
-  .buffer_len = sizeof(charwrite_val_buffer),
-  .buffer_p = charwrite_val_buffer
+  .val_len = APPTOWD_SIZE,
+  .buffer_len = sizeof(apptowd_val_buffer),
+  .buffer_p = apptowd_val_buffer
 };
 
 uint8_t devicestatus_val_buffer[DEVICESTATUS_SIZE];
@@ -126,8 +126,8 @@ static const ble_gatt_chr_def_t lockservice_chars[] = {
         .properties = BLE_GATT_SRV_CHAR_PROP_WRITE,
         .permissions = BLE_GATT_SRV_PERM_NONE,
         .min_key_size = 0x10,
-        .uuid = BLE_UUID_INIT_128(CHARWRITE_UUID),
-        .val_buffer_p = &charwrite_val_buffer_def
+        .uuid = BLE_UUID_INIT_128(APPTOWD_UUID),
+        .val_buffer_p = &apptowd_val_buffer_def
     },
 	{
         .properties = BLE_GATT_SRV_CHAR_PROP_NOTIFY,
@@ -226,16 +226,16 @@ static BLEEVT_EvtAckStatus_t LOCKSERVICE_EventHandler(aci_blecore_event *p_evt)
         }
       }  /* if(p_attribute_modified->Attr_Handle == (LOCKSERVICE_Context.DevicestatusCharHdle + CHARACTERISTIC_DESCRIPTOR_ATTRIBUTE_OFFSET))*/
 
-      else if(p_attribute_modified->Attr_Handle == (LOCKSERVICE_Context.CharwriteCharHdle + CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET))
+      else if(p_attribute_modified->Attr_Handle == (LOCKSERVICE_Context.ApptowdCharHdle + CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET))
       {
         return_value = BLEEVT_Ack;
 
-        notification.EvtOpcode = LOCKSERVICE_CHARWRITE_WRITE_EVT;
+        notification.EvtOpcode = LOCKSERVICE_APPTOWD_WRITE_EVT;
         /* USER CODE BEGIN Service1_Char_1_ACI_GATT_ATTRIBUTE_MODIFIED_VSEVT_CODE */
 
         /* USER CODE END Service1_Char_1_ACI_GATT_ATTRIBUTE_MODIFIED_VSEVT_CODE */
         LOCKSERVICE_Notification(&notification);
-      } /* if(p_attribute_modified->Attr_Handle == (LOCKSERVICE_Context.CharwriteCharHdle + CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET))*/
+      } /* if(p_attribute_modified->Attr_Handle == (LOCKSERVICE_Context.ApptowdCharHdle + CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET))*/
 
       /* USER CODE BEGIN EVT_BLUE_GATT_ATTRIBUTE_MODIFIED_END */
 
@@ -336,7 +336,7 @@ void LOCKSERVICE_Init(void)
   }
 
   LOCKSERVICE_Context.LockserviceSvcHdle = aci_gatt_srv_get_service_handle((ble_gatt_srv_def_t *) &lockservice_service);
-  LOCKSERVICE_Context.CharwriteCharHdle = aci_gatt_srv_get_char_decl_handle((ble_gatt_chr_def_t *)&lockservice_chars[0]);
+  LOCKSERVICE_Context.ApptowdCharHdle = aci_gatt_srv_get_char_decl_handle((ble_gatt_chr_def_t *)&lockservice_chars[0]);
   LOCKSERVICE_Context.DevicestatusCharHdle = aci_gatt_srv_get_char_decl_handle((ble_gatt_chr_def_t *)&lockservice_chars[1]);
 
   /* USER CODE BEGIN InitService1Svc_2 */
@@ -367,8 +367,8 @@ tBleStatus LOCKSERVICE_UpdateValue(LOCKSERVICE_CharOpcode_t CharOpcode, LOCKSERV
 
   switch(CharOpcode)
   {
-    case LOCKSERVICE_CHARWRITE:
-      memcpy(charwrite_val_buffer, pData->p_Payload, MIN(pData->Length, sizeof(charwrite_val_buffer)));
+    case LOCKSERVICE_APPTOWD:
+      memcpy(apptowd_val_buffer, pData->p_Payload, MIN(pData->Length, sizeof(apptowd_val_buffer)));
       /* USER CODE BEGIN Service1_Char_Value_1*/
 
       /* USER CODE END Service1_Char_Value_1*/

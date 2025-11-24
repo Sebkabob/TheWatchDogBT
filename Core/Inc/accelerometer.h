@@ -48,6 +48,7 @@ int32_t LIS2DUX12_Init(void);
  * @return 1 if motion was detected, 0 otherwise
  * @note This is the main function to use in your application loop
  */
+void LIS2DUX12_ClearMotion(void);
 uint8_t LIS2DUX12_IsMotionDetected(void);
 
 /**

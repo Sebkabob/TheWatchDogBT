@@ -676,7 +676,7 @@ BQ25186_Status_t BQ25186_Set2xTimerEnable(BQ25186_Handle_t *handle, bool enable)
  * @brief Set watchdog timer
  *
  * @param handle Pointer to device handle
- * @param watchdog Watchdog timer setting
+ * @param Watchdog timer setting
  * @return BQ25186_Status_t Status code
  */
 BQ25186_Status_t BQ25186_SetWatchdog(BQ25186_Handle_t *handle,

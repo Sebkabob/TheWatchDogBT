@@ -8,9 +8,6 @@ static BQ25186_Handle_t bq25186_handle;
 // External variable for battery percentage
 extern uint8_t deviceBattery;
 
-// Static variable to track last update time
-static uint32_t last_soc_update = 0;
-
 // I2C wrapper functions for the driver
 static int BQ25186_I2C_Write(uint8_t dev_addr, uint8_t reg_addr, uint8_t *data, uint16_t len) {
     // Implement using your I2C peripheral (e.g., hi2c1)
@@ -49,8 +46,9 @@ void Battery_Init(void) {
 
     // Configure default charging parameters
     BQ25186_SetBatteryVoltage(&bq25186_handle, 4150);  // 4.15V
-    BQ25186_SetChargeCurrent(&bq25186_handle, 500);     // 500mA
-    BQ25186_SetInputCurrentLimit(&bq25186_handle, BQ25186_ILIM_500MA);
+    BQ25186_SetChargeCurrent(&bq25186_handle, 300);     // 300mA
+    BQ25186_SetInputCurrentLimit(&bq25186_handle, BQ25186_ILIM_300MA);
+    BQ25186_SetWatchdog(&bq25186_handle, BQ25186_WATCHDOG_DISABLED); // No timeout for charging if no I2C activity
     BQ25186_SetChargeEnable(&bq25186_handle, true);
 
     // Set other parameters as needed

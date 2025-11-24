@@ -45,12 +45,12 @@
 /**
  * Define Tx Power
  */
-#define CFG_TX_POWER                        (0x18) /* 0x18 <=> 0 dBm */
+#define CFG_TX_POWER                        (0x1A) /* 0x1A <=> 1 dBm */
 
 /**
  * Define Advertising parameters
  */
-#define CFG_PUBLIC_BD_ADDRESS               (0x0008E12A1234)
+#define CFG_PUBLIC_BD_ADDRESS               (0x0008E12A1235)
 #define CFG_BD_ADDRESS_TYPE                 HCI_ADDR_PUBLIC
 #define CFG_BLE_PRIVACY_ENABLED             (0)
 

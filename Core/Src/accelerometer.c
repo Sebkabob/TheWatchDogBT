@@ -73,6 +73,10 @@ void HAL_GPIO_EXTI_Callback(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin) {
  * PUBLIC API - Motion Detection
  ***************************************************************************/
 
+void LIS2DUX12_ClearMotion(void) {
+	motion_detected_flag = 0;  // Clear the flag
+}
+
 /**
  * @brief Non-blocking check for motion detection
  * @return 1 if motion was detected since last check, 0 otherwise

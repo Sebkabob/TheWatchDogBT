@@ -74,6 +74,7 @@ void State_Connected_Idle_Loop(){
     // Check if armed bit is set
     if (GET_ARMED_BIT(deviceState)) {
         // Armed - transition to ARMED state
+    	LIS2DUX12_ClearMotion();
         StateMachine_ChangeState(STATE_ARMED);
     } else {
         // Not armed - turn off LED if lights are enabled

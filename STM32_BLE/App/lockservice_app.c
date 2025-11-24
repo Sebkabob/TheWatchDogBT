@@ -103,7 +103,7 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
 
     /* USER CODE END Service1_Notification_Service1_EvtOpcode */
 
-    case LOCKSERVICE_CHARWRITE_WRITE_EVT:
+    case LOCKSERVICE_APPTOWD_WRITE_EVT:
       /* USER CODE BEGIN Service1Char1_WRITE_EVT */
     	LOCKSERVICE_SendStatusUpdate();
     	uint8_t *received_data = p_Notification->DataTransfered.p_Payload;

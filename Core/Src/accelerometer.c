@@ -64,8 +64,11 @@ void HAL_GPIO_EXTI_Callback(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin) {
         lis2dux12_all_sources_get(&dev_ctx, &all_sources);
 
         if (all_sources.wake_up) {
-            motion_detected_flag = 1;  // Set flag for application polling
+            motion_detected_flag = 1;
         }
+
+        // Clear EXTI after reading sensor
+        __HAL_GPIO_EXTI_CLEAR_IT(GPIOB, GPIO_PIN_0);
     }
 }
 
@@ -168,7 +171,7 @@ int32_t LIS2DUX12_Init(void) {
 
     // Configure interrupt as latched (stays high until cleared)
     lis2dux12_int_config_t int_cfg = {
-        .int_cfg = LIS2DUX12_INT_LATCHED,
+        .int_cfg = LIS2DUX12_DRDY_PULSED,
         .dis_rst_lir_all_int = 0,
         .sleep_status_on_int = 0
     };
@@ -178,6 +181,30 @@ int32_t LIS2DUX12_Init(void) {
     }
 
     return 0;  // Success
+}
+
+void LIS2DUX12_QuickReinit(void) {
+    // Just reinitialize I2C context
+    dev_ctx.write_reg = platform_write;
+    dev_ctx.read_reg = platform_read;
+    dev_ctx.handle = &hi2c1;
+
+    // Verify sensor is responsive (optional, but good for debugging)
+    uint8_t whoami = 0;
+    lis2dux12_device_id_get(&dev_ctx, &whoami);
+
+    // If sensor not responding, might need full reinit
+    if (whoami != 0x47) {
+        LIS2DUX12_Init();  // Fall back to full init
+    } else {
+        // Make sure interrupt is configured as pulsed
+        lis2dux12_int_config_t int_cfg = {
+            .int_cfg = LIS2DUX12_DRDY_PULSED,  // ← ADD THIS
+            .dis_rst_lir_all_int = 0,
+            .sleep_status_on_int = 0
+        };
+        lis2dux12_int_config_set(&dev_ctx, &int_cfg);
+    }
 }
 
 /***************************************************************************

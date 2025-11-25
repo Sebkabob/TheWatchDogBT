@@ -58,6 +58,34 @@ void StateMachine_Init(void)
     deviceInfo = 0;
 }
 
+// Add to state_machine.c at the top with other static variables:
+static uint32_t lastActivityTime = 0;
+#define INACTIVITY_TIMEOUT_MS  10000  // 10 seconds
+
+// Add this function:
+void StateMachine_UpdateActivity(void) {
+    lastActivityTime = HAL_GetTick();
+}
+
+// Add this function to check for timeout:
+void StateMachine_CheckInactivityTimeout(void) {
+    // Don't timeout if we're armed or in alarm
+    if (currentState == STATE_ALARM_ACTIVE) {
+        return;
+    }
+
+    // Don't timeout if charging
+    if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3) == 0) {
+        lastActivityTime = HAL_GetTick();  // Reset timer while charging
+        return;
+    }
+
+    // Check if 10 seconds have passed
+    if ((HAL_GetTick() - lastActivityTime) >= INACTIVITY_TIMEOUT_MS) {
+        StateMachine_ChangeState(STATE_SLEEP);
+    }
+}
+
 /***************************************************************************
  * No Bluetooth connection. Awaiting connection or it will go back to sleep.
  ***************************************************************************/
@@ -71,9 +99,11 @@ void State_Disconnected_Idle_Loop(){
  * -out device will go back to sleep.
  ***************************************************************************/
 void State_Connected_Idle_Loop(){
+	StateMachine_CheckInactivityTimeout();
     // Check if armed bit is set
     if (GET_ARMED_BIT(deviceState)) {
         // Armed - transition to ARMED state
+    	StateMachine_UpdateActivity();  // Reset the timer
     	LIS2DUX12_ClearMotion();
         StateMachine_ChangeState(STATE_ARMED);
     } else {
@@ -91,6 +121,7 @@ void State_Connected_Idle_Loop(){
  * Motion events should be logged in the alarm state
  ***************************************************************************/
 void State_Armed_Loop(){
+	StateMachine_CheckInactivityTimeout();
     // Check if iOS sent a disarm command
     if (!GET_ARMED_BIT(deviceState)) {
         // Disarmed - go back to idle
@@ -126,9 +157,7 @@ void State_Armed_Loop(){
  * exiting loop, should transition to last state??
  ***************************************************************************/
 void State_Sleep_Loop(){
-    // Get ready to go to sleep
-    // Sleep
-    // Re-init everything to be awake
+    Enter_Sleep_Mode_Optimized();
 }
 
 /***************************************************************************

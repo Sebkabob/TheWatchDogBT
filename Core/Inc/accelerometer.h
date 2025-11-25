@@ -40,6 +40,7 @@ extern I2C_HandleTypeDef hi2c1;  // Add this line!
  * @return 0 on success, -1 on error
  */
 int32_t LIS2DUX12_Init(void);
+void LIS2DUX12_QuickReinit(void);
 
 /**
  * @brief Non-blocking check for motion detection

@@ -98,9 +98,20 @@ void Enter_Sleep_Mode_Optimized(void) {
 
 void Reinitialize_Peripherals_After_Wakeup(void)
 {
-    MX_GPIO_Init();
+    MX_GPIO_Init();  // Re-enables EXTI!
     MX_I2C1_Init();
     MX_TIM2_Init();
+    MX_RNG_Init();
+    MX_PKA_Init();
+    MX_RADIO_Init();
+    MX_RADIO_TIMER_Init();
+    MX_APPE_Init(NULL);  // Reinit BLE!
+
+    LIS2DUX12_Init();
+    Battery_Init();
+
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
 }
 /* USER CODE END 0 */
 
@@ -157,7 +168,6 @@ int main(void)
 	  playTone(600,50);
 	  HAL_Delay(15000);
   } else {
-	  Enter_Sleep_Mode_Optimized();
   }
   /* USER CODE END 2 */
 
@@ -174,6 +184,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     StateMachine_Run();
+
   }
   /* USER CODE END 3 */
 }

@@ -7,6 +7,8 @@
 
 #include "main.h"
 #include "battery.h"
+#include "accelerometer.h"
+#include "lis2dux12_reg.h"
 #include "lis2dux12_reg.h"
 #include "app_ble.h"
 
@@ -20,10 +22,6 @@ void SystemClock_Config(void);
 
 /* Forward declarations of wrapper functions (to be added in main.c) */
 void Reinitialize_Peripherals_After_Wakeup(void);
-
-/* Forward declarations of functions from accelerometer.c */
-void LIS2DUX12_Init(void);
-void LIS2DUX12_ClearAllInterrupts(void);
 
 /**
  * @brief Configure all GPIO pins for lowest power consumption
@@ -225,13 +223,24 @@ void Wakeup_System_Init(void)
     SystemClock_Config();
 
     /* Reinitialize all peripherals using wrapper function in main.c */
+    /* This also reinitializes I2C, RADIO, BLE, etc. */
     Reinitialize_Peripherals_After_Wakeup();
 
-    /* Reinitialize sensor */
-    LIS2DUX12_Init();
+    /* IMPORTANT: Wait a bit for I2C to stabilize after reinit */
+    HAL_Delay(10);
 
-    /* Clear sensor interrupts that triggered wakeup */
+    /* Clear accelerometer interrupts - I2C is ready now */
     LIS2DUX12_ClearAllInterrupts();
+
+    /* Reinitialize sensor context */
+    LIS2DUX12_QuickReinit();
+
+    /* Clear the EXTI line and motion flag */
+    __HAL_GPIO_EXTI_CLEAR_IT(GPIOB, GPIO_PIN_0);
+    LIS2DUX12_ClearMotion();
+
+    /* Re-enable EXTI interrupt */
+    HAL_NVIC_EnableIRQ(GPIOB_IRQn);
 }
 
 /**

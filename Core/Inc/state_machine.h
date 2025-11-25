@@ -18,6 +18,8 @@ extern volatile SystemState_t currentState;
 extern volatile uint8_t deviceState;
 extern volatile uint8_t deviceBattery;
 
+void Enter_Sleep_Mode_Optimized(void);
+
 // Function prototypes
 void StateMachine_Init(void);
 void StateMachine_Run(void);

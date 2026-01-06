@@ -45,26 +45,26 @@
 /**
  * Define Tx Power
  */
-#define CFG_TX_POWER                        (0x1C) /* 0x1C <=> 8 dBm */
+#define CFG_TX_POWER                        (0x1F) /* 0x1F <=> 8 dBm */
 
 /**
  * Define Advertising parameters
  */
-#define CFG_PUBLIC_BD_ADDRESS               (0x0008E12A1234)
+#define CFG_PUBLIC_BD_ADDRESS               (0xF1D000000006)
 #define CFG_BD_ADDRESS_TYPE                 HCI_ADDR_PUBLIC
 #define CFG_BLE_PRIVACY_ENABLED             (0)
 
-#define ADV_INTERVAL_MIN                    (0x0080)
-#define ADV_INTERVAL_MAX                    (0x00A0)
-#define ADV_LP_INTERVAL_MIN                 (0x0640)
-#define ADV_LP_INTERVAL_MAX                 (0x0FA0)
+#define ADV_INTERVAL_MIN                    (0x0100)
+#define ADV_INTERVAL_MAX                    (0x0200)
+#define ADV_LP_INTERVAL_MIN                 (0x0140)
+#define ADV_LP_INTERVAL_MAX                 (0x0280)
 #define ADV_TYPE                            (HCI_ADV_EVENT_PROP_LEGACY|HCI_ADV_EVENT_PROP_CONNECTABLE|HCI_ADV_EVENT_PROP_SCANNABLE)
-#define ADV_FILTER                          HCI_ADV_FILTER_NONE
+#define ADV_FILTER                          HCI_ADV_FILTER_ACCEPT_LIST_CONNECT
 
 /**
  * Define IO Authentication
  */
-#define CFG_BONDING_MODE                    (0)
+#define CFG_BONDING_MODE                    (1)
 #define CFG_FIXED_PIN                       (111111)
 #define CFG_ENCRYPTION_KEY_SIZE_MAX         (16)
 #define CFG_ENCRYPTION_KEY_SIZE_MIN         (8)
@@ -103,6 +103,7 @@
 
 /* USER CODE BEGIN Specific_Parameters */
 
+
 /* USER CODE END Specific_Parameters */
 
 /******************************************************************************
@@ -120,7 +121,7 @@
  * Maximum number of attributes that can be stored in the GATT database in addition to the attributes number already defined for the GATT and GAP services
  * (BLE_STACK_NUM_GATT_MANDATORY_ATTRIBUTES value on STM32_BLE middleware, ble_stack.h header file).
  */
-#define CFG_BLE_NUM_GATT_ATTRIBUTES                     (0)
+#define CFG_BLE_NUM_GATT_ATTRIBUTES                     (20)
 
 /**
  * Maximum number of concurrent Client's Procedures. This value must be less

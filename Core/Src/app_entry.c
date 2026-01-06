@@ -153,7 +153,6 @@ static PowerSaveLevels App_PowerSaveLevel_Check(void)
 void MX_APPE_Process(void)
 {
   /* USER CODE BEGIN MX_APPE_Process_1 */
-
   /* USER CODE END MX_APPE_Process_1 */
   UTIL_SEQ_Run(UTIL_SEQ_DEFAULT);
   /* USER CODE BEGIN MX_APPE_Process_2 */

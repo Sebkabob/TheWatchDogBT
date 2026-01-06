@@ -33,6 +33,8 @@
 #include "blenvm.h"
 #include "pka_manager.h"
 #include "stm32_seq.h"
+#include "lockservice.h"
+#include "lockservice_app.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
@@ -149,6 +151,8 @@ NO_INIT(uint32_t dyn_alloc_a[BLE_DYN_ALLOC_SIZE>>2]);
 
 static BleApplicationContext_t bleAppContext;
 
+LOCKSERVICE_APP_ConnHandleNotEvt_t LOCKSERVICEHandleNotification;
+
 static const char a_GapDeviceName[] = {  'W', 'a', 't', 'c', 'h', 'D', 'o', 'g' }; /* Gap Device Name */
 
 /**
@@ -158,7 +162,8 @@ uint8_t a_AdvData[] =
 {
   2, AD_TYPE_FLAGS, FLAG_BIT_LE_GENERAL_DISCOVERABLE_MODE|FLAG_BIT_BR_EDR_NOT_SUPPORTED,
   9, AD_TYPE_COMPLETE_LOCAL_NAME, 'W', 'a', 't', 'c', 'h', 'D', 'o', 'g',  /* Complete name */
-  15, AD_TYPE_MANUFACTURER_SPECIFIC_DATA, 0x30, 0x00, 0x00 /*  */, 0x00 /*  */, 0x00 /*  */, 0x00 /*  */, 0x00 /*  */, 0x00 /*  */, 0x00 /*  */, 0x00 /*  */, 0x00 /*  */, 0x00 /*  */, 0x00 /*  */, 0x00 /*  */,
+  3, AD_TYPE_16_BIT_SERV_UUID_CMPLT_LIST, 0x3E, 0x18,
+  11, AD_TYPE_MANUFACTURER_SPECIFIC_DATA, 0xFF, 0xFF, 0x53 /*  */, 0x65 /*  */, 0x62 /*  */, 0x6B /*  */, 0x61 /*  */, 0x62 /*  */, 0x6F /*  */, 0x62 /*  */,
 };
 
 /* USER CODE BEGIN PV */
@@ -512,6 +517,11 @@ void APP_BLE_Init(void)
   /**
   * Initialize Services and Characteristics.
   */
+  APP_DBG_MSG("\n");
+  APP_DBG_MSG("Services and Characteristics creation\n");
+  LOCKSERVICE_APP_Init();
+  APP_DBG_MSG("End of Services and Characteristics creation\n");
+  APP_DBG_MSG("\n");
 
   /* USER CODE BEGIN APP_BLE_Init_3 */
 
@@ -580,6 +590,9 @@ void BLEEVT_App_Notification(const hci_pckt *hci_pckt)
       /* USER CODE BEGIN EVT_DISCONN_COMPLETE_1 */
 
       /* USER CODE END EVT_DISCONN_COMPLETE_1 */
+      LOCKSERVICEHandleNotification.EvtOpcode = LOCKSERVICE_DISCON_HANDLE_EVT;
+      LOCKSERVICEHandleNotification.ConnectionHandle = p_disconnection_complete_event->Connection_Handle;
+      LOCKSERVICE_APP_EvtRx(&LOCKSERVICEHandleNotification);
       /* USER CODE BEGIN EVT_DISCONN_COMPLETE */
       APP_BLE_Procedure_Gap_Peripheral(PROC_GAP_PERIPH_ADVERTISE_START_FAST);
       /* USER CODE END EVT_DISCONN_COMPLETE */
@@ -828,6 +841,7 @@ static void connection_complete_event(uint8_t Status,
   }
   /* USER CODE BEGIN HCI_EVT_LE_CONN_COMPLETE_1 */
 
+
   /* USER CODE END HCI_EVT_LE_CONN_COMPLETE_1 */
   APP_DBG_MSG(">>== hci_le_connection_complete_event - Connection handle: 0x%04X\n", Connection_Handle);
   APP_DBG_MSG("     - Connection established with @:%02x:%02x:%02x:%02x:%02x:%02x\n",
@@ -855,6 +869,10 @@ static void connection_complete_event(uint8_t Status,
     bleAppContext.Device_Connection_Status = APP_BLE_CONNECTED_SERVER;
   }
   bleAppContext.BleApplicationContext_legacy.connectionHandle = Connection_Handle;
+
+  LOCKSERVICEHandleNotification.EvtOpcode = LOCKSERVICE_CONN_HANDLE_EVT;
+  LOCKSERVICEHandleNotification.ConnectionHandle = Connection_Handle;
+  LOCKSERVICE_APP_EvtRx(&LOCKSERVICEHandleNotification);
 
   /* USER CODE BEGIN HCI_EVT_LE_CONN_COMPLETE */
 

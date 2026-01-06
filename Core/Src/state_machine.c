@@ -99,13 +99,11 @@ void State_Disconnected_Idle_Loop(){
  * -out device will go back to sleep.
  ***************************************************************************/
 void State_Connected_Idle_Loop(){
-	StateMachine_CheckInactivityTimeout();
     // Check if armed bit is set
     if (GET_ARMED_BIT(deviceState)) {
         // Armed - transition to ARMED state
-    	StateMachine_UpdateActivity();  // Reset the timer
     	LIS2DUX12_ClearMotion();
-        StateMachine_ChangeState(STATE_ARMED);
+        StateMachine_ChangeState(STATE_LOCKED);
     } else {
         // Not armed - turn off LED if lights are enabled
         if (GET_LIGHTS_BIT(deviceState)) {
@@ -120,8 +118,7 @@ void State_Connected_Idle_Loop(){
  * Device is Armed. Movement should trigger the alarm unless it is disabled.
  * Motion events should be logged in the alarm state
  ***************************************************************************/
-void State_Armed_Loop(){
-	StateMachine_CheckInactivityTimeout();
+void State_Locked_Loop(){
     // Check if iOS sent a disarm command
     if (!GET_ARMED_BIT(deviceState)) {
         // Disarmed - go back to idle
@@ -214,7 +211,7 @@ void State_Alarm_Active_Loop(){
     }
 
     // After alarm plays, go back to armed state
-    StateMachine_ChangeState(STATE_ARMED);
+    StateMachine_ChangeState(STATE_LOCKED);
 }
 
 void StateMachine_ChangeState(SystemState_t newState)
@@ -225,7 +222,7 @@ void StateMachine_ChangeState(SystemState_t newState)
         stateEntryTime = HAL_GetTick();
 
         // Update armed bit in deviceState based on new state
-        if (newState == STATE_ARMED || newState == STATE_ALARM_ACTIVE) {
+        if (newState == STATE_LOCKED || newState == STATE_ALARM_ACTIVE) {
             SET_ARMED_BIT(deviceState, 1);
         } else {
             SET_ARMED_BIT(deviceState, 0);
@@ -264,8 +261,8 @@ void StateMachine_Run(void)
             State_Connected_Idle_Loop();
             break;
 
-        case STATE_ARMED:
-            State_Armed_Loop();
+        case STATE_LOCKED:
+            State_Locked_Loop();
             break;
 
         case STATE_SLEEP:

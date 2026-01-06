@@ -166,8 +166,12 @@ int main(void)
 	  playTone(400,20);
 	  playTone(500,30);
 	  playTone(600,50);
-	  HAL_Delay(15000);
+	  while(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0);
+	  playTone(600,50);
+	  playTone(500,30);
+	  playTone(400,20);
   } else {
+	  //Enter_Sleep_Mode_Optimized();
   }
   /* USER CODE END 2 */
 

@@ -65,6 +65,8 @@ void HAL_GPIO_EXTI_Callback(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin) {
 
         if (all_sources.wake_up) {
             motion_detected_flag = 1;
+        } else {
+        	motion_detected_flag = 1; //TEMP
         }
 
         // Clear EXTI after reading sensor

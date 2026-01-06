@@ -166,9 +166,9 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification)
       /* USER CODE BEGIN Service1_APP_DISCON_HANDLE_EVT */
       playTone(880,10);
       HAL_Delay(10);
-      playTone(780,15);
+      playTone(780,12);
       HAL_Delay(10);
-      playTone(700,20);
+      playTone(700,15);
       /* USER CODE END Service1_APP_DISCON_HANDLE_EVT */
       break;
 

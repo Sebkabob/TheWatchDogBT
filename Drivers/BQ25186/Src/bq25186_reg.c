@@ -56,15 +56,6 @@ static uint8_t BQ25186_CalculateVbatRegCode(uint16_t voltage_mv)
         return 115;  // Maximum code (4.65V)
     }
 }
-
-/**
- * @brief Calculate voltage in mV from VBATREG register code
- */
-static uint16_t BQ25186_CalculateVoltageFromCode(uint8_t code)
-{
-    return (uint16_t)(3500 + (code * 10));
-}
-
 /* ========================================================================== */
 /*                           Public Functions                                  */
 /* ========================================================================== */

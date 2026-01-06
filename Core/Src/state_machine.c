@@ -49,7 +49,7 @@ void StateMachine_Init(void)
     // Armed=0, Alarm=Normal(0b10), Sensitivity=Medium(0b01), Lights=On, Logging=Off
     deviceState = 0;
     SET_ARMED_BIT(deviceState, 0);           // Bit 0: Not armed
-    SET_ALARM_TYPE(deviceState, ALARM_NORMAL); // Bits 1-2: Normal alarm
+    SET_ALARM_TYPE(deviceState, ALARM_CALM); // Bits 1-2: Normal alarm
     SET_SENSITIVITY(deviceState, SENSITIVITY_MEDIUM); // Bits 3-4: Medium sensitivity
     SET_LIGHTS_BIT(deviceState, 1);          // Bit 5: Lights on
     SET_LOGGING_BIT(deviceState, 0);         // Bit 6: Logging off
@@ -134,7 +134,8 @@ void State_Locked_Loop(){
     }
 
     // Check for motion detection using accelerometer
-    if (LIS2DUX12_IsMotionDetected()) {
+    //if (LIS2DUX12_IsMotionDetected()) {
+    if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0) == GPIO_PIN_SET) {
         // Log motion event if logging is enabled
         if (GET_LOGGING_BIT(deviceState)) {
             // TODO: Log to EEPROM with timestamp

@@ -60,14 +60,14 @@ void firstBootTone(){
 }
 
 void SOUND_CalmAlarm(){
-    playTone(415, 300);
+    playTone(415, 20);
     HAL_Delay(15);
-    playTone(349, 300);
+    playTone(349, 20);
     HAL_Delay(15);
-    playTone(415, 300);
+    playTone(415, 20);
     HAL_Delay(15);
-    playTone(349, 300);
-    HAL_Delay(15);
+    playTone(349, 20);
+    HAL_Delay(200);
 }
 
 void SOUND_NormalAlarm(){

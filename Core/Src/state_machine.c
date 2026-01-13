@@ -103,6 +103,7 @@ void State_Connected_Idle_Loop(){
     if (GET_ARMED_BIT(deviceState)) {
         // Armed - transition to ARMED state
     	LIS2DUX12_ClearMotion();
+    	//Acceleromter Register Update Function Goes Here
         StateMachine_ChangeState(STATE_LOCKED);
     } else {
         // Not armed - turn off LED if lights are enabled
@@ -137,8 +138,10 @@ void State_Locked_Loop(){
     //if (LIS2DUX12_IsMotionDetected()) {
     if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0) == GPIO_PIN_SET) {
         // Log motion event if logging is enabled
-        if (GET_LOGGING_BIT(deviceState)) {
-            // TODO: Log to EEPROM with timestamp
+    	// (motion analysis function to progress)
+        if (!MotionLogger_LogEvent(1)) {
+            // Buffer full - could send notification to iOS or clear old events
+            // For now, just continue (circular buffer will overwrite oldest)
         }
 
         // Trigger alarm

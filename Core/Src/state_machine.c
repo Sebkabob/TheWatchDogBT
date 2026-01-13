@@ -4,6 +4,7 @@
 #include "battery.h"
 #include "lockservice_app.h"
 #include "accelerometer.h"
+#include "motion_logger.h"
 
 // Global state variables
 volatile SystemState_t currentState = STATE_CONNECTED_IDLE;
@@ -52,7 +53,7 @@ void StateMachine_Init(void)
     SET_ALARM_TYPE(deviceState, ALARM_CALM); // Bits 1-2: Normal alarm
     SET_SENSITIVITY(deviceState, SENSITIVITY_MEDIUM); // Bits 3-4: Medium sensitivity
     SET_LIGHTS_BIT(deviceState, 1);          // Bit 5: Lights on
-    SET_LOGGING_BIT(deviceState, 0);         // Bit 6: Logging off
+    SET_LOGGING_BIT(deviceState, 1);         // Bit 6: Logging on
 
     // Initialize deviceInfo (for future use)
     deviceInfo = 0;
@@ -139,10 +140,9 @@ void State_Locked_Loop(){
     if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0) == GPIO_PIN_SET) {
         // Log motion event if logging is enabled
     	// (motion analysis function to progress)
-        if (!MotionLogger_LogEvent(1)) {
-            // Buffer full - could send notification to iOS or clear old events
-            // For now, just continue (circular buffer will overwrite oldest)
-        }
+    	if (GET_LOGGING_BIT(deviceState)) {
+    	    MotionLogger_LogEvent(1);  // 1 = MOTION_TYPE_SMALL
+    	}
 
         // Trigger alarm
         StateMachine_ChangeState(STATE_ALARM_ACTIVE);

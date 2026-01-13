@@ -158,6 +158,7 @@ int main(void)
   MX_RADIO_TIMER_Init();
   MX_RTC_Init();
   /* USER CODE BEGIN 2 */
+  MotionLogger_Init(&hrtc);  // Pass your RTC handle
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   firstBootTone();
@@ -167,9 +168,9 @@ int main(void)
 
   // Safe boot mode in case of sleep loop
   if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0){
-	  playTone(400,20);
-	  playTone(500,30);
-	  playTone(600,50);
+	  playTone(200,20);
+	  playTone(300,30);
+	  playTone(400,50);
 	  while(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0);
 	  playTone(600,50);
 	  playTone(500,30);
@@ -459,7 +460,7 @@ static void MX_RTC_Init(void)
 
   /** Initialize RTC and set the Time and Date
   */
-  sTime.Hours = 0x10;
+  sTime.Hours = 0x11;
   sTime.Minutes = 0x25;
   sTime.Seconds = 0x0;
   sTime.SubSeconds = 0x0;
@@ -472,7 +473,7 @@ static void MX_RTC_Init(void)
   sDate.WeekDay = RTC_WEEKDAY_MONDAY;
   sDate.Month = RTC_MONTH_JANUARY;
   sDate.Date = 0x13;
-  sDate.Year = 0x0;
+  sDate.Year = 0x26;
 
   if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BCD) != HAL_OK)
   {

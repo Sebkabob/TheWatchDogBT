@@ -92,6 +92,60 @@ static uint8_t transferInProgress = 0;
 static void LOCKSERVICE_Devicestatus_SendNotification(void);
 
 /* USER CODE BEGIN PFP */
+/**
+ * @brief Send motion alert notification to iOS
+ * This triggers iOS to auto-sync
+ */
+void LOCKSERVICE_SendMotionAlert(void)
+{
+    if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
+        return;
+    }
+
+    // Send special alert byte: 0xFF
+    a_LOCKSERVICE_UpdateCharData[0] = 0xFF;  // Motion alert marker
+    a_LOCKSERVICE_UpdateCharData[1] = deviceBattery;
+
+    LOCKSERVICE_Data_t lockservice_notification_data;
+    lockservice_notification_data.p_Payload = (uint8_t*)a_LOCKSERVICE_UpdateCharData;
+    lockservice_notification_data.Length = 2;
+
+    LOCKSERVICE_NotifyValue(LOCKSERVICE_DEVICESTATUS, &lockservice_notification_data,
+                           LOCKSERVICE_APP_Context.ConnectionHandle);
+
+    printf("🚨 Motion alert sent to iOS\n");
+}
+
+/**
+ * @brief Update RTC from iOS timestamp
+ * @param data Pointer to timestamp data (6 bytes: year, month, day, hour, minute, second)
+ */
+static void UpdateRTCFromiOS(uint8_t *timestamp_data)
+{
+    extern RTC_HandleTypeDef hrtc;  // Make sure hrtc is accessible
+
+    RTC_TimeTypeDef sTime = {0};
+    RTC_DateTypeDef sDate = {0};
+
+    // Extract timestamp from last 6 bytes
+    sDate.Year = timestamp_data[0];   // Year offset from 2000
+    sDate.Month = timestamp_data[1];
+    sDate.Date = timestamp_data[2];
+    sTime.Hours = timestamp_data[3];
+    sTime.Minutes = timestamp_data[4];
+    sTime.Seconds = timestamp_data[5];
+
+    // Set weekday (calculate or just use Monday)
+    sDate.WeekDay = RTC_WEEKDAY_MONDAY;
+
+    // Update RTC
+    HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+    HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+
+    printf("⏰ RTC updated: 20%02d-%02d-%02d %02d:%02d:%02d\n",
+           sDate.Year, sDate.Month, sDate.Date,
+           sTime.Hours, sTime.Minutes, sTime.Seconds);
+}
 
 /**
  * @brief Send event count to iOS
@@ -204,45 +258,46 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
 
         if(data_length > 0)
         {
-          uint8_t command = received_data[0];
+            // Extract timestamp from last 6 bytes (if present)
+            if (data_length >= 7) {
+                UpdateRTCFromiOS(&received_data[data_length - 6]);
+            }
 
-          switch(command) {
-            case CMD_REQUEST_LOG_COUNT:
-              // iOS requesting total event count
-              transferInProgress = 1;
-              currentEventIndex = 0;
-              LOCKSERVICE_SendEventCount();
-              break;
+            // Now process the command (first byte, or first N bytes before timestamp)
+            uint8_t command = received_data[0];
 
-            case CMD_REQUEST_EVENT:
-              // iOS requesting specific event
-              if (data_length >= 3) {
-                uint16_t requestedIndex = ((uint16_t)received_data[1] << 8) | received_data[2];
-                LOCKSERVICE_SendEvent(requestedIndex);
-              }
-              break;
+            switch(command) {
+                case CMD_REQUEST_LOG_COUNT:
+                    transferInProgress = 1;
+                    currentEventIndex = 0;
+                    LOCKSERVICE_SendEventCount();
+                    break;
 
-            case CMD_ACK_EVENT:
-              // iOS acknowledged receiving event
-              // This can be used for flow control if needed
-              // For now, just wait for next request
-              break;
+                case CMD_REQUEST_EVENT:
+                    if (data_length >= 3) {
+                        uint16_t requestedIndex = ((uint16_t)received_data[1] << 8) | received_data[2];
+                        LOCKSERVICE_SendEvent(requestedIndex);
+                    }
+                    break;
 
-            case CMD_CLEAR_LOG:
-              // iOS requesting to clear log
-              MotionLogger_Clear();
-              transferInProgress = 0;
-              currentEventIndex = 0;
-              LOCKSERVICE_SendLogCleared();
-              break;
+                case CMD_ACK_EVENT:
+                    // iOS acknowledged receiving event
+                    break;
 
-            default:
-              // Regular device state update
-              deviceState = received_data[0];
-              HAL_Delay(5);
-              LOCKSERVICE_ForceStatusUpdate();
-              break;
-          }
+                case CMD_CLEAR_LOG:
+                    MotionLogger_Clear();
+                    transferInProgress = 0;
+                    currentEventIndex = 0;
+                    LOCKSERVICE_SendLogCleared();
+                    break;
+
+                default:
+                    // Regular device state update
+                    deviceState = received_data[0];
+                    HAL_Delay(5);
+                    LOCKSERVICE_ForceStatusUpdate();
+                    break;
+            }
         }
         break;
       /* USER CODE END Service1Char1_WRITE_EVT */

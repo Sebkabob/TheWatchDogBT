@@ -27,6 +27,7 @@
 #include "accelerometer.h"
 #include "power_management.h"
 #include "sound.h"
+#include "motion_logger.h"
 #include "lights.h"
 #include <string.h>
 #include <stdio.h>
@@ -168,13 +169,10 @@ int main(void)
 
   // Safe boot mode in case of sleep loop
   if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0){
-	  playTone(200,20);
-	  playTone(300,30);
-	  playTone(400,50);
 	  while(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0);
-	  playTone(600,50);
-	  playTone(500,30);
-	  playTone(400,20);
+	  playTone(300,50);
+	  playTone(200,30);
+	  playTone(100,20);
   } else {
 	  //Enter_Sleep_Mode_Optimized();
   }
@@ -461,8 +459,8 @@ static void MX_RTC_Init(void)
   /** Initialize RTC and set the Time and Date
   */
   sTime.Hours = 0x11;
-  sTime.Minutes = 0x25;
-  sTime.Seconds = 0x0;
+  sTime.Minutes = 0x56;
+  sTime.Seconds = 0x30;
   sTime.SubSeconds = 0x0;
   sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
   sTime.StoreOperation = RTC_STOREOPERATION_RESET;
@@ -470,7 +468,7 @@ static void MX_RTC_Init(void)
   {
     Error_Handler();
   }
-  sDate.WeekDay = RTC_WEEKDAY_MONDAY;
+  sDate.WeekDay = RTC_WEEKDAY_TUESDAY;
   sDate.Month = RTC_MONTH_JANUARY;
   sDate.Date = 0x13;
   sDate.Year = 0x26;

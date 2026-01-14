@@ -22,6 +22,7 @@ static uint32_t stateEntryTime = 0;
 #define GET_SENSITIVITY(byte)     (((byte) >> 3) & 0x03)
 #define GET_LIGHTS_BIT(byte)      (((byte) >> 5) & 0x01)
 #define GET_LOGGING_BIT(byte)     (((byte) >> 6) & 0x01)
+#define GET_SILENCE_BIT(byte)     (((byte) >> 7) & 0x01)
 
 // Helper macros to set bits in settings byte
 #define SET_ARMED_BIT(byte, val)       do { if(val) (byte) |= 0x01; else (byte) &= ~0x01; } while(0)
@@ -29,6 +30,7 @@ static uint32_t stateEntryTime = 0;
 #define SET_SENSITIVITY(byte, val)     do { (byte) = ((byte) & ~0x18) | (((val) & 0x03) << 3); } while(0)
 #define SET_LIGHTS_BIT(byte, val)      do { if(val) (byte) |= 0x20; else (byte) &= ~0x20; } while(0)
 #define SET_LOGGING_BIT(byte, val)     do { if(val) (byte) |= 0x40; else (byte) &= ~0x40; } while(0)
+#define SET_SILENCE_BIT(byte, val)     do { if(val) (byte) |= 0x80; else (byte) &= ~0x80; } while(0)
 
 // Alarm type constants (matches iOS AlarmType enum)
 #define ALARM_NONE        0x00
@@ -54,6 +56,7 @@ void StateMachine_Init(void)
     SET_SENSITIVITY(deviceState, SENSITIVITY_MEDIUM); // Bits 3-4: Medium sensitivity
     SET_LIGHTS_BIT(deviceState, 1);          // Bit 5: Lights on
     SET_LOGGING_BIT(deviceState, 1);         // Bit 6: Logging on
+    SET_SILENCE_BIT(deviceState, 1);		 // Bit 7: Silence on
 
     // Initialize deviceInfo (for future use)
     deviceInfo = 0;
@@ -121,10 +124,13 @@ void State_Connected_Idle_Loop(){
  * Motion events should be logged in the alarm state
  ***************************************************************************/
 void State_Locked_Loop(){
+    static uint8_t lastMotionState = GPIO_PIN_RESET;  // Track previous state
+
     // Check if iOS sent a disarm command
     if (!GET_ARMED_BIT(deviceState)) {
         // Disarmed - go back to idle
         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
+        lastMotionState = GPIO_PIN_RESET;  // Reset on disarm
         return;
     }
 
@@ -136,18 +142,30 @@ void State_Locked_Loop(){
     }
 
     // Check for motion detection using accelerometer
-    //if (LIS2DUX12_IsMotionDetected()) {
-    if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0) == GPIO_PIN_SET) {
-        // Log motion event if logging is enabled
-    	// (motion analysis function to progress)
-    	if (GET_LOGGING_BIT(deviceState)) {
-    	    MotionLogger_LogEvent(1);  // 1 = MOTION_TYPE_SMALL
-    	}
+    uint8_t currentMotionState = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0);
 
-        // Trigger alarm
-        StateMachine_ChangeState(STATE_ALARM_ACTIVE);
-        return;
+    // Detect RISING EDGE (transition from LOW to HIGH)
+    if (currentMotionState == GPIO_PIN_SET && lastMotionState == GPIO_PIN_RESET) {
+
+        // Log motion event if logging is enabled (ONCE per rising edge)
+        if (GET_LOGGING_BIT(deviceState)) {
+            MotionLogger_LogEvent(1);  // 1 = MOTION_TYPE_SMALL
+            LOCKSERVICE_SendMotionAlert();  // Send alert ONCE on rising edge
+        }
+
+        // Trigger alarm (if not silenced)
+        if (!GET_SILENCE_BIT(deviceState)){
+            StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+        } else {
+            // If silenced, just wait for motion to stop
+            while(HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0) == GPIO_PIN_SET) {
+                HAL_Delay(10);
+            }
+        }
     }
+
+    // Update last state
+    lastMotionState = currentMotionState;
 
     // eventually time out and go to sleep after n seconds
 }
@@ -241,7 +259,7 @@ void StateMachine_Run(void)
 {
 	static uint8_t previousBattery = 0xFF;  // Initialize to invalid value to force first update
 
-	if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3) == 0) {
+	if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0) {
 		//Battery_IsCharging();
 	    deviceBattery |= 0b10000000;  // Set bit 7
 	    testLED(50);

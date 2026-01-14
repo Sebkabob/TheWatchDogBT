@@ -52,11 +52,11 @@ void playTone(uint32_t frequency_hz, uint32_t duration_ms) {
 }
 
 void firstBootTone(){
-    playTone(260, 10);
+    playTone(160, 10);
     HAL_Delay(15);
-    playTone(330, 20);
+    playTone(230, 20);
     HAL_Delay(15);
-    playTone(392, 30);
+    playTone(292, 30);
 }
 
 void SOUND_CalmAlarm(){

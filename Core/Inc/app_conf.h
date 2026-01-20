@@ -40,17 +40,17 @@
 /**
  * Define Tx Power Mode
  */
-#define CFG_TX_POWER_MODE                   (1) /* Tx high power mode */
+#define CFG_TX_POWER_MODE                   (0) /* Tx normal power mode */
 
 /**
  * Define Tx Power
  */
-#define CFG_TX_POWER                        (0x1F) /* 0x1F <=> 8 dBm */
+#define CFG_TX_POWER                        (0x18) /* 0x18 <=> 0 dBm */
 
 /**
  * Define Advertising parameters
  */
-#define CFG_PUBLIC_BD_ADDRESS               (0xF1D000000014)
+#define CFG_PUBLIC_BD_ADDRESS               (0xF1D000000016)
 #define CFG_BD_ADDRESS_TYPE                 HCI_ADDR_PUBLIC
 #define CFG_BLE_PRIVACY_ENABLED             (0)
 

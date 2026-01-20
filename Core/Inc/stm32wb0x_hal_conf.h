@@ -44,7 +44,7 @@
 #define HAL_RADIO_MODULE_ENABLED
 #define HAL_RADIO_TIMER_MODULE_ENABLED
 #define HAL_RNG_MODULE_ENABLED
-#define HAL_RTC_MODULE_ENABLED
+/*#define HAL_RTC_MODULE_ENABLED   */
 /*#define HAL_SMARTCARD_MODULE_ENABLED   */
 /*#define HAL_SMBUS_MODULE_ENABLED   */
 /*#define HAL_SPI_MODULE_ENABLED   */
@@ -127,7 +127,7 @@
 #endif /* LSE_STARTUP_TIMEOUT */
 
 #if !defined  (LSE_DRIVE_LEVEL)
-#define LSE_DRIVE_LEVEL    RCC_LSEDRIVE_MEDIUMLOW     /*!< Drive level for LSE oscillator. */
+#define LSE_DRIVE_LEVEL    RCC_LSEDRIVE_MEDIUMHIGH     /*!< Drive level for LSE oscillator. */
 #endif /* LSE_DRIVE_LEVEL */
 
 /* ########################### System Configuration ######################### */

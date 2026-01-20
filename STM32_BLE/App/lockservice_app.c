@@ -120,31 +120,17 @@ void LOCKSERVICE_SendMotionAlert(void)
  * @brief Update RTC from iOS timestamp
  * @param data Pointer to timestamp data (6 bytes: year, month, day, hour, minute, second)
  */
-static void UpdateRTCFromiOS(uint8_t *timestamp_data)
+static void UpdateBootTimeFromiOS(uint8_t *timestamp_data)
 {
-    extern RTC_HandleTypeDef hrtc;  // Make sure hrtc is accessible
-
-    RTC_TimeTypeDef sTime = {0};
-    RTC_DateTypeDef sDate = {0};
-
-    // Extract timestamp from last 6 bytes
-    sDate.Year = timestamp_data[0];   // Year offset from 2000
-    sDate.Month = timestamp_data[1];
-    sDate.Date = timestamp_data[2];
-    sTime.Hours = timestamp_data[3];
-    sTime.Minutes = timestamp_data[4];
-    sTime.Seconds = timestamp_data[5];
-
-    // Set weekday (calculate or just use Monday)
-    sDate.WeekDay = RTC_WEEKDAY_MONDAY;
-
-    // Update RTC
-    HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
-    HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
-
-    printf("⏰ RTC updated: 20%02d-%02d-%02d %02d:%02d:%02d\n",
-           sDate.Year, sDate.Month, sDate.Date,
-           sTime.Hours, sTime.Minutes, sTime.Seconds);
+    // Set boot time in motion logger
+    MotionLogger_SetBootTime(
+        timestamp_data[0],  // Year offset from 2000
+        timestamp_data[1],  // Month
+        timestamp_data[2],  // Day
+        timestamp_data[3],  // Hour
+        timestamp_data[4],  // Minute
+        timestamp_data[5]   // Second
+    );
 }
 
 /**
@@ -174,6 +160,11 @@ static void LOCKSERVICE_SendEventCount(void)
  * @brief Send specific event to iOS
  * @param index Event index to send
  */
+
+/**
+ * @brief Send specific event to iOS
+ * @param index Event index to send
+ */
 static void LOCKSERVICE_SendEvent(uint16_t index)
 {
     if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
@@ -197,17 +188,21 @@ static void LOCKSERVICE_SendEvent(uint16_t index)
         return;
     }
 
-    // Pack event data
+    // Convert tick timestamp to real date/time
+    uint8_t year, month, day, hour, minute, second;
+    MotionLogger_TickToDateTime(event->timestamp_ms, &year, &month, &day, &hour, &minute, &second);
+
+    // Pack event data (same format as before)
     uint8_t dataIdx = 0;
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = RESP_EVENT_DATA;
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = (index >> 8) & 0xFF;  // Index high byte
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = index & 0xFF;         // Index low byte
-    a_LOCKSERVICE_UpdateCharData[dataIdx++] = event->date.Year;
-    a_LOCKSERVICE_UpdateCharData[dataIdx++] = event->date.Month;
-    a_LOCKSERVICE_UpdateCharData[dataIdx++] = event->date.Date;
-    a_LOCKSERVICE_UpdateCharData[dataIdx++] = event->time.Hours;
-    a_LOCKSERVICE_UpdateCharData[dataIdx++] = event->time.Minutes;
-    a_LOCKSERVICE_UpdateCharData[dataIdx++] = event->time.Seconds;
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = year;
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = month;
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = day;
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = hour;
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = minute;
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = second;
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = event->motionType;
 
     LOCKSERVICE_Data_t lockservice_notification_data;
@@ -259,9 +254,9 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
         if(data_length > 0)
         {
             // Extract timestamp from last 6 bytes (if present)
-            if (data_length >= 7) {
-                UpdateRTCFromiOS(&received_data[data_length - 6]);
-            }
+        	if (data_length >= 7) {
+        	    UpdateBootTimeFromiOS(&received_data[data_length - 6]);
+        	}
 
             // Now process the command (first byte, or first N bytes before timestamp)
             uint8_t command = received_data[0];

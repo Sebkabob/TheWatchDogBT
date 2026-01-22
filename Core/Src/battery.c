@@ -1,3 +1,11 @@
+/***************************************************************************
+ * battery.c
+ * created by Sebastian Forenza 2026
+ *
+ * Functions in charge of interfacing with the
+ * BQ27427 Fuel Gauge IC and ____ Battery Charger IC
+ ***************************************************************************/
+
 #include "battery.h"
 #include <stddef.h>
 #include "stm32wb0x_hal.h"  // Adjust based on your HAL

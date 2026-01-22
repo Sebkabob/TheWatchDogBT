@@ -1,14 +1,14 @@
-/*
+/***************************************************************************
  * power_management.c
+ * created by Sebastian Forenza 2026
  *
- * Ultra-low power management for WatchDog
- * Target: <50µA sleep current
- */
+ * Functions in charge of handling
+ * sleep modes and wake-ups
+ ***************************************************************************/
 
 #include "main.h"
 #include "battery.h"
 #include "accelerometer.h"
-#include "lis2dux12_reg.h"
 #include "lis2dux12_reg.h"
 #include "app_ble.h"
 
@@ -25,12 +25,13 @@ void Reinitialize_Peripherals_After_Wakeup(void);
 
 /**
  * @brief Configure all GPIO pins for lowest power consumption
+ * IMPORTANT: PB0 is NOT changed - must remain as interrupt input for wakeup
  */
 void Configure_GPIO_For_LowPower(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-    /* Disable all GPIO clocks first */
+    /* Enable GPIO clocks */
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
 
@@ -41,7 +42,7 @@ void Configure_GPIO_For_LowPower(void)
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 
-    // PA0, PA1 are I2C - keep as is
+    // PA0, PA1 are I2C - keep as is (will be handled by I2C deinit)
     // PA8 is LED - set as analog to turn off
     GPIO_InitStruct.Pin = GPIO_PIN_8;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
@@ -53,10 +54,17 @@ void Configure_GPIO_For_LowPower(void)
                           GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    // GPIOB - Configure unused pins as analog
-    // PB0 is accelerometer interrupt - keep configured
-    // PB3 is charge detect - keep configured
+    // GPIOB Configuration
+    // PB0 is accelerometer interrupt - MUST NOT BE CHANGED (leave as EXTI rising edge)
+    // PB3 is charge detect - configure as input with pullup
+    GPIO_InitStruct.Pin = GPIO_PIN_3;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
     // PB6, PB7 are buzzers - set as analog to turn off
+    GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Pin = GPIO_PIN_6 | GPIO_PIN_7;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
@@ -88,18 +96,6 @@ void BQ25186_EnterLowPower(void)
     HAL_I2C_Mem_Read(&hi2c1, 0x6A << 1, 0x03,
                      I2C_MEMADD_SIZE_8BIT, &reg_value, 1, HAL_MAX_DELAY);
 
-    /* If not charging, consider entering ship mode for ultra-low power */
-    /* Ship mode: ~15nA but requires power cycle to wake */
-    /* Uncomment if you want this aggressive power saving: */
-    /*
-    if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == GPIO_PIN_SET) {
-        // Not charging - enter ship mode
-        reg_value = 0x20;  // Ship mode bit
-        HAL_I2C_Mem_Write(&hi2c1, 0x6A << 1, 0x09,
-                         I2C_MEMADD_SIZE_8BIT, &reg_value, 1, HAL_MAX_DELAY);
-    }
-    */
-
     /* Ensure HIZ mode is not enabled (we want normal low-power operation) */
     HAL_I2C_Mem_Read(&hi2c1, 0x6A << 1, 0x04,
                      I2C_MEMADD_SIZE_8BIT, &reg_value, 1, HAL_MAX_DELAY);
@@ -110,22 +106,20 @@ void BQ25186_EnterLowPower(void)
 
 /**
  * @brief Put LIS2DUX12 into ultra-low power mode
+ * Ensure pulsed interrupt mode is enabled for clean wakeup
  */
 void LIS2DUX12_EnterLowPower(void)
 {
-    /* Already configured for low power in your LIS2DUX12_ProperInit() */
+    /* Already configured for low power in your LIS2DUX12_Init() */
     /* Current draw: ~1.2µA at 25Hz low power mode */
 
-    /* Optional: Could reduce to 6Hz for even lower power (~0.9µA) */
-    /* Uncomment if you want even lower power: */
-    /*
-    lis2dux12_md_t md = {
-        .fs = LIS2DUX12_2g,
-        .odr = LIS2DUX12_6Hz_LP,  // Lower ODR = lower power
-        .bw = LIS2DUX12_ODR_div_2
+    /* CRITICAL: Ensure pulsed interrupt mode is set */
+    lis2dux12_int_config_t int_cfg = {
+        .int_cfg = LIS2DUX12_DRDY_PULSED,  // ← IMPORTANT: Pulsed mode for clean wakeup
+        .dis_rst_lir_all_int = 0,
+        .sleep_status_on_int = 0
     };
-    lis2dux12_mode_set(&dev_ctx, &md);
-    */
+    lis2dux12_int_config_set(&dev_ctx, &int_cfg);
 }
 
 /**
@@ -152,10 +146,11 @@ void Disable_Peripherals_For_Sleep(void)
 
 /**
  * @brief Configure wakeup source (PB0 from accelerometer)
+ * This is critical for waking from deep stop on interrupt
  */
 void Configure_Wakeup_Optimized(void)
 {
-    /* Clear any pending wakeup flags */
+    /* Clear all pending wakeup flags */
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF0);
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF1);
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF2);
@@ -171,22 +166,22 @@ void Configure_Wakeup_Optimized(void)
     /* Enable PB0 as wakeup pin with rising edge (active high from accelerometer) */
     LL_PWR_EnableWakeUpPin(LL_PWR_WAKEUP_PB0);
     LL_PWR_SetWakeUpPinPolarityHigh(LL_PWR_WAKEUP_PB0);
-
-    /* Optional: Enable other wakeup sources if needed */
-    /* For example, RTC wakeup for periodic checks */
 }
 
 /**
  * @brief Enter ultra-low power DEEPSTOP mode
+ * MODIFIED: Does NOT clear accelerometer interrupts - allows immediate wake on next interrupt
  */
 void Enter_DeepStop_Mode(void)
 {
-    /* Clear all sensor interrupts before sleeping */
-    lis2dux12_wake_up_src_t wake_src;
-    lis2dux12_read_reg(&dev_ctx, LIS2DUX12_WAKE_UP_SRC, (uint8_t*)&wake_src, 1);
-
-    lis2dux12_all_int_src_t all_int_src;
-    lis2dux12_read_reg(&dev_ctx, LIS2DUX12_ALL_INT_SRC, (uint8_t*)&all_int_src, 1);
+    /* IMPORTANT: DO NOT clear sensor interrupts before sleeping!
+     * This allows any pending or new interrupt to wake the system immediately
+     * If we cleared them here, we'd miss the interrupt that should wake us up
+     */
+    // REMOVED: lis2dux12_wake_up_src_t wake_src;
+    // REMOVED: lis2dux12_read_reg(&dev_ctx, LIS2DUX12_WAKE_UP_SRC, (uint8_t*)&wake_src, 1);
+    // REMOVED: lis2dux12_all_int_src_t all_int_src;
+    // REMOVED: lis2dux12_read_reg(&dev_ctx, LIS2DUX12_ALL_INT_SRC, (uint8_t*)&all_int_src, 1);
 
     /* Put peripherals in low power mode */
     LIS2DUX12_EnterLowPower();
@@ -198,7 +193,7 @@ void Enter_DeepStop_Mode(void)
     /* Disable unnecessary peripherals */
     Disable_Peripherals_For_Sleep();
 
-    /* Configure wakeup sources */
+    /* Configure wakeup sources (PB0 rising edge) */
     Configure_Wakeup_Optimized();
 
     /* Configure DEEPSTOP mode with slowclock off for lowest power */
@@ -206,10 +201,11 @@ void Enter_DeepStop_Mode(void)
     deepstop_config.deepStopMode = PWR_DEEPSTOP_WITH_SLOW_CLOCK_OFF;
     HAL_PWR_ConfigDEEPSTOP(&deepstop_config);
 
-    /* Enter DEEPSTOP mode */
+    /* Enter DEEPSTOP mode - system will wake on PB0 rising edge */
     HAL_PWR_EnterDEEPSTOPMode();
 
     /* ---- Execution resumes here after wakeup ---- */
+    /* System wakes up when PB0 goes high (accelerometer interrupt) */
 
     /* System will be reinitialized in main.c after wakeup */
 }
@@ -222,14 +218,17 @@ void Wakeup_System_Init(void)
     /* Reconfigure system clock */
     SystemClock_Config();
 
+    /* CRITICAL: Give system time to stabilize after clock config */
+    HAL_Delay(50);
+
     /* Reinitialize all peripherals using wrapper function in main.c */
     /* This also reinitializes I2C, RADIO, BLE, etc. */
     Reinitialize_Peripherals_After_Wakeup();
 
-    /* IMPORTANT: Wait a bit for I2C to stabilize after reinit */
-    HAL_Delay(10);
+    /* IMPORTANT: Wait for I2C to stabilize after reinit */
+    HAL_Delay(20);
 
-    /* Clear accelerometer interrupts - I2C is ready now */
+    /* NOW it's safe to clear accelerometer interrupts */
     LIS2DUX12_ClearAllInterrupts();
 
     /* Reinitialize sensor context */
@@ -241,6 +240,12 @@ void Wakeup_System_Init(void)
 
     /* Re-enable EXTI interrupt */
     HAL_NVIC_EnableIRQ(GPIOB_IRQn);
+
+    /* Play debug tone to confirm full reinitialization */
+    HAL_Delay(100);
+    extern TIM_HandleTypeDef htim2;
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
 }
 
 /**
@@ -262,28 +267,4 @@ uint8_t Should_Enter_Sleep(void)
     /* Add other conditions as needed */
 
     return 1;  // OK to sleep
-}
-
-/**
- * @brief Get estimated sleep current based on configuration
- * @return Estimated sleep current in microamps
- */
-uint32_t Get_Estimated_Sleep_Current_uA(void)
-{
-    uint32_t total_uA = 0;
-
-    /* STM32WB05 in DEEPSTOP with slow clock off: ~0.5µA typical */
-    total_uA += 1;  // Conservative estimate: 1µA
-
-    /* LIS2DUX12 in 25Hz low power mode: ~1.2µA */
-    total_uA += 2;  // Conservative estimate: 2µA
-
-    /* BQ25186 in standby (not charging): ~0.6µA */
-    total_uA += 1;  // Conservative estimate: 1µA
-
-    /* PCB leakage and other components: ~5-10µA */
-    total_uA += 10;  // Conservative estimate
-
-    /* Total estimated: ~14µA best case, ~50µA realistic with margins */
-    return total_uA;
 }

@@ -1,9 +1,10 @@
-/*
+/***************************************************************************
  * sound.c
+ * created by Sebastian Forenza 2026
  *
- *  Created on: Oct 29, 2025
- *      Author: sebkabob
- */
+ * Functions in charge of interfacing with the
+ * onboard magnetic transducers
+ ***************************************************************************/
 
 #include "main.h"
 #include "sound.h"
@@ -16,13 +17,13 @@ void playTone(uint32_t frequency_hz, uint32_t duration_ms) {
     if (frequency_hz == 0 || duration_ms == 0) return;
 
     // Calculate the period needed for this frequency
-    // Timer clock = 64MHz / (__prescaler__ + 1) = 64MHz / 64 = 1MHz
+    // Timer clock = 64MHz / (____prescaler____ + 1) = 64MHz / 64 = 1MHz
     uint32_t timer_clock = 64000000 / 64;  // 1MHz
     uint32_t period = timer_clock / frequency_hz/2;
 
     // Limit period to reasonable bounds
     if (period > 65535) period = 65535;  // Max for 16-bit timer
-    if (period < 2) period = 2;          // __Min__ for audible output
+    if (period < 2) period = 2;          // ____Min____ for audible output
 
     // Stop the timer to reconfigure
     HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_1);
@@ -43,7 +44,7 @@ void playTone(uint32_t frequency_hz, uint32_t duration_ms) {
     // Play for specified duration
     HAL_Delay(duration_ms);
 
-    // Stop the __buzzers__
+    // Stop the ____buzzers____
     HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_1);
     HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_2);
 
@@ -78,11 +79,11 @@ void SOUND_NormalAlarm(){
 }
 
 void SOUND_LoudAlarm(){
-    playTone(4186, 300);
+    playTone(2186, 300);
     HAL_Delay(15);
     playTone(3520, 300);
     HAL_Delay(15);
-    playTone(4186, 300);
+    playTone(2186, 300);
     HAL_Delay(15);
     playTone(3520, 300);
     HAL_Delay(15);

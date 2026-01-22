@@ -1,3 +1,11 @@
+/***************************************************************************
+ * motion_logger.c
+ * created by Sebastian Forenza 2026
+ *
+ * Functions in charge of handling
+ * motion logging storage and sending
+ ***************************************************************************/
+
 #include "motion_logger.h"
 #include <stdio.h>
 

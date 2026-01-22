@@ -9,7 +9,6 @@
   * The WatchDogBT
   *
   * This code is firmware for the WatchDogBT
-  * probably not MISRA compliant
   *
   ******************************************************************************
   */
@@ -98,22 +97,32 @@ void Enter_Sleep_Mode_Optimized(void) {
     Wakeup_System_Init();
 }
 
+/* Add this to your main.c in the USER CODE BEGIN 0 section */
+
+// Function to reinitialize after deep stop wakeup
 void Reinitialize_Peripherals_After_Wakeup(void)
 {
-    MX_GPIO_Init();  // Re-enables EXTI!
-    MX_I2C1_Init();
-    MX_TIM2_Init();
-    MX_RNG_Init();
-    MX_PKA_Init();
-    MX_RADIO_Init();
-    MX_RADIO_TIMER_Init();
-    MX_APPE_Init(NULL);  // Reinit BLE!
+	  HAL_Init();
 
-    LIS2DUX12_Init();
-    Battery_Init();
+	  SystemClock_Config();
 
-    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+	  PeriphCommonClock_Config();
+
+	  MX_GPIO_Init();
+	  MX_TIM2_Init();
+	  MX_I2C1_Init();
+	  MX_RNG_Init();
+	  MX_PKA_Init();
+	  MX_RADIO_Init();
+	  MX_RADIO_TIMER_Init();
+
+	  MotionLogger_Init();
+	  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+	  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+	  firstBootTone();
+	  HAL_Delay(100);
+	  LIS2DUX12_Init();
+	  Battery_Init();
 }
 /* USER CODE END 0 */
 
@@ -159,17 +168,16 @@ int main(void)
   MotionLogger_Init();
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
-  firstBootTone();
   HAL_Delay(100);
   LIS2DUX12_Init();
   Battery_Init();
 
   // Safe boot mode in case of sleep loop
   if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0){
-	  while(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0);
 	  playTone(300,50);
 	  playTone(200,30);
 	  playTone(100,20);
+	  while(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0);
   } else {
 	  //Enter_Sleep_Mode_Optimized();
   }
@@ -180,7 +188,11 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  firstBootTone();
   StateMachine_Init();
+
+  HAL_Delay(5000);  // Wait 5 seconds
+  StateMachine_ChangeState(STATE_SLEEP);  // Force sleep
   while (1)
   {
     /* USER CODE END WHILE */

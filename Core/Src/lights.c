@@ -15,16 +15,15 @@
 #include <stdlib.h>
 
 extern TIM_HandleTypeDef htim2;
+extern TIM_HandleTypeDef htim16;
 extern uint8_t deviceState;
 extern uint8_t deviceInfo;
 
-void rainbow(int ms_delay)
+void rainbowLED(int ms_delay)
 {
     // Static variables to maintain rainbow state
-    static uint8_t phase = 0;  // 0-5: R->Y->G->C->B->M->R
-    static uint16_t fade_value = 0;
-    static uint8_t fade_direction = 1; // 1 = increasing, 0 = decreasing
-    static uint8_t fade_step = 5;
+    static uint8_t color_phase = 0;  // 0-5 for the 6 color transitions
+    static uint16_t fade_step = 0;   // 0-255 within each phase
     static uint32_t last_update = 0;
 
     // Check if enough time has passed since last update
@@ -32,91 +31,82 @@ void rainbow(int ms_delay)
     if ((current_time - last_update) < ms_delay) {
         return;
     }
-
     last_update = current_time;
 
-    // Define fade range
-    #define FADE_MAX 255
-    #define FADE_MIN 0
+    // Start PWM on all LED channels if not already running
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);  // LED1 - Red
+    HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1); // LED2 - Green
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);  // LED3 - Blue
 
-    // Update fade value
-    if (fade_direction) {
-        fade_value += fade_step;
-        if (fade_value >= FADE_MAX) {
-            fade_value = FADE_MAX;
-            fade_direction = 0; // Start decreasing
-        }
-    } else {
-        if (fade_value >= fade_step) {
-            fade_value -= fade_step;
-        } else {
-            fade_value = FADE_MIN;
-        }
+    // RGB values (0-255)
+    uint16_t red = 0, green = 0, blue = 0;
 
-        if (fade_value <= FADE_MIN) {
-            fade_value = FADE_MIN;
-            fade_direction = 1; // Start increasing
-            phase = (phase + 1) % 6; // Move to next color phase
-        }
-    }
-
-    // Software PWM simulation using brightness values
-    uint8_t red = 0, green = 0, blue = 0;
-
-    switch(phase) {
-        case 0: // Red -> Yellow (add green)
+    // Calculate RGB values based on current phase and fade step
+    // Transitions: R->Y->G->C->B->M->R
+    switch(color_phase) {
+        case 0: // Red (255,0,0) -> Yellow (255,255,0) - fade in green
             red = 255;
-            green = fade_value;
+            green = fade_step;
             blue = 0;
             break;
-        case 1: // Yellow -> Green (remove red)
-            red = 255 - fade_value;
+
+        case 1: // Yellow (255,255,0) -> Green (0,255,0) - fade out red
+            red = 255 - fade_step;
             green = 255;
             blue = 0;
             break;
-        case 2: // Green -> Cyan (add blue)
+
+        case 2: // Green (0,255,0) -> Cyan (0,255,255) - fade in blue
             red = 0;
             green = 255;
-            blue = fade_value;
+            blue = fade_step;
             break;
-        case 3: // Cyan -> Blue (remove green)
+
+        case 3: // Cyan (0,255,255) -> Blue (0,0,255) - fade out green
             red = 0;
-            green = 255 - fade_value;
+            green = 255 - fade_step;
             blue = 255;
             break;
-        case 4: // Blue -> Magenta (add red)
-            red = fade_value;
+
+        case 4: // Blue (0,0,255) -> Magenta (255,0,255) - fade in red
+            red = fade_step;
             green = 0;
             blue = 255;
             break;
-        case 5: // Magenta -> Red (remove blue)
+
+        case 5: // Magenta (255,0,255) -> Red (255,0,0) - fade out blue
             red = 255;
             green = 0;
-            blue = 255 - fade_value;
+            blue = 255 - fade_step;
             break;
     }
 
-    // Apply software PWM by toggling based on brightness
-    // Simple approach: use modulo counter for PWM simulation
-    static uint8_t pwm_counter = 0;
-    pwm_counter++;
+    // Convert RGB (0-255) to PWM duty cycle (0-999)
+    // For active LOW LEDs: higher PWM value = dimmer LED
+    // So we invert: 0 RGB = 999 PWM (off), 255 RGB = 0 PWM (full brightness)
+    uint32_t red_pwm = 999 - ((red * 999) / 255);
+    uint32_t green_pwm = 999 - ((green * 999) / 255);
+    uint32_t blue_pwm = 999 - ((blue * 999) / 255);
 
-    // LED1 (Red) - PA8
-    HAL_GPIO_WritePin(GPIOA, LED1_Pin, (pwm_counter < red) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    // Set PWM duty cycles
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, red_pwm);    // LED1 - Red
+    __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, green_pwm); // LED2 - Green
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, blue_pwm);   // LED3 - Blue
 
-    // LED2 (Green) - PB0
-    HAL_GPIO_WritePin(GPIOB, LED2_Pin, (pwm_counter < green) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    // Increment fade step
+    fade_step += 5;  // Adjust this value to control fade speed
 
-    // LED3 (Blue) - PB3
-    HAL_GPIO_WritePin(GPIOB, LED3_Pin, (pwm_counter < blue) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    if (fade_step >= 255) {
+        fade_step = 0;
+        color_phase = (color_phase + 1) % 6;  // Move to next color phase
+    }
 }
 
-void Armed(int ms_delay)
+void armedLED(int ms_delay)
 {
     // Static variables to maintain fade state for red LED
     static uint16_t pulse_value = 0;
-    static uint8_t pulse_direction = 1; // 1 = increasing (fade in), 0 = decreasing (fade out)
-    static uint8_t pulse_step = 3;
+    static uint8_t pulse_direction = 1;  // 1 = increasing (fade in), 0 = decreasing (fade out)
     static uint32_t last_update = 0;
     static uint32_t last_call = 0;
 
@@ -139,39 +129,40 @@ void Armed(int ms_delay)
 
     last_update = current_time;
 
-    // Define pulse range
-    #define PULSE_MIN 0
-    #define PULSE_MAX 255
+    // Start PWM on LED1 (red) if not already running
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);  // LED1 - Red
 
-    // Update pulse value
+    // Turn off green and blue LEDs (set to full PWM = off for active low)
+    HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1); // LED2 - Green
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);  // LED3 - Blue
+    __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 999); // Green OFF
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 999);  // Blue OFF
+
+    // Update pulse value (0-255)
     if (pulse_direction) {
-        pulse_value += pulse_step;
-        if (pulse_value >= PULSE_MAX) {
-            pulse_value = PULSE_MAX;
-            pulse_direction = 0; // Start decreasing
+        pulse_value += 3;  // Adjust for fade speed
+        if (pulse_value >= 255) {
+            pulse_value = 255;
+            pulse_direction = 0;  // Start fading out
         }
     } else {
-        if (pulse_value >= pulse_step) {
-            pulse_value -= pulse_step;
+        if (pulse_value >= 3) {
+            pulse_value -= 3;
         } else {
-            pulse_value = PULSE_MIN;
+            pulse_value = 0;
         }
 
-        if (pulse_value <= PULSE_MIN) {
-            pulse_value = PULSE_MIN;
-            pulse_direction = 1; // Start increasing
+        if (pulse_value == 0) {
+            pulse_direction = 1;  // Start fading in
         }
     }
 
-    // Software PWM for LED1 (Red) - PA8
-    static uint8_t pwm_counter = 0;
-    pwm_counter++;
+    // Convert brightness (0-255) to PWM (0-999)
+    // Active LOW: 0 brightness = 999 PWM (off), 255 brightness = 0 PWM (full on)
+    uint32_t red_pwm = 999 - ((pulse_value * 999) / 255);
 
-    HAL_GPIO_WritePin(GPIOA, LED1_Pin, (pwm_counter < pulse_value) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-
-    // Turn off other LEDs
-    HAL_GPIO_WritePin(GPIOB, LED2_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOB, LED3_Pin, GPIO_PIN_RESET);
+    // Set red LED PWM
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, red_pwm);
 }
 
 void testLED(int ms_delay)
@@ -188,7 +179,7 @@ void testLED(int ms_delay)
         return;  // Not enough time has passed, exit early
     }
 
-    // Update the __timestamp__
+    // Update the timestamp
     last_update = current_time;
 
     // Start PWM if not already running
@@ -196,7 +187,7 @@ void testLED(int ms_delay)
 
     // Define pulse range
     uint32_t min_pulse = 0;
-    uint32_t max_pulse = htim2.Init.Period - 100; // Leave some __headroom__
+    uint32_t max_pulse = htim2.Init.Period - 100; // Leave some headroom
 
     // Update pulse value
     if (pulse_direction) {
@@ -220,11 +211,15 @@ void testLED(int ms_delay)
 
 void turnOffLED(void)
 {
-    // Stop PWM
-    HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
+    // For active LOW LEDs, set PWM to full period (100% duty = OFF)
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 999);   // LED1 - Red OFF
+    __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 999);  // LED2 - Green OFF
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 999);   // LED3 - Blue OFF
 
-    // Set GPIO HIGH to turn off LED (active low)
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
+    // Optionally stop PWM to save power
+    HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
+    HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
+    HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_4);
 }
 
 void chargeLED(int ms_delay)
@@ -255,7 +250,7 @@ void chargeLED(int ms_delay)
         return;  // Not enough time has passed, exit early
     }
 
-    // Update the __timestamp__
+    // Update the timestamp
     last_update = current_time;
 
     // Start PWM if not already running
@@ -263,7 +258,7 @@ void chargeLED(int ms_delay)
 
     // Define pulse range
     uint32_t min_pulse = 0;
-    uint32_t max_pulse = htim2.Init.Period - 100; // Leave some __headroom__
+    uint32_t max_pulse = htim2.Init.Period - 100; // Leave some headroom
 
     // Update pulse value
     if (pulse_direction) {
@@ -283,8 +278,4 @@ void chargeLED(int ms_delay)
     __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, inverted_pulse);
 
     // NO HAL_Delay() - function returns immediately!
-}
-
-void Lights(){
-
 }

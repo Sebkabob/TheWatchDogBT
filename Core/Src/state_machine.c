@@ -64,10 +64,11 @@ void StateMachine_CheckInactivityTimeout(void) {
 }
 
 void State_Disconnected_Idle_Loop(){
-    // Just maintain current settings
+    // bluetoothPairingLED
 }
 
 void State_Connected_Idle_Loop(){
+    rainbowLED(10);
     if (GET_ARMED_BIT(deviceState)) {
     	LIS2DUX12_ClearMotion();
         StateMachine_ChangeState(STATE_LOCKED);
@@ -80,7 +81,6 @@ void State_Connected_Idle_Loop(){
 
 void State_Locked_Loop(){
     static uint8_t lastMotionState = GPIO_PIN_RESET;
-    static uint32_t lastSleepCheck = 0;
 
     // If no longer armed, switch out of locked state
     if (!GET_ARMED_BIT(deviceState)) {
@@ -91,7 +91,7 @@ void State_Locked_Loop(){
 
     if (GET_LIGHTS_BIT(deviceState)) {
     	//Locked LED
-        testLED(10);
+        armedLED(10);
     } else {
         turnOffLED();
     }
@@ -115,18 +115,6 @@ void State_Locked_Loop(){
     }
     lastMotionState = currentMotionState;
 
-    // Check for sleep every 1 second
-    if ((HAL_GetTick() - lastSleepCheck) > 1000) {
-        lastSleepCheck = HAL_GetTick();
-
-        if (Should_Enter_Sleep()) {
-            // Debug: beep before sleep
-            playTone(200, 50);
-            HAL_Delay(100);
-
-            StateMachine_ChangeState(STATE_SLEEP);
-        }
-    }
 }
 
 void State_Sleep_Loop(){

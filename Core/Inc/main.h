@@ -84,8 +84,6 @@ void MX_USART1_UART_Init(void);
 #define BUZZ_1_GPIO_Port GPIOB
 #define GPOUT_Pin GPIO_PIN_5
 #define GPOUT_GPIO_Port GPIOB
-#define BUZZ_2_Pin GPIO_PIN_4
-#define BUZZ_2_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

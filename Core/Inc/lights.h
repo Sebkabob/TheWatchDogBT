@@ -1,17 +1,27 @@
-/*
+/***************************************************************************
  * lights.h
+ * created by __Sebastian__ __Forenza__ 2026
  *
- *  Created on: Oct 29, 2025
- *      Author: sebkabob
- */
+ * Header file for LED interface functions
+ ***************************************************************************/
 
-#ifndef INC_LIGHTS_H_
-#define INC_LIGHTS_H_
+#ifndef __LIGHTS_H
+#define __LIGHTS_H
 
-#include "main.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-void Lights(void);
+/* Function prototypes */
+void rainbow(int ms_delay);
+void Armed(int ms_delay);
 void testLED(int ms_delay);
 void turnOffLED(void);
+void chargeLED(int ms_delay);
+void Lights(void);
 
-#endif /* INC_LIGHTS_H_ */
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __LIGHTS_H */

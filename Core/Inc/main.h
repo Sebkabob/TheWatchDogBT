@@ -64,8 +64,28 @@ void MX_USART1_UART_Init(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define CHARGE_Pin GPIO_PIN_3
+#define LED3_Pin GPIO_PIN_3
+#define LED3_GPIO_Port GPIOB
+#define INT1_Pin GPIO_PIN_2
+#define INT1_GPIO_Port GPIOB
+#define CHARGE_Pin GPIO_PIN_1
 #define CHARGE_GPIO_Port GPIOB
+#define LED2_Pin GPIO_PIN_0
+#define LED2_GPIO_Port GPIOB
+#define LED1_Pin GPIO_PIN_8
+#define LED1_GPIO_Port GPIOA
+#define EN_2_Pin GPIO_PIN_11
+#define EN_2_GPIO_Port GPIOA
+#define EN_1_Pin GPIO_PIN_15
+#define EN_1_GPIO_Port GPIOB
+#define DIN_Pin GPIO_PIN_7
+#define DIN_GPIO_Port GPIOB
+#define BUZZ_1_Pin GPIO_PIN_6
+#define BUZZ_1_GPIO_Port GPIOB
+#define GPOUT_Pin GPIO_PIN_5
+#define GPOUT_GPIO_Port GPIOB
+#define BUZZ_2_Pin GPIO_PIN_4
+#define BUZZ_2_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

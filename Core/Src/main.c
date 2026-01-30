@@ -478,10 +478,6 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
-  {
-    Error_Handler();
-  }
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
@@ -553,27 +549,62 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, LED3_Pin|LED2_Pin|EN_1_Pin|GPOUT_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA, LED1_Pin|EN_2_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : LED3_Pin LED2_Pin EN_1_Pin GPOUT_Pin */
+  GPIO_InitStruct.Pin = LED3_Pin|LED2_Pin|EN_1_Pin|GPOUT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : INT1_Pin */
+  GPIO_InitStruct.Pin = INT1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(INT1_GPIO_Port, &GPIO_InitStruct);
+
   /*Configure GPIO pin : CHARGE_Pin */
   GPIO_InitStruct.Pin = CHARGE_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(CHARGE_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PB0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  /*Configure GPIO pins : LED1_Pin EN_2_Pin */
+  GPIO_InitStruct.Pin = LED1_Pin|EN_2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : BUZZ_1_Pin */
+  GPIO_InitStruct.Pin = BUZZ_1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Alternate = GPIO_AF2_TIM17;
+  HAL_GPIO_Init(BUZZ_1_GPIO_Port, &GPIO_InitStruct);
 
   /**/
-  HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_3);
+  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_3|PWR_GPIO_BIT_1|PWR_GPIO_BIT_0|PWR_GPIO_BIT_15
+                          |PWR_GPIO_BIT_6|PWR_GPIO_BIT_5);
+
+  /**/
+  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_11);
+
+  /**/
+  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_3|PWR_GPIO_BIT_1|PWR_GPIO_BIT_0|PWR_GPIO_BIT_15
+                          |PWR_GPIO_BIT_6|PWR_GPIO_BIT_5);
+
+  /**/
+  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_11);
 
   /*RT DEBUG GPIO_Init */
   RT_DEBUG_GPIO_Init();
-
-  /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(GPIOB_IRQn, 1, 0);
-  HAL_NVIC_EnableIRQ(GPIOB_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 

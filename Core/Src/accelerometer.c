@@ -1,9 +1,10 @@
-/*
+/***************************************************************************
  * accelerometer.c
+ * created by Sebastian Forenza 2026
  *
- *  Created on: Nov 22, 2025
- *      Author: sebkabob
- */
+ * Functions in charge of interfacing with the
+ * LIS2DUX accelerometer IC
+ ***************************************************************************/
 
 #include "main.h"
 #include "state_machine.h"

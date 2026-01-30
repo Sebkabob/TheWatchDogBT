@@ -1,7 +1,7 @@
 /*
  * power_management.h
  *
- * Ultra-low power management for WatchDog
+ * Ultra-low power management for WatchDogBT
  */
 
 #ifndef INC_POWER_MANAGEMENT_H_

@@ -64,7 +64,17 @@ typedef struct
 
 /* External variables --------------------------------------------------------*/
 /* USER CODE BEGIN EV */
+/* BLE Command Definitions */
+#define CMD_REQUEST_LOG_COUNT    0xF0  // iOS: Request total event count
+#define CMD_REQUEST_EVENT        0xF1  // iOS: Request specific event by index
+#define CMD_CLEAR_LOG            0xF2  // iOS: Clear all events
+#define CMD_ACK_EVENT            0xF3  // iOS: Acknowledge received event
 
+/* Response Types */
+#define RESP_LOG_COUNT           0xE0  // WD: Sending log count
+#define RESP_EVENT_DATA          0xE1  // WD: Sending event data
+#define RESP_NO_MORE_EVENTS      0xE2  // WD: No event at requested index
+#define RESP_LOG_CLEARED         0xE3  // WD: Log cleared confirmation
 /* USER CODE END EV */
 
 /* Exported macros -----------------------------------------------------------*/
@@ -78,6 +88,7 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification);
 /* USER CODE BEGIN EF */
 void LOCKSERVICE_SendStatusUpdate(void);
 void LOCKSERVICE_ForceStatusUpdate(void);
+void LOCKSERVICE_SendMotionAlert(void);
 /* USER CODE END EF */
 
 #ifdef __cplusplus

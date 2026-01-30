@@ -1,9 +1,10 @@
-/*
+/***************************************************************************
  * lights.c
+ * created by Sebastian Forenza 2026
  *
- *  Created on: Oct 29, 2025
- *      Author: sebkabob
- */
+ * Functions in charge of interfacing with the
+ * onboard LEDs
+ ***************************************************************************/
 
 #include "main.h"
 #include "lights.h"

@@ -127,7 +127,7 @@
 #endif /* LSE_STARTUP_TIMEOUT */
 
 #if !defined  (LSE_DRIVE_LEVEL)
-#define LSE_DRIVE_LEVEL    RCC_LSEDRIVE_MEDIUMLOW     /*!< Drive level for LSE oscillator. */
+#define LSE_DRIVE_LEVEL    RCC_LSEDRIVE_MEDIUMHIGH     /*!< Drive level for LSE oscillator. */
 #endif /* LSE_DRIVE_LEVEL */
 
 /* ########################### System Configuration ######################### */

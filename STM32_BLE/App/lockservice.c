@@ -39,6 +39,7 @@ typedef struct{
   uint16_t  LockserviceSvcHdle;				/**< Lockservice Service Handle */
   uint16_t  ApptowdCharHdle;			/**< APPTOWD Characteristic Handle */
   uint16_t  DevicestatusCharHdle;			/**< DEVICESTATUS Characteristic Handle */
+  uint16_t  MotiondataCharHdle;			/**< MOTIONDATA Characteristic Handle */
 /* USER CODE BEGIN Context */
   /* Place holder for Characteristic Descriptors Handle*/
 
@@ -60,8 +61,9 @@ typedef struct{
 /* Private macros ------------------------------------------------------------*/
 #define CHARACTERISTIC_DESCRIPTOR_ATTRIBUTE_OFFSET        2
 #define CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET             1
-#define APPTOWD_SIZE        2	/* AppToWD Characteristic size */
+#define APPTOWD_SIZE        30	/* AppToWD Characteristic size */
 #define DEVICESTATUS_SIZE        2	/* DeviceStatus Characteristic size */
+#define MOTIONDATA_SIZE        8	/* MotionData Characteristic size */
 /* USER CODE BEGIN PM */
 
 /* USER CODE END PM */
@@ -94,6 +96,7 @@ extern volatile uint8_t deviceBattery;
 #define LOCKSERVICE_UUID			(0x183e)
 #define APPTOWD_UUID			0x20,0x02,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
 #define DEVICESTATUS_UUID			0x00,0x09,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+#define MOTIONDATA_UUID			0x01,0x33,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
 
 BLE_GATT_SRV_CCCD_DECLARE(devicestatus, CFG_BLE_NUM_RADIO_TASKS, BLE_GATT_SRV_CCCD_PERM_DEFAULT,
                           BLE_GATT_SRV_OP_MODIFIED_EVT_ENABLE_FLAG);
@@ -120,6 +123,15 @@ static ble_gatt_val_buffer_def_t devicestatus_val_buffer_def = {
   .buffer_p = devicestatus_val_buffer
 };
 
+uint8_t motiondata_val_buffer[MOTIONDATA_SIZE];
+
+static ble_gatt_val_buffer_def_t motiondata_val_buffer_def = {
+  .op_flags = BLE_GATT_SRV_OP_MODIFIED_EVT_ENABLE_FLAG,
+  .val_len = MOTIONDATA_SIZE,
+  .buffer_len = sizeof(motiondata_val_buffer),
+  .buffer_p = motiondata_val_buffer
+};
+
 /* LockService service DEVICESTATUS (notification) characteristics definition */
 static const ble_gatt_chr_def_t lockservice_chars[] = {
 	{
@@ -140,6 +152,13 @@ static const ble_gatt_chr_def_t lockservice_chars[] = {
         },
         .val_buffer_p = &devicestatus_val_buffer_def
     },
+	{
+        .properties = BLE_GATT_SRV_CHAR_PROP_NONE,
+        .permissions = BLE_GATT_SRV_PERM_NONE,
+        .min_key_size = 0x10,
+        .uuid = BLE_UUID_INIT_128(MOTIONDATA_UUID),
+        .val_buffer_p = &motiondata_val_buffer_def
+    },
 };
 
 /* LockService service definition */
@@ -148,7 +167,7 @@ static const ble_gatt_srv_def_t lockservice_service = {
    .uuid = BLE_UUID_INIT_16(LOCKSERVICE_UUID),
    .chrs = {
        .chrs_p = (ble_gatt_chr_def_t *)lockservice_chars,
-       .chr_count = 2U,
+       .chr_count = 3U,
    },
 };
 
@@ -338,6 +357,7 @@ void LOCKSERVICE_Init(void)
   LOCKSERVICE_Context.LockserviceSvcHdle = aci_gatt_srv_get_service_handle((ble_gatt_srv_def_t *) &lockservice_service);
   LOCKSERVICE_Context.ApptowdCharHdle = aci_gatt_srv_get_char_decl_handle((ble_gatt_chr_def_t *)&lockservice_chars[0]);
   LOCKSERVICE_Context.DevicestatusCharHdle = aci_gatt_srv_get_char_decl_handle((ble_gatt_chr_def_t *)&lockservice_chars[1]);
+  LOCKSERVICE_Context.MotiondataCharHdle = aci_gatt_srv_get_char_decl_handle((ble_gatt_chr_def_t *)&lockservice_chars[2]);
 
   /* USER CODE BEGIN InitService1Svc_2 */
 
@@ -372,6 +392,13 @@ tBleStatus LOCKSERVICE_UpdateValue(LOCKSERVICE_CharOpcode_t CharOpcode, LOCKSERV
       /* USER CODE BEGIN Service1_Char_Value_1*/
 
       /* USER CODE END Service1_Char_Value_1*/
+      break;
+
+    case LOCKSERVICE_MOTIONDATA:
+      memcpy(motiondata_val_buffer, pData->p_Payload, MIN(pData->Length, sizeof(motiondata_val_buffer)));
+      /* USER CODE BEGIN Service1_Char_Value_3*/
+
+      /* USER CODE END Service1_Char_Value_3*/
       break;
 
     default:

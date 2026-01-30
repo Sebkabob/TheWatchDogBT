@@ -30,6 +30,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "sound.h"
+#include "motion_logger.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -81,13 +82,149 @@ uint8_t a_LOCKSERVICE_UpdateCharData[247];
 extern volatile uint8_t deviceState;
 extern volatile uint8_t deviceInfo;
 extern volatile uint8_t deviceBattery;
-//static uint8_t lastSentDeviceInfo = 0xFF;  // Track last sent value (0xFF = never sent)
+
+// Track current transfer state
+static uint16_t currentEventIndex = 0;
+static uint8_t transferInProgress = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 static void LOCKSERVICE_Devicestatus_SendNotification(void);
 
 /* USER CODE BEGIN PFP */
+/**
+ * @brief Send motion alert notification to iOS
+ * This triggers iOS to auto-sync
+ */
+void LOCKSERVICE_SendMotionAlert(void)
+{
+    if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
+        return;
+    }
+
+    // Send special alert byte: 0xFF
+    a_LOCKSERVICE_UpdateCharData[0] = 0xFF;  // Motion alert marker
+    a_LOCKSERVICE_UpdateCharData[1] = deviceBattery;
+
+    LOCKSERVICE_Data_t lockservice_notification_data;
+    lockservice_notification_data.p_Payload = (uint8_t*)a_LOCKSERVICE_UpdateCharData;
+    lockservice_notification_data.Length = 2;
+
+    LOCKSERVICE_NotifyValue(LOCKSERVICE_DEVICESTATUS, &lockservice_notification_data,
+                           LOCKSERVICE_APP_Context.ConnectionHandle);
+
+    printf("🚨 Motion alert sent to iOS\n");
+}
+
+/**
+ * @brief Update RTC from iOS timestamp
+ * @param data Pointer to timestamp data (6 bytes: year, month, day, hour, minute, second)
+ */
+static void UpdateBootTimeFromiOS(uint8_t *timestamp_data)
+{
+    // Set boot time in motion logger
+    MotionLogger_SetBootTime(
+        timestamp_data[0],  // Year offset from 2000
+        timestamp_data[1],  // Month
+        timestamp_data[2],  // Day
+        timestamp_data[3],  // Hour
+        timestamp_data[4],  // Minute
+        timestamp_data[5]   // Second
+    );
+}
+
+/**
+ * @brief Send event count to iOS
+ */
+static void LOCKSERVICE_SendEventCount(void)
+{
+    if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
+        return;
+    }
+
+    uint16_t eventCount = MotionLogger_GetEventCount();
+
+    a_LOCKSERVICE_UpdateCharData[0] = RESP_LOG_COUNT;
+    a_LOCKSERVICE_UpdateCharData[1] = (eventCount >> 8) & 0xFF;  // High byte
+    a_LOCKSERVICE_UpdateCharData[2] = eventCount & 0xFF;         // Low byte
+
+    LOCKSERVICE_Data_t lockservice_notification_data;
+    lockservice_notification_data.p_Payload = (uint8_t*)a_LOCKSERVICE_UpdateCharData;
+    lockservice_notification_data.Length = 3;
+
+    LOCKSERVICE_NotifyValue(LOCKSERVICE_DEVICESTATUS, &lockservice_notification_data,
+                           LOCKSERVICE_APP_Context.ConnectionHandle);
+}
+
+static void LOCKSERVICE_SendEvent(uint16_t index)
+{
+    if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
+        return;
+    }
+
+    MotionEvent_t *event = MotionLogger_GetEvent(index);
+
+    if (event == NULL) {
+        // No event at this index
+        a_LOCKSERVICE_UpdateCharData[0] = RESP_NO_MORE_EVENTS;
+        a_LOCKSERVICE_UpdateCharData[1] = (index >> 8) & 0xFF;
+        a_LOCKSERVICE_UpdateCharData[2] = index & 0xFF;
+
+        LOCKSERVICE_Data_t lockservice_notification_data;
+        lockservice_notification_data.p_Payload = (uint8_t*)a_LOCKSERVICE_UpdateCharData;
+        lockservice_notification_data.Length = 3;
+
+        LOCKSERVICE_NotifyValue(LOCKSERVICE_DEVICESTATUS, &lockservice_notification_data,
+                               LOCKSERVICE_APP_Context.ConnectionHandle);
+        return;
+    }
+
+    // Convert tick timestamp to real date/time
+    uint8_t year, month, day, hour, minute, second;
+    MotionLogger_TickToDateTime(event->timestamp_ms, &year, &month, &day, &hour, &minute, &second);
+
+    // Pack event data
+    uint8_t dataIdx = 0;
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = RESP_EVENT_DATA;
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = (index >> 8) & 0xFF;  // Index high byte
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = index & 0xFF;         // Index low byte
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = year;
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = month;
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = day;
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = hour;
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = minute;
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = second;
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = event->motionType;
+
+    // Add deviceBattery to match your status update format
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = deviceBattery;
+
+    LOCKSERVICE_Data_t lockservice_notification_data;
+    lockservice_notification_data.p_Payload = (uint8_t*)a_LOCKSERVICE_UpdateCharData;
+    lockservice_notification_data.Length = dataIdx;  // Should be 11 now
+
+    LOCKSERVICE_NotifyValue(LOCKSERVICE_DEVICESTATUS, &lockservice_notification_data,
+                           LOCKSERVICE_APP_Context.ConnectionHandle);
+}
+
+/**
+ * @brief Send log cleared confirmation
+ */
+static void LOCKSERVICE_SendLogCleared(void)
+{
+    if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
+        return;
+    }
+
+    a_LOCKSERVICE_UpdateCharData[0] = RESP_LOG_CLEARED;
+
+    LOCKSERVICE_Data_t lockservice_notification_data;
+    lockservice_notification_data.p_Payload = (uint8_t*)a_LOCKSERVICE_UpdateCharData;
+    lockservice_notification_data.Length = 1;
+
+    LOCKSERVICE_NotifyValue(LOCKSERVICE_DEVICESTATUS, &lockservice_notification_data,
+                           LOCKSERVICE_APP_Context.ConnectionHandle);
+}
 
 /* USER CODE END PFP */
 
@@ -105,18 +242,56 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
 
     case LOCKSERVICE_APPTOWD_WRITE_EVT:
       /* USER CODE BEGIN Service1Char1_WRITE_EVT */
-    	LOCKSERVICE_SendStatusUpdate();
     	uint8_t *received_data = p_Notification->DataTransfered.p_Payload;
-    	uint8_t data_length = p_Notification->DataTransfered.Length;
+    	    uint8_t data_length = p_Notification->DataTransfered.Length;
 
-    	if(data_length > 0)
-    	{
-    	  // Simply set lockState to the received value
-    	  deviceState = received_data[0];
-    	  HAL_Delay(5);
-    	  LOCKSERVICE_ForceStatusUpdate();
-    	}
-    	break;
+    	    if(data_length > 0)
+    	    {
+    	        uint8_t command = received_data[0];
+
+    	        // Only extract timestamp if this is the initial boot time sync command
+    	        // (typically sent with the first connection or settings update)
+    	        if (data_length >= 7 && command != CMD_REQUEST_EVENT &&
+    	            command != CMD_REQUEST_LOG_COUNT && command != CMD_CLEAR_LOG &&
+    	            command != CMD_ACK_EVENT) {
+    	            // This is a settings update with timestamp
+    	            UpdateBootTimeFromiOS(&received_data[data_length - 6]);
+    	        }
+
+    	        switch(command) {
+    	            case CMD_REQUEST_LOG_COUNT:
+    	                transferInProgress = 1;
+    	                currentEventIndex = 0;
+    	                LOCKSERVICE_SendEventCount();
+    	                break;
+
+    	            case CMD_REQUEST_EVENT:
+    	                if (data_length >= 3) {
+    	                    uint16_t requestedIndex = ((uint16_t)received_data[1] << 8) | received_data[2];
+    	                    LOCKSERVICE_SendEvent(requestedIndex);
+    	                }
+    	                break;
+
+    	            case CMD_ACK_EVENT:
+    	                // iOS acknowledged receiving event
+    	                break;
+
+    	            case CMD_CLEAR_LOG:
+    	                MotionLogger_Clear();
+    	                transferInProgress = 0;
+    	                currentEventIndex = 0;
+    	                LOCKSERVICE_SendLogCleared();
+    	                break;
+
+    	            default:
+    	                // Regular device state update (should have timestamp)
+    	                deviceState = received_data[0];
+    	                HAL_Delay(5);
+    	                LOCKSERVICE_ForceStatusUpdate();
+    	                break;
+    	        }
+    	    }
+    	    break;
       /* USER CODE END Service1Char1_WRITE_EVT */
       break;
 
@@ -164,11 +339,11 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification)
     case LOCKSERVICE_DISCON_HANDLE_EVT :
       LOCKSERVICE_APP_Context.ConnectionHandle = 0xFFFF;
       /* USER CODE BEGIN Service1_APP_DISCON_HANDLE_EVT */
-      playTone(880,10);
+      playTone(380,10);
       HAL_Delay(10);
-      playTone(780,12);
+      playTone(280,12);
       HAL_Delay(10);
-      playTone(700,15);
+      playTone(100,15);
       /* USER CODE END Service1_APP_DISCON_HANDLE_EVT */
       break;
 

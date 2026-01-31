@@ -93,7 +93,7 @@ void State_Locked_Loop(){
 
     if (GET_LIGHTS_BIT(deviceState)) {
     	//Locked LED
-        LED_Armed(10,100);
+        LED_Armed(10,150);
     } else {
         LED_Off();
     }
@@ -212,15 +212,17 @@ void ChargingCheck(){
 
 	if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
 		SET_BATTERY_CHARGING(deviceBattery);
-	    LED_Charging(10,25);
+		if (!GET_ARMED_BIT(deviceState)){
+		    LED_Charging(10,25);
+		}
 	} else {
 		CLEAR_BATTERY_CHARGING(deviceBattery);
-		LED_Off();
 	}
 
 	if (deviceBattery != previousBattery) {
 	    LOCKSERVICE_SendStatusUpdate();
 	    previousBattery = deviceBattery;
+		LED_Off();
 	}
 }
 

@@ -203,6 +203,8 @@ int main(void)
     /* USER CODE BEGIN 3 */
     StateMachine_Run();
 
+    //BUZZER_Tone(50,10); //Rapidly drain the battery
+
     static uint32_t last_battery_check = 0;
     if (HAL_GetTick() - last_battery_check > 3000) {
         last_battery_check = HAL_GetTick();

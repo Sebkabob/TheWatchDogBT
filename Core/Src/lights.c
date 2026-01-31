@@ -118,6 +118,8 @@ void LED_Rainbow(int ms_delay, uint8_t intensity)
 
 void LED_Armed(int ms_delay, uint8_t intensity)
 {
+    HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
+    HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_4);
     // Static variables to maintain fade state for red LED
     static uint16_t pulse_value = 0;
     static uint8_t pulse_direction = 1;  // 1 = increasing (fade in), 0 = decreasing (fade out)
@@ -244,6 +246,7 @@ void LED_Off(void)
 
 void LED_Charging(int ms_delay, uint8_t intensity)
 {
+    HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_4);
     // Static variables to maintain pulse state for yellow (red + green)
     static uint16_t pulse_value = 0;
     static uint8_t pulse_direction = 1; // 1 = increasing (fade in), 0 = decreasing (fade out)

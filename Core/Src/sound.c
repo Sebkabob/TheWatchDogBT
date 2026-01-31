@@ -13,6 +13,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+
+// TODO Make this non blocking, this may be what is cutting bluetooth off
 void BUZZER_Tone(uint32_t frequency_hz, uint32_t duration_ms) {
     if (frequency_hz == 0 || duration_ms == 0) return;
 

@@ -68,13 +68,13 @@ void State_Disconnected_Idle_Loop(){
 }
 
 void State_Connected_Idle_Loop(){
-    rainbowLED(10);
+    LED_Rainbow(10);
     if (GET_ARMED_BIT(deviceState)) {
     	LIS2DUX12_ClearMotion();
         StateMachine_ChangeState(STATE_LOCKED);
     } else {
         if (GET_LIGHTS_BIT(deviceState)) {
-            turnOffLED();
+            LED_Off();
         }
     }
 }
@@ -91,9 +91,9 @@ void State_Locked_Loop(){
 
     if (GET_LIGHTS_BIT(deviceState)) {
     	//Locked LED
-        armedLED(10);
+        LED_Armed(10);
     } else {
-        turnOffLED();
+        LED_Off();
     }
 
     // Currently very crude motion detection, in future will use algorithm
@@ -120,14 +120,14 @@ void State_Locked_Loop(){
 void State_Sleep_Loop(){
     // ============ ENTERING SLEEP ============
     // Debug sequence: 3 descending tones
-    playTone(400, 50);
+	BUZZER_Tone(400, 50);
     HAL_Delay(100);
-    playTone(300, 50);
+    BUZZER_Tone(300, 50);
     HAL_Delay(100);
-    playTone(200, 50);
+    BUZZER_Tone(200, 50);
     HAL_Delay(100);
 
-    turnOffLED();
+    LED_Off();
 
     // Enter deep stop mode
     Enter_DeepStop_Mode();
@@ -139,22 +139,22 @@ void State_Sleep_Loop(){
     HAL_Delay(100);
 
     // Debug sequence: 3 ascending tones to confirm wakeup
-    playTone(200, 50);
+    BUZZER_Tone(200, 50);
     HAL_Delay(100);
-    playTone(300, 50);
+    BUZZER_Tone(300, 50);
     HAL_Delay(100);
-    playTone(400, 50);
+    BUZZER_Tone(400, 50);
     HAL_Delay(200);
 
     // Reinitialize system
     Wakeup_System_Init();
 
     // Confirm reinitialization with rapid beeps
-    playTone(500, 30);
+    BUZZER_Tone(500, 30);
     HAL_Delay(50);
-    playTone(500, 30);
+    BUZZER_Tone(500, 30);
     HAL_Delay(50);
-    playTone(500, 30);
+    BUZZER_Tone(500, 30);
     HAL_Delay(200);
 
     // Go back to armed/locked state
@@ -210,7 +210,7 @@ void ChargingCheck(){
 
 	if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
 		SET_BATTERY_CHARGING(deviceBattery);
-	    testLED(50);
+	    LED_Charging(50);
 	} else {
 		CLEAR_BATTERY_CHARGING(deviceBattery);
 	}

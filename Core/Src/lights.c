@@ -19,7 +19,7 @@ extern TIM_HandleTypeDef htim16;
 extern uint8_t deviceState;
 extern uint8_t deviceInfo;
 
-void rainbowLED(int ms_delay)
+void LED_Rainbow(int ms_delay)
 {
     // Static variables to maintain rainbow state
     static uint8_t color_phase = 0;  // 0-5 for the 6 color transitions
@@ -102,7 +102,7 @@ void rainbowLED(int ms_delay)
     }
 }
 
-void armedLED(int ms_delay)
+void LED_Armed(int ms_delay)
 {
     // Static variables to maintain fade state for red LED
     static uint16_t pulse_value = 0;
@@ -165,7 +165,7 @@ void armedLED(int ms_delay)
     __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, red_pwm);
 }
 
-void testLED(int ms_delay)
+void LED_Test(int ms_delay)
 {
     // Static variables to maintain pulse state
     static uint32_t pulse_value = 0;
@@ -209,7 +209,7 @@ void testLED(int ms_delay)
     // NO HAL_Delay() - function returns immediately!
 }
 
-void turnOffLED(void)
+void LED_Off(void)
 {
     // For active LOW LEDs, set PWM to full period (100% duty = OFF)
     __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 999);   // LED1 - Red OFF
@@ -222,7 +222,7 @@ void turnOffLED(void)
     HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_4);
 }
 
-void chargeLED(int ms_delay)
+void LED_Charging(int ms_delay)
 {
     // Static variables to maintain pulse state
     static uint32_t pulse_value = 0;

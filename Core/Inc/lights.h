@@ -13,11 +13,11 @@ extern "C" {
 #endif
 
 /* Function prototypes */
-void rainbowLED(int ms_delay);
-void armedLED(int ms_delay);
-void testLED(int ms_delay);
-void turnOffLED(void);
-void chargeLED(int ms_delay);
+void LED_Rainbow(int ms_delay);
+void LED_Armed(int ms_delay);
+void LED_Test(int ms_delay);
+void LED_Off(void);
+void LED_Charging(int ms_delay);
 
 #ifdef __cplusplus
 }

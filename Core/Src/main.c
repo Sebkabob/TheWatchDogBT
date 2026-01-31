@@ -124,7 +124,6 @@ void Reinitialize_Peripherals_After_Wakeup(void)
 	  firstBootTone();
 	  HAL_Delay(100);
 	  LIS2DUX12_Init();
-	  Battery_Init();
 }
 /* USER CODE END 0 */
 
@@ -173,13 +172,13 @@ int main(void)
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   HAL_Delay(100);
   LIS2DUX12_Init();
-  Battery_Init();
+  BATTERY_Init();
 
   // Safe boot mode in case of sleep loop
   if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0){
-	  playTone(300,50);
-	  playTone(200,30);
-	  playTone(100,20);
+	  BUZZER_Tone(300,50);
+	  BUZZER_Tone(200,30);
+	  BUZZER_Tone(100,20);
 	  while(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0);
   } else {
 	  //Enter_Sleep_Mode_Optimized();
@@ -203,6 +202,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     StateMachine_Run();
+    LED_Rainbow(10);
   }
   /* USER CODE END 3 */
 }
@@ -637,7 +637,7 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin : CHARGE_Pin */
   GPIO_InitStruct.Pin = CHARGE_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(CHARGE_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : EN_2_Pin */
@@ -655,16 +655,19 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /**/
-  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_1|PWR_GPIO_BIT_15|PWR_GPIO_BIT_5);
+  HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_1);
 
   /**/
   HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_11);
 
   /**/
-  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_1|PWR_GPIO_BIT_15|PWR_GPIO_BIT_5);
+  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_15|PWR_GPIO_BIT_5);
 
   /**/
   HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_11);
+
+  /**/
+  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_15|PWR_GPIO_BIT_5);
 
   /*RT DEBUG GPIO_Init */
   RT_DEBUG_GPIO_Init();

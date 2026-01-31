@@ -13,7 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-void playTone(uint32_t frequency_hz, uint32_t duration_ms) {
+void BUZZER_Tone(uint32_t frequency_hz, uint32_t duration_ms) {
     if (frequency_hz == 0 || duration_ms == 0) return;
 
     // Calculate the period needed for this frequency
@@ -49,38 +49,46 @@ void playTone(uint32_t frequency_hz, uint32_t duration_ms) {
 }
 
 void firstBootTone(){
-    playTone(160, 10);
+	BUZZER_Tone(160, 10);
     HAL_Delay(15);
-    playTone(230, 20);
+    BUZZER_Tone(230, 20);
     HAL_Delay(15);
-    playTone(292, 30);
+    BUZZER_Tone(292, 30);
 }
 
 void SOUND_CalmAlarm(){
-    playTone(415, 20);
+	BUZZER_Tone(415, 20);
     HAL_Delay(15);
-    playTone(349, 20);
+    BUZZER_Tone(349, 20);
     HAL_Delay(15);
 }
 
 void SOUND_NormalAlarm(){
-    playTone(1047, 300);
+	BUZZER_Tone(1047, 300);
     HAL_Delay(15);
-    playTone(880, 300);
+    BUZZER_Tone(880, 300);
     HAL_Delay(15);
-    playTone(1047, 300);
+    BUZZER_Tone(1047, 300);
     HAL_Delay(15);
-    playTone(880, 300);
+    BUZZER_Tone(880, 300);
     HAL_Delay(15);
 }
 
 void SOUND_LoudAlarm(){
-    playTone(2186, 300);
+	BUZZER_Tone(2186, 300);
     HAL_Delay(15);
-    playTone(3520, 300);
+    BUZZER_Tone(3520, 300);
     HAL_Delay(15);
-    playTone(2186, 300);
+    BUZZER_Tone(2186, 300);
     HAL_Delay(15);
-    playTone(3520, 300);
+    BUZZER_Tone(3520, 300);
     HAL_Delay(15);
+}
+
+void SOUND_Disconnected(){
+    BUZZER_Tone(380,10);
+    HAL_Delay(10);
+    BUZZER_Tone(280,12);
+    HAL_Delay(10);
+    BUZZER_Tone(100,15);
 }

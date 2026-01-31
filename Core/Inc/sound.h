@@ -12,11 +12,12 @@
 
 extern TIM_HandleTypeDef htim2;
 
-void playTone(uint32_t frequency_hz, uint32_t duration_ms);
+void BUZZER_Tone(uint32_t frequency_hz, uint32_t duration_ms);
 void firstBootTone();
 void SOUND_CalmAlarm();
 void SOUND_NormalAlarm();
 void SOUND_LoudAlarm();
+void SOUND_Disconnected();
 //void playSong();
 
 

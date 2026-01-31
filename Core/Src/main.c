@@ -202,7 +202,18 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     StateMachine_Run();
-    LED_Rainbow(10);
+
+    static uint32_t last_battery_check = 0;
+    if (HAL_GetTick() - last_battery_check > 3000) {
+        last_battery_check = HAL_GetTick();
+
+        uint16_t voltage_mV, soc_percent;
+        bool is_charging;
+
+        if (BATTERY_GetStatus(&voltage_mV, &soc_percent, &is_charging)) {
+            deviceBattery = soc_percent & 0x7F;
+        }
+    }
   }
   /* USER CODE END 3 */
 }

@@ -184,16 +184,25 @@ bool bq27427_init( uint16_t designCapacity_mAh, uint16_t terminateVoltage_mV, ui
     // Send CFG_UPDATE
     bq27427_i2c_control_write( BQ27427_CONTROL_SET_CFGUPDATE );
 
-    // Poll flags
+    // Poll flags until CFGUPMODE bit is set
+    uint8_t cfg_timeout = 100;  // 10 second timeout
     do
     {
         bq27427_i2c_command_read( BQ27427_FLAGS_LOW, &flags );
         if( !(flags & 0x0010) )
         {
-            HAL_Delay( 50 );
+            HAL_Delay( 100 );
+        }
+        cfg_timeout--;
+        if( cfg_timeout == 0 )
+        {
+            return false;  // Timeout entering CONFIG UPDATE mode
         }
     }
     while( !(flags & 0x0010) );
+
+    // Wait minimum 1100ms before parameter modifications (per datasheet section 8.5)
+    HAL_Delay( 1100 );
 
     // Enable Block Data Memory Control
     bq27427_i2c_command_write( BQ27427_BLOCK_DATA_CONTROL, 0x0000 );
@@ -311,7 +320,7 @@ bool bq27427_init( uint16_t designCapacity_mAh, uint16_t terminateVoltage_mV, ui
     }
     checksumCalc = 0xFF - checksumCalc;
 
-    // Update OpConfig
+    // Update OpConfig (enable battery insertion detection)
     block[0] = 0x05;
 
     // Calculate new checksum
@@ -354,24 +363,48 @@ bool bq27427_init( uint16_t designCapacity_mAh, uint16_t terminateVoltage_mV, ui
         return false;
     }
 
-    // Configure BAT_DET
-    bq27427_i2c_control_write( BQ27427_CONTROL_BAT_INSERT );
+    // ============================================================================
+    // CRITICAL FIX: Proper exit from CONFIG UPDATE mode
+    // ============================================================================
 
-    // Send Soft Reset
+    // Step 1: Send SOFT_RESET subcommand to exit CONFIG UPDATE mode
+    // This is required per datasheet section 8.5
     bq27427_i2c_control_write( BQ27427_CONTROL_SOFT_RESET );
 
-    // Poll flags
+    HAL_Delay(1000);  // Wait 1 second for reset to complete
+
+    // Step 2: Poll Flags register until CFGUPMODE (bit 4) is cleared
+    // ITPOR (bit 2) may remain set until battery learning is complete - this is normal
+    uint8_t exit_timeout = 100;  // 10 second timeout
     do
     {
         bq27427_i2c_command_read( BQ27427_FLAGS_LOW, &flags );
-        if( !(flags & 0x0010) )
+        HAL_Delay( 100 );
+        exit_timeout--;
+        if( exit_timeout == 0 )
         {
-            HAL_Delay( 50 );
+            return false;  // Timeout - device stuck in CONFIG UPDATE mode
         }
     }
-    while( (flags & 0x0010) );
+    while( flags & 0x0010 );  // Wait ONLY for CFGUPMODE to clear (bit 4)
 
-    // Seal gauge
+    // Step 3: Configure BAT_DET to enable battery detection
+    bq27427_i2c_control_write( BQ27427_CONTROL_BAT_INSERT );
+
+    HAL_Delay(500);
+
+    // Step 4: Check CONTROL_STATUS for initialization status
+    // Note: INITCOMP (bit 7) may not be set immediately on fresh battery
+    uint16_t control_status;
+    bq27427_i2c_control_read( BQ27427_CONTROL_STATUS, &control_status );
+
+    // We won't fail if INITCOMP is not set - it will set after first charge cycle
+    // Just log the status for debugging
+    // if( !(control_status & 0x0080) ) {
+    //     return false;  // Initialization not complete
+    // }
+
+    // Step 5: Seal gauge to protect configuration
     bq27427_i2c_control_write( BQ27427_CONTROL_SEALED );
 
     return true;

@@ -68,13 +68,15 @@ void State_Disconnected_Idle_Loop(){
 }
 
 void State_Connected_Idle_Loop(){
-    LED_Rainbow(10);
     if (GET_ARMED_BIT(deviceState)) {
     	LIS2DUX12_ClearMotion();
         StateMachine_ChangeState(STATE_LOCKED);
+        HAL_Delay(10);
     } else {
         if (GET_LIGHTS_BIT(deviceState)) {
-            LED_Off();
+            //LED_Rainbow(10,20);
+        } else {
+        	LED_Off();
         }
     }
 }
@@ -91,14 +93,14 @@ void State_Locked_Loop(){
 
     if (GET_LIGHTS_BIT(deviceState)) {
     	//Locked LED
-        LED_Armed(10);
+        LED_Armed(10,100);
     } else {
         LED_Off();
     }
 
     // Currently very crude motion detection, in future will use algorithm
     // TODO: Add motion sensing algorithm
-    uint8_t currentMotionState = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0);
+    uint8_t currentMotionState = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_2);
     if (currentMotionState == GPIO_PIN_SET && lastMotionState == GPIO_PIN_RESET) {
         if (GET_LOGGING_BIT(deviceState)) {
             MotionLogger_LogEvent(1);
@@ -108,7 +110,7 @@ void State_Locked_Loop(){
         if (!GET_SILENCE_BIT(deviceState)){
             StateMachine_ChangeState(STATE_ALARM_ACTIVE);
         } else {
-            while(HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0) == GPIO_PIN_SET) {
+            while(HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_2) == GPIO_PIN_SET) {
                 HAL_Delay(10);
             }
         }
@@ -210,9 +212,10 @@ void ChargingCheck(){
 
 	if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
 		SET_BATTERY_CHARGING(deviceBattery);
-	    LED_Charging(50);
+	    LED_Charging(10,25);
 	} else {
 		CLEAR_BATTERY_CHARGING(deviceBattery);
+		LED_Off();
 	}
 
 	if (deviceBattery != previousBattery) {

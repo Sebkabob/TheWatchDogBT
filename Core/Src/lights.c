@@ -348,3 +348,75 @@ void LED_Test_Individual(void)
     __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 999);  // Off
     HAL_Delay(500);
 }
+
+/**
+ * @brief Flash LED with custom color (non-blocking)
+ * @param flash_interval_ms Time between on and off in milliseconds
+ * @param red Red component (0-255)
+ * @param green Green component (0-255)
+ * @param blue Blue component (0-255)
+ * @param intensity Overall brightness multiplier (0-255, where 255 is full)
+ */
+void LED_Alarm(int flash_interval_ms, uint8_t red, uint8_t green, uint8_t blue, uint8_t intensity)
+{
+    static uint8_t led_state = 0;  // 0 = OFF, 1 = ON
+    static uint32_t last_toggle_time = 0;
+    static uint32_t last_call = 0;
+    static uint8_t initialized = 0;
+
+    uint32_t current_time = HAL_GetTick();
+
+    // Reset if function hasn't been called for more than 500ms
+    #define ALARM_RESET_TIMEOUT 500
+    if ((current_time - last_call) > ALARM_RESET_TIMEOUT) {
+        led_state = 0;
+        last_toggle_time = current_time;
+        initialized = 0;
+    }
+
+    last_call = current_time;
+
+    // One-time initialization when first called
+    if (!initialized) {
+        HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);   // LED1 - Red
+        HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1);  // LED2 - Green
+        HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);   // LED3 - Blue
+        initialized = 1;
+        last_toggle_time = current_time;
+        led_state = 1;  // Start with LED ON
+    }
+
+    // Check if it's time to toggle
+    if ((current_time - last_toggle_time) >= flash_interval_ms) {
+        led_state = !led_state;  // Toggle state
+        last_toggle_time = current_time;
+    }
+
+    if (led_state) {
+        // LED ON - apply color and intensity
+
+        // Clamp intensity to 0-255
+        if (intensity > 255) intensity = 255;
+
+        // Apply intensity scaling to each color component
+        uint16_t scaled_red = (red * intensity) / 255;
+        uint16_t scaled_green = (green * intensity) / 255;
+        uint16_t scaled_blue = (blue * intensity) / 255;
+
+        // Convert RGB (0-255) to PWM duty cycle (0-999)
+        // For active LOW LEDs: 0 RGB = 999 PWM (off), 255 RGB = 0 PWM (full brightness)
+        uint32_t red_pwm = 999 - ((scaled_red * 999) / 255);
+        uint32_t green_pwm = 999 - ((scaled_green * 999) / 255);
+        uint32_t blue_pwm = 999 - ((scaled_blue * 999) / 255);
+
+        // Set PWM duty cycles
+        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, red_pwm);     // LED1 - Red
+        __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, green_pwm);  // LED2 - Green
+        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, blue_pwm);    // LED3 - Blue
+    } else {
+        // LED OFF - turn off all colors
+        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 999);    // Red OFF
+        __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 999);   // Green OFF
+        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 999);    // Blue OFF
+    }
+}

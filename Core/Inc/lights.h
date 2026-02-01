@@ -55,6 +55,17 @@ void LED_Charging(int ms_delay, uint8_t intensity);
  */
 void LED_Test_Individual(void);
 
+/**
+ * @brief Flash LED with custom color (non-blocking)
+ * @param flash_interval_ms Time between on and off in milliseconds
+ * @param red Red component (0-255)
+ * @param green Green component (0-255)
+ * @param blue Blue component (0-255)
+ * @param intensity Overall brightness multiplier (0-255, where 255 is full)
+ * @note This is non-blocking - call repeatedly in main loop
+ */
+void LED_Alarm(int flash_interval_ms, uint8_t red, uint8_t green, uint8_t blue, uint8_t intensity);
+
 #ifdef __cplusplus
 }
 #endif

@@ -2,7 +2,7 @@
  * state_machine.c
  * created by Sebastian Forenza 2026
  *
- * Main code loop
+ * Main code loop with melody-duration-based alarm timeout
  ***************************************************************************/
 
 #include "state_machine.h"
@@ -53,7 +53,7 @@ void StateMachine_CheckInactivityTimeout(void) {
         return;
     }
 
-    if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3) == 0) {
+    if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0) {
         lastActivityTime = HAL_GetTick();
         return;
     }
@@ -69,7 +69,7 @@ void State_Disconnected_Idle_Loop(){
 
 void State_Connected_Idle_Loop(){
     if (GET_ARMED_BIT(deviceState)) {
-    	LIS2DUX12_ClearMotion();
+        LIS2DUX12_ClearMotion();
         StateMachine_ChangeState(STATE_LOCKED);
         HAL_Delay(10);
     }
@@ -87,7 +87,7 @@ void State_Locked_Loop(){
     }
 
     if (GET_LIGHTS_BIT(deviceState)) {
-    	//Locked LED
+        //Locked LED
         LED_Armed(10,150);
     } else {
         LED_Off();
@@ -111,13 +111,12 @@ void State_Locked_Loop(){
         }
     }
     lastMotionState = currentMotionState;
-
 }
 
 void State_Sleep_Loop(){
     // ============ ENTERING SLEEP ============
     // Debug sequence: 3 descending tones
-	BUZZER_Tone(400, 50);
+    BUZZER_Tone(400, 50);
     HAL_Delay(100);
     BUZZER_Tone(300, 50);
     HAL_Delay(100);
@@ -159,30 +158,73 @@ void State_Sleep_Loop(){
 }
 
 void State_Alarm_Active_Loop(){
+    static uint32_t last_motion_time = 0;
+    static uint8_t alarm_started = 0;
+    static uint32_t melody_duration_ms = 0;
+
+    // Check if disarmed - EXIT INSTANTLY
     if (!GET_ARMED_BIT(deviceState)) {
+        BUZZER_Stop();
+        alarm_started = 0;
+        melody_duration_ms = 0;
         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
         return;
     }
 
-    uint8_t alarmType = GET_ALARM_TYPE(deviceState);
+    // Start the appropriate alarm if not already playing
+    if (!alarm_started) {
+        uint8_t alarmType = GET_ALARM_TYPE(deviceState);
+        switch(alarmType) {
+            case ALARM_NONE:
+                // No sound, use 1 second timeout
+                melody_duration_ms = 1000;
+                break;
+            case ALARM_CALM:
+                LED_Alarm(300, 255, 0, 0, 255);
+                BUZZER_StartCalmAlarm();
+                melody_duration_ms = BUZZER_GetCalmAlarmDuration();
+                break;
+            case ALARM_NORMAL:
+                LED_Alarm(300, 255, 0, 0, 255);
+                BUZZER_StartNormalAlarm();
+                melody_duration_ms = BUZZER_GetNormalAlarmDuration();
+                break;
+            case ALARM_LOUD:
+                LED_Alarm(125, 255, 225, 0, 100);
+                BUZZER_StartLaCucaracha();
+                melody_duration_ms = BUZZER_GetLaCucarachaDuration();
+                break;
+            default:
+                melody_duration_ms = 1000;
+                break;
+        }
 
-    switch(alarmType) {
-        case ALARM_NONE:
-            break;
-        case ALARM_CALM:
-        	SOUND_CalmAlarm();
-            break;
-        case ALARM_NORMAL:
-        	SOUND_NormalAlarm();
-            break;
-        case ALARM_LOUD:
-        	SOUND_LoudAlarm();
-            break;
-        default:
-            break;
+        alarm_started = 1;
+        last_motion_time = HAL_GetTick();
     }
 
-    StateMachine_ChangeState(STATE_LOCKED);
+    // Check for new motion - RESET TIMER
+    if (LIS2DUX12_IsMotionDetected()) {
+        last_motion_time = HAL_GetTick();
+
+        // Log the motion event
+        if (GET_LOGGING_BIT(deviceState)) {
+            MotionLogger_LogEvent(1);
+            LOCKSERVICE_SendMotionAlert();
+        }
+    }
+
+    // Exit alarm only after at least one full melody duration with no motion
+    // This ensures the alarm plays for the full length of the tune
+    if ((HAL_GetTick() - last_motion_time) >= melody_duration_ms) {
+        BUZZER_Stop();
+        alarm_started = 0;
+        melody_duration_ms = 0;
+        StateMachine_ChangeState(STATE_LOCKED);
+        return;
+    }
+
+    // The buzzer update is handled in StateMachine_Run()
 }
 
 void StateMachine_ChangeState(SystemState_t newState)
@@ -203,27 +245,30 @@ void StateMachine_ChangeState(SystemState_t newState)
 }
 
 void ChargingCheck(){
-	static uint8_t previousBattery = 0xFF;
+    static uint8_t previousBattery = 0xFF;
 
-	if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
-		SET_BATTERY_CHARGING(deviceBattery);
-		if (!GET_ARMED_BIT(deviceState)){
-		    LED_Charging(10,25);
-		}
-	} else {
-		CLEAR_BATTERY_CHARGING(deviceBattery);
-	}
+    if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
+        SET_BATTERY_CHARGING(deviceBattery);
+        if (!GET_ARMED_BIT(deviceState)){
+            LED_Charging(10,25);
+        }
+    } else {
+        CLEAR_BATTERY_CHARGING(deviceBattery);
+    }
 
-	if (deviceBattery != previousBattery) {
-	    LOCKSERVICE_SendStatusUpdate();
-	    previousBattery = deviceBattery;
-		LED_Off();
-	}
+    if (deviceBattery != previousBattery) {
+        LOCKSERVICE_SendStatusUpdate();
+        previousBattery = deviceBattery;
+        LED_Off();
+    }
 }
 
 void StateMachine_Run(void)
 {
-	ChargingCheck();
+    ChargingCheck();
+
+    // Update buzzer state machine (non-blocking)
+    BUZZER_Update();
 
     switch(currentState)
     {

@@ -72,22 +72,17 @@ void State_Connected_Idle_Loop(){
     	LIS2DUX12_ClearMotion();
         StateMachine_ChangeState(STATE_LOCKED);
         HAL_Delay(10);
-    } else {
-        if (GET_LIGHTS_BIT(deviceState)) {
-            //LED_Rainbow(10,20);
-        } else {
-        	LED_Off();
-        }
     }
 }
 
 void State_Locked_Loop(){
     static uint8_t lastMotionState = GPIO_PIN_RESET;
 
-    // If no longer armed, switch out of locked state
+    // EXIT
     if (!GET_ARMED_BIT(deviceState)) {
         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
         lastMotionState = GPIO_PIN_RESET;
+        LED_Off();
         return;
     }
 

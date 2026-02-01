@@ -22,7 +22,7 @@ uint16_t BATTERY_SOC(void);
 
 /**
  * @brief Get the instantaneous current draw
- * @return Current in mA (positive = charging, negative = discharging), or 0 if read fails
+ * @return Current in mA (negative = charging, positive = discharging), or 0 if read fails
  */
 int16_t BATTERY_Current(void);
 
@@ -42,9 +42,10 @@ bool BATTERY_SelfTest(void);
 /**
  * @brief Get quick status check (no printf, suitable for production)
  * @param voltage_mV Output: battery voltage in mV
- * @param soc_percent Output: state of charge in percent
- * @param is_charging Output: true if battery is charging
+ * @param soc_percent Output: state of charge in percent (estimated from voltage if gauge uncalibrated)
+ * @param is_charging Output: true if battery is charging (negative current)
  * @return true if read successful, false otherwise
+ * @note If gauge SOC is 0 (uncalibrated), SOC will be estimated from voltage
  */
 bool BATTERY_GetStatus(uint16_t *voltage_mV, uint16_t *soc_percent, bool *is_charging);
 

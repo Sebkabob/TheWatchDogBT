@@ -213,7 +213,15 @@ int main(void)
         bool is_charging;
 
         if (BATTERY_GetStatus(&voltage_mV, &soc_percent, &is_charging)) {
+            // soc_percent is already estimated from voltage if gauge is uncalibrated!
             deviceBattery = soc_percent & 0x7F;
+
+            // Update charging bit
+            if (is_charging) {
+                SET_BATTERY_CHARGING(deviceBattery);
+            } else {
+                CLEAR_BATTERY_CHARGING(deviceBattery);
+            }
         }
     }
   }

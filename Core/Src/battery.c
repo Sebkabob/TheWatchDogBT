@@ -236,6 +236,56 @@ bool BATTERY_SelfTest(void)
 }
 
 /**
+ * @brief Estimate SOC percentage from battery voltage (LiPo curve)
+ * @param voltage_mV Battery voltage in millivolts
+ * @return Estimated SOC in percent (0-100)
+ * @note This is an approximation based on typical LiPo discharge curve
+ */
+static uint8_t BATTERY_EstimateSOC_FromVoltage(uint16_t voltage_mV)
+{
+    // LiPo voltage to SOC lookup table (approximate)
+    // Based on typical single-cell LiPo discharge curve
+
+    if (voltage_mV >= 4200) {
+        return 100;  // 4.2V = 100% (fully charged)
+    } else if (voltage_mV >= 4150) {
+        return 95;   // 4.15V = ~95%
+    } else if (voltage_mV >= 4100) {
+        return 90;   // 4.1V = ~90%
+    } else if (voltage_mV >= 4050) {
+        return 85;   // 4.05V = ~85%
+    } else if (voltage_mV >= 4000) {
+        return 80;   // 4.0V = ~80%
+    } else if (voltage_mV >= 3950) {
+        return 75;   // 3.95V = ~75%
+    } else if (voltage_mV >= 3900) {
+        return 70;   // 3.9V = ~70%
+    } else if (voltage_mV >= 3850) {
+        return 65;   // 3.85V = ~65%
+    } else if (voltage_mV >= 3800) {
+        return 60;   // 3.8V = ~60%
+    } else if (voltage_mV >= 3750) {
+        return 55;   // 3.75V = ~55%
+    } else if (voltage_mV >= 3700) {
+        return 50;   // 3.7V = ~50% (nominal voltage)
+    } else if (voltage_mV >= 3650) {
+        return 40;   // 3.65V = ~40%
+    } else if (voltage_mV >= 3600) {
+        return 30;   // 3.6V = ~30%
+    } else if (voltage_mV >= 3500) {
+        return 20;   // 3.5V = ~20%
+    } else if (voltage_mV >= 3400) {
+        return 10;   // 3.4V = ~10%
+    } else if (voltage_mV >= 3300) {
+        return 5;    // 3.3V = ~5% (low battery warning)
+    } else if (voltage_mV >= 3200) {
+        return 2;    // 3.2V = ~2% (critical)
+    } else {
+        return 1;    // Below 3.2V = ~1% (cutoff imminent)
+    }
+}
+
+/**
  * @brief Get quick status check (no printf)
  * @param voltage_mV Output: battery voltage in mV
  * @param soc_percent Output: state of charge in percent
@@ -258,7 +308,13 @@ bool BATTERY_GetStatus(uint16_t *voltage_mV, uint16_t *soc_percent, bool *is_cha
         return false;
     }
 
-    *is_charging = (current_mA > 0);
+    // If gauge is uncalibrated (SOC = 0), estimate from voltage
+    if (*soc_percent == 0) {
+        *soc_percent = BATTERY_EstimateSOC_FromVoltage(*voltage_mV);
+    }
+
+    // Negative current = charging (BQ27427 convention)
+    *is_charging = (current_mA < 0);
 
     return true;
 }

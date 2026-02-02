@@ -319,6 +319,21 @@ bool BATTERY_GetStatus(uint16_t *voltage_mV, uint16_t *soc_percent, bool *is_cha
     return true;
 }
 
+bool BATTERY_Charging(){
+    int16_t current_mA;
+
+    if (!bq27427_readAvgCurrent_mA(&current_mA)) {
+        return false;
+    }
+    // Negative current = charging (BQ27427 convention)
+     if (current_mA < 0){
+    	 return true;
+     } else if (current_mA >= 0){
+    	 return false;
+     }
+
+}
+
 /**
  * @brief Check if battery is critically low
  * @return true if battery is critically low, false otherwise

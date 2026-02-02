@@ -321,7 +321,7 @@ bool bq27427_init( uint16_t designCapacity_mAh, uint16_t terminateVoltage_mV, ui
     checksumCalc = 0xFF - checksumCalc;
 
     // Update OpConfig (enable battery insertion detection)
-    block[0] = 0x05;
+    block[0] |= 0x01;   // BAT_INS_EN bit
 
     // Calculate new checksum
     checksumNew = 0x00;
@@ -392,6 +392,13 @@ bool bq27427_init( uint16_t designCapacity_mAh, uint16_t terminateVoltage_mV, ui
     bq27427_i2c_control_write( BQ27427_CONTROL_BAT_INSERT );
 
     HAL_Delay(500);
+
+    bq27427_readFlagsReg(&flags);
+
+    if (!(flags & 0x0008)) {   // BAT_DET bit
+        return false;         // Battery not detected → SOC invalid
+    }
+
 
     // Step 4: Check CONTROL_STATUS for initialization status
     // Note: INITCOMP (bit 7) may not be set immediately on fresh battery

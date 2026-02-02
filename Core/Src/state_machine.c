@@ -244,24 +244,34 @@ void StateMachine_ChangeState(SystemState_t newState)
     }
 }
 
-void ChargingCheck(){
-    static uint8_t previousBattery = 0xFF;
+void ChargingCheck(void)
+{
+    static GPIO_PinState prev_charge_pin = GPIO_PIN_RESET;
 
-    if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
-        SET_BATTERY_CHARGING(deviceBattery);
-        if (!GET_ARMED_BIT(deviceState)){
-            LED_Charging(10,25);
-        }
-    } else {
-        CLEAR_BATTERY_CHARGING(deviceBattery);
+    GPIO_PinState charge_pin = HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin);
+
+    // Detect plug/unplug edge
+    if (charge_pin != prev_charge_pin) {
+        LED_Off();                 // immediate hard stop
+        prev_charge_pin = charge_pin;
     }
 
-    if (deviceBattery != previousBattery) {
-        LOCKSERVICE_SendStatusUpdate();
-        previousBattery = deviceBattery;
-        LED_Off();
+    if (IS_CHARGING(charge_pin)) {
+
+        if (!GET_ARMED_BIT(deviceState)) {
+
+            if (BATTERY_Charging()) {
+                SET_BATTERY_CHARGING(deviceBattery);
+                LED_Pulse(800, 255, 100, 0, 60); // orange pulse
+            } else {
+                CLEAR_BATTERY_CHARGING(deviceBattery);
+                LED_Pulse(1000, 0, 255, 0, 60);  // green pulse
+            }
+        }
     }
 }
+
+
 
 void StateMachine_Run(void)
 {

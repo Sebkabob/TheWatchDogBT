@@ -420,3 +420,78 @@ void LED_Alarm(int flash_interval_ms, uint8_t red, uint8_t green, uint8_t blue, 
         __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 999);    // Blue OFF
     }
 }
+
+void LED_Pulse(int duration, uint8_t r, uint8_t g, uint8_t b, uint8_t intensity)
+{
+    static uint16_t pulse_value = 0;     // 0–255
+    static uint8_t direction = 1;        // 1 = up, 0 = down
+    static uint32_t last_update = 0;
+    static uint32_t last_call = 0;
+    static uint8_t initialized = 0;
+
+    uint32_t now = HAL_GetTick();
+
+    // Clamp intensity
+    if (intensity > 255) intensity = 255;
+    if (duration < 20) duration = 20;   // prevent divide-by-zero / jitter
+
+    // Reset if function hasn't been called recently
+    #define PULSE_RESET_TIMEOUT 500
+    if ((now - last_call) > PULSE_RESET_TIMEOUT) {
+        pulse_value = 0;
+        direction = 1;
+        initialized = 0;
+        last_update = now;
+    }
+    last_call = now;
+
+    // One-time init
+    if (!initialized) {
+        HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);   // Red
+        HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1);  // Green
+        HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);   // Blue
+        initialized = 1;
+    }
+
+    // Calculate step timing
+    // 512 steps total (256 up + 256 down)
+    uint16_t step_delay = duration / 512;
+    if (step_delay < 1) step_delay = 1;
+
+    if ((now - last_update) < step_delay) {
+        return;
+    }
+    last_update = now;
+
+    // Update pulse
+    if (direction) {
+        pulse_value++;
+        if (pulse_value >= 255) {
+            pulse_value = 255;
+            direction = 0;
+        }
+    } else {
+        if (pulse_value > 0) {
+            pulse_value--;
+        }
+        if (pulse_value == 0) {
+            direction = 1;
+        }
+    }
+
+    // Apply pulse + intensity
+    uint16_t pr = (r * pulse_value * intensity) / (255 * 255);
+    uint16_t pg = (g * pulse_value * intensity) / (255 * 255);
+    uint16_t pb = (b * pulse_value * intensity) / (255 * 255);
+
+    // Convert to PWM (active LOW)
+    uint32_t red_pwm   = 999 - ((pr * 999) / 255);
+    uint32_t green_pwm = 999 - ((pg * 999) / 255);
+    uint32_t blue_pwm  = 999 - ((pb * 999) / 255);
+
+    // Apply PWM
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, red_pwm);
+    __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, green_pwm);
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, blue_pwm);
+}
+

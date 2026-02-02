@@ -50,6 +50,12 @@ bool BATTERY_SelfTest(void);
 bool BATTERY_GetStatus(uint16_t *voltage_mV, uint16_t *soc_percent, bool *is_charging);
 
 /**
+ * @brief Returns true if charging, false if not
+ */
+bool BATTERY_Charging(void);
+
+
+/**
  * @brief Check if battery is critically low
  * @return true if battery is critically low (SOCF flag set), false otherwise
  */

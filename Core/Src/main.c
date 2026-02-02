@@ -31,6 +31,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "lockservice_app.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -201,19 +202,14 @@ int main(void)
     MX_APPE_Process();
 
     /* USER CODE BEGIN 3 */
-    StateMachine_Run();
-
-    //BUZZER_Tone(50,10); //Rapidly drain the battery
-
     static uint32_t last_battery_check = 0;
-    if (HAL_GetTick() - last_battery_check > 3000) {
+    if (HAL_GetTick() - last_battery_check > 500) {  // Changed from 3000 to 500
         last_battery_check = HAL_GetTick();
 
         uint16_t voltage_mV, soc_percent;
         bool is_charging;
 
         if (BATTERY_GetStatus(&voltage_mV, &soc_percent, &is_charging)) {
-            // soc_percent is already estimated from voltage if gauge is uncalibrated!
             deviceBattery = soc_percent & 0x7F;
 
             // Update charging bit
@@ -222,8 +218,15 @@ int main(void)
             } else {
                 CLEAR_BATTERY_CHARGING(deviceBattery);
             }
+
+            // Send update to iOS
+            LOCKSERVICE_SendStatusUpdate();
         }
     }
+
+    //BUZZER_Drain();
+
+    StateMachine_Run();
   }
   /* USER CODE END 3 */
 }

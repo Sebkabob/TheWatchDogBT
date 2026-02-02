@@ -31,6 +31,13 @@
 /* USER CODE BEGIN Includes */
 #include "sound.h"
 #include "motion_logger.h"
+#include "battery.h"
+#include "state_machine.h"
+#include "lights.h"
+#include "battery.h"
+#include "accelerometer.h"
+#include "power_management.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -404,12 +411,40 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
   // Set notification to ON so it actually sends
   notification_on_off = Devicestatus_NOTIFICATION_ON;
 
-  // Send deviceState (not deviceInfo)
+  // Get battery voltage and current
+  uint16_t voltage_mV = BATTERY_Voltage();  // Returns voltage in mV
+  int16_t current_mA = BATTERY_Current();   // Returns current in mA (negative when charging)
+
+  // Keep current as signed - we want to preserve the sign (negative = charging)
+  // For BLE transmission, we'll send it as-is in little-endian format
+  uint16_t current_raw = (uint16_t)current_mA;  // Reinterpret as unsigned for byte packing
+
+  // Build 6-byte packet:
+  // Byte 0: deviceState
+  // Byte 1: deviceBattery (with charging flag in bit 7)
+  // Bytes 2-3: Current in mA (little-endian, SIGNED - negative means charging)
+  // Bytes 4-5: Voltage in mV (little-endian)
+
+  if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
+      SET_BATTERY_CHARGING(deviceBattery);
+  } else {
+      CLEAR_BATTERY_CHARGING(deviceBattery);
+  }
+
   a_LOCKSERVICE_UpdateCharData[0] = deviceState;
   a_LOCKSERVICE_UpdateCharData[1] = deviceBattery;
 
-  // Set the actual length of data you're sending
-  lockservice_notification_data.Length = 2;
+  // Current (little-endian: low byte first, then high byte)
+  // Note: This preserves the sign - negative values will have bit 15 set
+  a_LOCKSERVICE_UpdateCharData[2] = (uint8_t)(current_raw & 0xFF);        // Low byte
+  a_LOCKSERVICE_UpdateCharData[3] = (uint8_t)((current_raw >> 8) & 0xFF); // High byte
+
+  // Voltage (little-endian: low byte first, then high byte)
+  a_LOCKSERVICE_UpdateCharData[4] = (uint8_t)(voltage_mV & 0xFF);        // Low byte
+  a_LOCKSERVICE_UpdateCharData[5] = (uint8_t)((voltage_mV >> 8) & 0xFF); // High byte
+
+  // Set the actual length of data you're sending (now 6 bytes)
+  lockservice_notification_data.Length = 6;
   /* USER CODE END Service1Char2_NS_1*/
 
   if (notification_on_off != Devicestatus_NOTIFICATION_OFF && LOCKSERVICE_APP_Context.ConnectionHandle != 0xFFFF)

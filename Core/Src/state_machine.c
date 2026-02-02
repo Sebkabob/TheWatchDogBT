@@ -36,10 +36,10 @@ void StateMachine_Init(void)
     deviceState = 0;
     SET_ARMED_BIT(deviceState, 0);
     SET_ALARM_TYPE(deviceState, ALARM_CALM);
-    SET_SENSITIVITY(deviceState, SENSITIVITY_MEDIUM);
+    SET_SENSITIVITY(deviceState, SENSITIVITY_LOW);
     SET_LIGHTS_BIT(deviceState, 1);
     SET_LOGGING_BIT(deviceState, 1);
-    SET_SILENCE_BIT(deviceState, 1);
+    SET_SILENCE_BIT(deviceState, 0);
 
     deviceInfo = 0;
 }

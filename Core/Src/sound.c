@@ -18,6 +18,11 @@
  * Define your alarm sequences here - easy to modify!
  ***************************************************************************/
 
+static const Note_t DRAIN_PATTERN[] = {
+    {20, 57600, 0},
+};
+
+
 // Calm alarm - gentle beeps
 static const Note_t CALM_ALARM_PATTERN[] = {
     {415, 20, 15},   // 415Hz for 20ms, then 15ms pause
@@ -26,10 +31,14 @@ static const Note_t CALM_ALARM_PATTERN[] = {
 
 // Normal alarm - medium intensity
 static const Note_t NORMAL_ALARM_PATTERN[] = {
-    {1047, 300, 15},  // High C for 300ms
-    {880,  300, 15},  // A for 300ms
-    {1047, 300, 15},  // High C for 300ms
-    {880,  300, 15},  // A for 300ms
+    {1047, 150, 15},  // High C for 300ms
+    {880,  150, 15},  // A for 300ms
+    {1047, 150, 15},  // High C for 300ms
+    {880,  150, 15},  // A for 300ms
+    {1047, 150, 15},  // High C for 300ms
+    {880,  150, 15},  // A for 300ms
+    {1047, 150, 15},  // High C for 300ms
+    {880,  150, 15},  // A for 300ms
 };
 
 // Loud alarm - high intensity
@@ -231,6 +240,12 @@ uint32_t BUZZER_GetSequenceDuration(const Note_t* sequence, uint8_t num_notes) {
 /***************************************************************************
  * ALARM SEQUENCE STARTERS WITH DURATION GETTERS
  ***************************************************************************/
+
+void BUZZER_Drain(void) {
+    BUZZER_PlaySequence(DRAIN_PATTERN,
+                        sizeof(DRAIN_PATTERN) / sizeof(Note_t),
+                        1);  // Loop
+}
 
 void BUZZER_StartCalmAlarm(void) {
     BUZZER_PlaySequence(CALM_ALARM_PATTERN,

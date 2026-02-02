@@ -4,7 +4,7 @@
 
 // Battery configuration parameters
 #define BATTERY_DESIGN_CAPACITY_MAH     300     // 300mAh battery
-#define BATTERY_TERMINATE_VOLTAGE_MV    4200    // 4.2V (4200mV)
+#define BATTERY_TERMINATE_VOLTAGE_MV    4100    // 4.10 (4100mV)
 #define BATTERY_TAPER_CURRENT_MA        30      // 30mA (10% of capacity)
 
 // Debug info structure

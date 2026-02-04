@@ -194,8 +194,6 @@ int main(void)
   firstBootTone();
   StateMachine_Init();
 
-  //HAL_Delay(5000);  // Wait 5 seconds
-  //StateMachine_ChangeState(STATE_SLEEP);  // Force sleep
   while (1)
   {
     /* USER CODE END WHILE */

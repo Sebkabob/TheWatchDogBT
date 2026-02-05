@@ -67,7 +67,7 @@ void StateMachine_CheckInactivityTimeout(void) {
 void State_Disconnected_Idle_Loop(){
     //Lights
     if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
-        if (BATTERY_Charging()) {
+        if (BATTERY_IsCharging()) {
             LED_Pulse(800, 255, 100, 0, 60); // orange pulse - charging
         } else {
             LED_Pulse(1000, 0, 255, 0, 60);  // green pulse - charged
@@ -86,7 +86,7 @@ void State_Connected_Idle_Loop(){
 
 	//Lights
     if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
-        if (BATTERY_Charging()) {
+        if (BATTERY_IsCharging()) {
             LED_Pulse(800, 255, 100, 0, 60); // orange pulse - charging
         } else {
             LED_Pulse(1000, 0, 255, 0, 60);  // green pulse - charged
@@ -237,12 +237,13 @@ void StateMachine_ChangeState(SystemState_t newState)
     }
 }
 
-void ChargingCheck(void)
-{
-    GPIO_PinState charge_pin = HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin);
+void ChargingCheck(void) {
+    static uint32_t last_check = 0;
+    if ((HAL_GetTick() - last_check) < 1000) return;  // Rate limit to 1Hz
+    last_check = HAL_GetTick();
 
+    GPIO_PinState charge_pin = HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin);
     if (IS_CHARGING(charge_pin)) {
-        // Update battery charging flag for BLE transmission
         if (BATTERY_Charging()) {
             SET_BATTERY_CHARGING(deviceBattery);
         } else {
@@ -250,7 +251,6 @@ void ChargingCheck(void)
         }
     }
 }
-
 void StateMachine_Run(void)
 {
 

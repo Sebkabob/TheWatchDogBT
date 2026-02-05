@@ -95,6 +95,11 @@ extern volatile uint8_t connectionStatus;
 // Track current transfer state
 static uint16_t currentEventIndex = 0;
 static uint8_t transferInProgress = 0;
+
+static uint32_t last_battery_read = 0;
+static uint16_t cached_voltage_mV = 0;
+static int16_t cached_current_mA = 0;
+static uint16_t cached_soc = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -415,46 +420,29 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
   // Set notification to ON so it actually sends
   notification_on_off = Devicestatus_NOTIFICATION_ON;
 
-  // Get battery voltage and current
-  uint16_t voltage_mV = BATTERY_Voltage();  // Returns voltage in mV
-  int16_t current_mA = BATTERY_Current();   // Returns current in mA (negative when charging)
+  // Use cached battery values (updated by BATTERY_UpdateState in main loop)
+  uint16_t voltage_mV = BATTERY_GetVoltage();
+  int16_t current_mA = BATTERY_GetCurrent();
+  uint16_t soc_percent = BATTERY_GetSOC();
 
-  // Keep current as signed - we want to preserve the sign (negative = charging)
-  // For BLE transmission, we'll send it as-is in little-endian format
-  uint16_t current_raw = (uint16_t)current_mA;  // Reinterpret as unsigned for byte packing
+  deviceBattery = soc_percent & 0x7F;
 
-  // Build 6-byte packet:
-  // Byte 0: deviceState
-  // Byte 1: deviceBattery (with charging flag in bit 7)
-  // Bytes 2-3: Current in mA (little-endian, SIGNED - negative means charging)
-  // Bytes 4-5: Voltage in mV (little-endian)
-
-  if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
+  // Set charging flag based on GPIO pin
+  if (!(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
       SET_BATTERY_CHARGING(deviceBattery);
   } else {
       CLEAR_BATTERY_CHARGING(deviceBattery);
   }
 
-  uint16_t soc_percent;
-  bool is_charging;
 
-  if (BATTERY_GetStatus(&voltage_mV, &soc_percent, &is_charging)) {
-              deviceBattery = soc_percent & 0x7F;
-  }
-
+  // Pack data into BLE notification
   a_LOCKSERVICE_UpdateCharData[0] = deviceState;
   a_LOCKSERVICE_UpdateCharData[1] = deviceBattery;
+  a_LOCKSERVICE_UpdateCharData[2] = (uint8_t)(current_mA & 0xFF);        // Current low byte
+  a_LOCKSERVICE_UpdateCharData[3] = (uint8_t)((current_mA >> 8) & 0xFF); // Current high byte
+  a_LOCKSERVICE_UpdateCharData[4] = (uint8_t)(voltage_mV & 0xFF);        // Voltage low byte
+  a_LOCKSERVICE_UpdateCharData[5] = (uint8_t)((voltage_mV >> 8) & 0xFF); // Voltage high byte
 
-  // Current (little-endian: low byte first, then high byte)
-  // Note: This preserves the sign - negative values will have bit 15 set
-  a_LOCKSERVICE_UpdateCharData[2] = (uint8_t)(current_raw & 0xFF);        // Low byte
-  a_LOCKSERVICE_UpdateCharData[3] = (uint8_t)((current_raw >> 8) & 0xFF); // High byte
-
-  // Voltage (little-endian: low byte first, then high byte)
-  a_LOCKSERVICE_UpdateCharData[4] = (uint8_t)(voltage_mV & 0xFF);        // Low byte
-  a_LOCKSERVICE_UpdateCharData[5] = (uint8_t)((voltage_mV >> 8) & 0xFF); // High byte
-
-  // Set the actual length of data you're sending (now 6 bytes)
   lockservice_notification_data.Length = 6;
   /* USER CODE END Service1Char2_NS_1*/
 

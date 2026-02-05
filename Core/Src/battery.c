@@ -15,6 +15,23 @@ typedef struct {
     uint16_t remaining_capacity_mAh;
 } bq27427_debug_info_t;
 
+// Global battery state
+typedef struct {
+    uint16_t voltage_mV;
+    int16_t current_mA;
+    uint16_t soc_percent;
+    bool is_charging;
+    bool is_full;
+    bool is_low;
+    bool is_critical;
+    uint32_t last_update;
+} BatteryState_t;
+
+static BatteryState_t battery_state = {0};
+
+// Forward declaration for static function
+static uint8_t BATTERY_EstimateSOC_FromVoltage(uint16_t voltage_mV);
+
 bool BATTERY_TestCapacityRead(uint16_t *design_cap)
 {
     *design_cap = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
@@ -36,29 +53,131 @@ bool BATTERY_Init(void)
         return false;
     }
 
-    // Reset to clear any bad state
-    bq27427_reset();
-    HAL_Delay(2000);
+    // Check if already configured correctly
+    uint16_t current_capacity = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
+    uint16_t current_terminate_voltage = bq27427_terminate_voltage();
+    uint16_t current_taper_rate = bq27427_taper_rate();
 
-    // Configure battery - enter config once, set everything, exit
-    if (!bq27427_enter_config(true)) {
-        return false;
+    bool needs_config = (current_capacity != 300) ||
+                        (current_terminate_voltage != 3400) ||
+                        (current_taper_rate != 100);
+
+    if (needs_config) {
+        // Reset to clear any bad state
+        bq27427_reset();
+        HAL_Delay(2000);
+
+        // Configure battery - enter config once, set everything, exit
+        if (!bq27427_enter_config(true)) {
+            return false;
+        }
+
+        bq27427_set_capacity(300);
+        bq27427_set_terminate_voltage(3400);
+        bq27427_set_taper_rate(100);  // 300mAh / 30mA * 10 = 100
+
+        if (!bq27427_exit_config(true)) {
+            return false;
+        }
+
+        HAL_Delay(500);
     }
 
-    bq27427_set_capacity(300);
-    bq27427_set_terminate_voltage(3400);
-    bq27427_set_taper_rate(100);  // 300mAh / 30mA * 10 = 100
+    // Initialize battery state
+    battery_state.last_update = 0;
 
-    if (!bq27427_exit_config(true)) {
-        return false;
-    }
-
-    HAL_Delay(500);
     return true;
 }
 
 /**
- * @brief Get the current State of Charge (SOC)
+ * @brief Update all battery parameters (call once per second max)
+ * @return true if update successful
+ */
+bool BATTERY_UpdateState(void)
+{
+    uint32_t now = HAL_GetTick();
+
+    // Rate limit to prevent I2C spam (minimum 1 second between updates)
+    if ((now - battery_state.last_update) < 500) {
+        return true;  // Use cached values
+    }
+
+    // Read all battery parameters in one burst
+    battery_state.voltage_mV = bq27427_voltage();
+    battery_state.current_mA = bq27427_current(BQ27427_CURRENT_AVG);
+    battery_state.soc_percent = bq27427_soc(BQ27427_SOC_FILTERED);
+    battery_state.is_charging = bq27427_chg_flag();
+    battery_state.is_full = bq27427_fc_flag();
+    battery_state.is_low = bq27427_soc_flag();
+    battery_state.is_critical = bq27427_socf_flag();
+
+    // If gauge uncalibrated (SOC = 0), estimate from voltage
+    if (battery_state.soc_percent == 0 && battery_state.voltage_mV > 0) {
+        battery_state.soc_percent = BATTERY_EstimateSOC_FromVoltage(battery_state.voltage_mV);
+    }
+
+    battery_state.last_update = now;
+    return true;
+}
+
+/**
+ * @brief Get cached voltage (call BATTERY_UpdateState first)
+ */
+uint16_t BATTERY_GetVoltage(void)
+{
+    return battery_state.voltage_mV;
+}
+
+/**
+ * @brief Get cached current (call BATTERY_UpdateState first)
+ */
+int16_t BATTERY_GetCurrent(void)
+{
+    return battery_state.current_mA;
+}
+
+/**
+ * @brief Get cached SOC (call BATTERY_UpdateState first)
+ */
+uint16_t BATTERY_GetSOC(void)
+{
+    return battery_state.soc_percent;
+}
+
+/**
+ * @brief Get cached charging status (call BATTERY_UpdateState first)
+ */
+bool BATTERY_IsCharging(void)
+{
+    return battery_state.is_charging;
+}
+
+/**
+ * @brief Get cached full status (call BATTERY_UpdateState first)
+ */
+bool BATTERY_IsFullCached(void)
+{
+    return battery_state.is_full;
+}
+
+/**
+ * @brief Get cached low battery status (call BATTERY_UpdateState first)
+ */
+bool BATTERY_IsLowCached(void)
+{
+    return battery_state.is_low;
+}
+
+/**
+ * @brief Get cached critical battery status (call BATTERY_UpdateState first)
+ */
+bool BATTERY_IsCriticallyCached(void)
+{
+    return battery_state.is_critical;
+}
+
+/**
+ * @brief Get the current State of Charge (SOC) - LEGACY, use BATTERY_GetSOC instead
  * @return State of charge in percent (0-100), or 0 if read fails
  */
 uint16_t BATTERY_SOC(void)
@@ -67,7 +186,7 @@ uint16_t BATTERY_SOC(void)
 }
 
 /**
- * @brief Get the instantaneous current draw
+ * @brief Get the instantaneous current draw - LEGACY, use BATTERY_GetCurrent instead
  * @return Current in mA (positive = charging, negative = discharging), or 0 if read fails
  */
 int16_t BATTERY_Current(void)
@@ -76,7 +195,7 @@ int16_t BATTERY_Current(void)
 }
 
 /**
- * @brief Get the battery voltage
+ * @brief Get the battery voltage - LEGACY, use BATTERY_GetVoltage instead
  * @return Voltage in mV, or 0 if read fails
  */
 uint16_t BATTERY_Voltage(void)
@@ -270,7 +389,7 @@ bool BATTERY_GetStatus(uint16_t *voltage_mV, uint16_t *soc_percent, bool *is_cha
 }
 
 /**
- * @brief Check if battery is charging
+ * @brief Check if battery is charging - LEGACY, use BATTERY_IsCharging instead
  * @return true if charging, false otherwise
  */
 bool BATTERY_Charging(void)
@@ -279,7 +398,7 @@ bool BATTERY_Charging(void)
 }
 
 /**
- * @brief Check if battery is critically low
+ * @brief Check if battery is critically low - LEGACY, use BATTERY_IsCriticallyCached instead
  * @return true if battery is critically low, false otherwise
  */
 bool BATTERY_IsCriticallyLow(void)
@@ -288,7 +407,7 @@ bool BATTERY_IsCriticallyLow(void)
 }
 
 /**
- * @brief Check if battery is low
+ * @brief Check if battery is low - LEGACY, use BATTERY_IsLowCached instead
  * @return true if battery is low, false otherwise
  */
 bool BATTERY_IsLow(void)
@@ -297,7 +416,7 @@ bool BATTERY_IsLow(void)
 }
 
 /**
- * @brief Check if battery is fully charged
+ * @brief Check if battery is fully charged - LEGACY, use BATTERY_IsFullCached instead
  * @return true if battery is full, false otherwise
  */
 bool BATTERY_IsFull(void)

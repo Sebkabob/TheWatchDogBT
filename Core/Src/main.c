@@ -173,6 +173,7 @@ int main(void)
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   HAL_Delay(100);
   LIS2DUX12_Init();
+  BATTERY_Init();
 
   // Safe boot mode in case of sleep loop
   if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0){
@@ -195,15 +196,6 @@ int main(void)
   firstBootTone();
   StateMachine_Init();
 
-  uint16_t cap;
-
-  BATTERY_Init();
-
-  // Check what value we got
-  if (BATTERY_TestCapacityRead(&cap)) {
-
-  }
-
   while (1)
   {
     /* USER CODE END WHILE */
@@ -211,9 +203,9 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     static uint32_t last_battery_check = 0;
-    if (HAL_GetTick() - last_battery_check > 1000) {  // Changed from 3000 to 500
+    if (HAL_GetTick() - last_battery_check > 500) {
         last_battery_check = HAL_GetTick();
-
+        BATTERY_UpdateState();  // Update once per second
         LOCKSERVICE_SendStatusUpdate();
     }
 

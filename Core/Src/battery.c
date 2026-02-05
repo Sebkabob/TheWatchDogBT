@@ -53,6 +53,15 @@ bool BATTERY_Init(void)
         return false;
     }
 
+    bool current_pol = bq27427_current_polarity();
+    // Polarity bit = 1 means negative is charging (WRONG for your battery)
+    // Polarity bit = 0 means positive is charging (CORRECT for your battery)
+    if (current_pol) {
+        // Current polarity is inverted - fix it!
+        bq27427_change_current_polarity();
+        HAL_Delay(500);  // Wait for change to take effect
+    }
+
     // Check if already configured correctly
     uint16_t current_capacity = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
     uint16_t current_terminate_voltage = bq27427_terminate_voltage();

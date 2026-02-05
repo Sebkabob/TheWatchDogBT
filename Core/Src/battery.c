@@ -1,6 +1,7 @@
 #include "battery.h"
 #include "bq27427_reg.h"
 #include <stdio.h>
+#include "main.h"
 
 // Battery configuration parameters
 #define BATTERY_DESIGN_CAPACITY_MAH     300     // 300mAh battery
@@ -36,7 +37,6 @@ bool BATTERY_TestCapacityRead(uint16_t *design_cap)
 bool BATTERY_Init(void)
 {
     uint16_t device_type, design_cap, flags;
-    bool needs_init = false;
 
     if (!bq27427_readDeviceType(&device_type)) {
         return false;

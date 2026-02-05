@@ -173,7 +173,6 @@ int main(void)
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   HAL_Delay(100);
   LIS2DUX12_Init();
-  BATTERY_Init();
 
   // Safe boot mode in case of sleep loop
   if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0){
@@ -191,8 +190,19 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+
+
   firstBootTone();
   StateMachine_Init();
+
+  uint16_t cap;
+
+  BATTERY_Init();
+
+  // Check what value we got
+  if (BATTERY_TestCapacityRead(&cap)) {
+
+  }
 
   while (1)
   {

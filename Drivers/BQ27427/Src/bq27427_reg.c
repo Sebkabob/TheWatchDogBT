@@ -170,9 +170,9 @@ bool bq27427_i2c_read_data_block( uint8_t offset, uint8_t *data, uint8_t bytes )
 
 bool bq27427_init( uint16_t designCapacity_mAh, uint16_t terminateVoltage_mV, uint16_t taperCurrent_mA )
 {
-    uint16_t designEnergy_mWh, taperRate, flags, checksumOld, checksumRead;
+    uint16_t designEnergy_mWh, taperRate, flags, checksumRead;
     uint8_t checksumNew;
-
+    uint8_t block[32];
 
     designEnergy_mWh = 3.7 * designCapacity_mAh;
     taperRate = designCapacity_mAh / ( 0.1 * taperCurrent_mA );
@@ -185,7 +185,7 @@ bool bq27427_init( uint16_t designCapacity_mAh, uint16_t terminateVoltage_mV, ui
     bq27427_i2c_control_write( BQ27427_CONTROL_SET_CFGUPDATE );
 
     // Poll flags until CFGUPMODE bit is set
-    uint8_t cfg_timeout = 100;  // 10 second timeout
+    uint8_t cfg_timeout = 100;
     do
     {
         bq27427_i2c_command_read( BQ27427_FLAGS_LOW, &flags );
@@ -196,186 +196,162 @@ bool bq27427_init( uint16_t designCapacity_mAh, uint16_t terminateVoltage_mV, ui
         cfg_timeout--;
         if( cfg_timeout == 0 )
         {
-            return false;  // Timeout entering CONFIG UPDATE mode
+            return false;
         }
     }
     while( !(flags & 0x0010) );
 
-    // Wait minimum 1100ms before parameter modifications (per datasheet section 8.5)
+    // Wait minimum 1100ms before parameter modifications
     HAL_Delay( 1100 );
 
+    // ========================================================================
+    // WRITE TO REGISTERS SUBCLASS (0x40) - Design Capacity
+    // ========================================================================
+
     // Enable Block Data Memory Control
     bq27427_i2c_command_write( BQ27427_BLOCK_DATA_CONTROL, 0x0000 );
-
     HAL_Delay( BQ27427_DELAY );
 
-    // Access State subclass
-    bq27427_i2c_command_write( BQ27427_DATA_CLASS, 0x0052 );
+    // Access REGISTERS subclass (0x40)
+    bq27427_i2c_command_write( BQ27427_DATA_CLASS, 0x0040 );
+    HAL_Delay( BQ27427_DELAY );
 
-    // Write the block offset
     bq27427_i2c_command_write( BQ27427_DATA_BLOCK, 0x0000 );
+    HAL_Delay( BQ27427_DELAY );
 
-    // Read block checksum
-    bq27427_i2c_command_read( BQ27427_BLOCK_DATA_CHECKSUM, &checksumOld );
-
-    // Read 32-byte block of data
-    uint8_t block[32];
+    // Read existing 32-byte block
     for(uint8_t i = 0; i < 32; i++ )
     {
         block[i] = 0x00;
     }
-
     bq27427_i2c_read_data_block( 0x00, block, 32 );
 
-    // Calculate checksum
-    uint8_t checksumCalc = 0x00;
+    // Update Design Capacity at offset 0-1 (MSB first)
+    block[0] = (uint8_t)( designCapacity_mAh >> 8 );
+    block[1] = (uint8_t)( designCapacity_mAh & 0x00FF );
 
+    // Update Design Energy at offset 2-3 (MSB first)
+    block[2] = (uint8_t)( designEnergy_mWh >> 8 );
+    block[3] = (uint8_t)( designEnergy_mWh & 0x00FF );
+
+    // Update OpConfig at offset 4-5 - enable battery detection
+    block[4] |= 0x01;  // BAT_INS_EN bit
+
+    // Calculate new checksum
+    checksumNew = 0x00;
     for(uint8_t i = 0; i < 32; i++ )
     {
-        checksumCalc += block[i];
+        checksumNew += block[i];
     }
-    checksumCalc = 0xFF - checksumCalc;
+    checksumNew = 0xFF - checksumNew;
 
-    // Update design capacity
-    block[10] = (uint8_t)( designCapacity_mAh >> 8 );
-    block[11] = (uint8_t)( designCapacity_mAh & 0x00FF );
-    // Update design energy
-    block[12] = (uint8_t)( designEnergy_mWh >> 8 );
-    block[13] = (uint8_t)( designEnergy_mWh & 0x00FF );
-    // Update terminate voltage
+    // Write updated block back
+    bq27427_i2c_command_write( BQ27427_BLOCK_DATA_CONTROL, 0x0000 );
+    HAL_Delay( BQ27427_DELAY );
+
+    bq27427_i2c_command_write( BQ27427_DATA_CLASS, 0x0040 );
+    HAL_Delay( BQ27427_DELAY );
+
+    bq27427_i2c_command_write( BQ27427_DATA_BLOCK, 0x0000 );
+    HAL_Delay( BQ27427_DELAY );
+
+    bq27427_i2c_write_data_block( 0x00, block, 32 );
+
+    // Write checksum
+    bq27427_i2c_command_write( BQ27427_BLOCK_DATA_CHECKSUM, checksumNew );
+    HAL_Delay( BQ27427_DELAY );
+
+    // Verify checksum was accepted
+    bq27427_i2c_command_write( BQ27427_DATA_CLASS, 0x0040 );
+    HAL_Delay( BQ27427_DELAY );
+
+    bq27427_i2c_command_write( BQ27427_DATA_BLOCK, 0x0000 );
+    HAL_Delay( BQ27427_DELAY );
+
+    bq27427_i2c_command_read( BQ27427_BLOCK_DATA_CHECKSUM, &checksumRead );
+
+    if( checksumRead != (uint8_t)checksumNew )
+    {
+        return false;
+    }
+
+    // ========================================================================
+    // WRITE TO STATE SUBCLASS (0x52) - Taper Rate, Terminate Voltage
+    // ========================================================================
+
+    // Enable Block Data Memory Control
+    bq27427_i2c_command_write( BQ27427_BLOCK_DATA_CONTROL, 0x0000 );
+    HAL_Delay( BQ27427_DELAY );
+
+    // Access STATE subclass (0x52)
+    bq27427_i2c_command_write( BQ27427_DATA_CLASS, 0x0052 );
+    HAL_Delay( BQ27427_DELAY );
+
+    bq27427_i2c_command_write( BQ27427_DATA_BLOCK, 0x0000 );
+    HAL_Delay( BQ27427_DELAY );
+
+    // Read existing 32-byte block
+    for(uint8_t i = 0; i < 32; i++ )
+    {
+        block[i] = 0x00;
+    }
+    bq27427_i2c_read_data_block( 0x00, block, 32 );
+
+    // Update Terminate Voltage at offset 16-17 (MSB first)
     block[16] = (uint8_t)( terminateVoltage_mV >> 8 );
     block[17] = (uint8_t)( terminateVoltage_mV & 0x00FF );
-    // Update taper rate
-    block[27] = (uint8_t)( taperRate >> 8 );
-    block[28] = (uint8_t)( taperRate & 0x00FF );
+
+    // Update Taper Rate at offset 21-22 (MSB first) - NOT 27-28!
+    block[21] = (uint8_t)( taperRate >> 8 );
+    block[22] = (uint8_t)( taperRate & 0x00FF );
 
     // Calculate new checksum
     checksumNew = 0x00;
-    for(int i = 0; i < 32; i++ )
+    for(uint8_t i = 0; i < 32; i++ )
     {
         checksumNew += block[i];
     }
     checksumNew = 0xFF - checksumNew;
 
-    // Enable Block Data Memory Control
+    // Write updated block back
     bq27427_i2c_command_write( BQ27427_BLOCK_DATA_CONTROL, 0x0000 );
-
     HAL_Delay( BQ27427_DELAY );
 
-    // Access State subclass
     bq27427_i2c_command_write( BQ27427_DATA_CLASS, 0x0052 );
+    HAL_Delay( BQ27427_DELAY );
 
-    // Write the block offset
     bq27427_i2c_command_write( BQ27427_DATA_BLOCK, 0x0000 );
+    HAL_Delay( BQ27427_DELAY );
 
-    // Write 32-byte block of updated data
     bq27427_i2c_write_data_block( 0x00, block, 32 );
 
-    // Write new checksum
+    // Write checksum
     bq27427_i2c_command_write( BQ27427_BLOCK_DATA_CHECKSUM, checksumNew );
+    HAL_Delay( BQ27427_DELAY );
 
-    // Access State subclass
+    // Verify checksum was accepted
     bq27427_i2c_command_write( BQ27427_DATA_CLASS, 0x0052 );
+    HAL_Delay( BQ27427_DELAY );
 
-    // Write the block offset
     bq27427_i2c_command_write( BQ27427_DATA_BLOCK, 0x0000 );
+    HAL_Delay( BQ27427_DELAY );
 
-    // Read block checksum
     bq27427_i2c_command_read( BQ27427_BLOCK_DATA_CHECKSUM, &checksumRead );
 
-    // Verify
     if( checksumRead != (uint8_t)checksumNew )
     {
         return false;
     }
 
-    // Enable Block Data Memory Control
-    bq27427_i2c_command_write( BQ27427_BLOCK_DATA_CONTROL, 0x0000 );
+    // ========================================================================
+    // EXIT CONFIG UPDATE MODE
+    // ========================================================================
 
-    HAL_Delay( BQ27427_DELAY );
-
-    // Access Registers subclass
-    bq27427_i2c_command_write( BQ27427_DATA_CLASS, 0x0040 );
-
-    // Write the block offset
-    bq27427_i2c_command_write( BQ27427_DATA_BLOCK, 0x0000 );
-
-    // Read block checksum
-    bq27427_i2c_command_read( BQ27427_BLOCK_DATA_CHECKSUM, &checksumOld );
-
-    // Read 32-byte block of data
-    for(uint8_t i = 0; i < 32; i++ )
-    {
-        block[i] = 0x00;
-    }
-
-    bq27427_i2c_read_data_block( 0x00, block, 32 );
-
-    // Calculate checksum
-    checksumCalc = 0x00;
-
-    for(uint8_t i = 0; i < 32; i++ )
-    {
-        checksumCalc += block[i];
-    }
-    checksumCalc = 0xFF - checksumCalc;
-
-    // Update OpConfig (enable battery insertion detection)
-    block[0] |= 0x01;   // BAT_INS_EN bit
-
-    // Calculate new checksum
-    checksumNew = 0x00;
-    for(int i = 0; i < 32; i++ )
-    {
-        checksumNew += block[i];
-    }
-    checksumNew = 0xFF - checksumNew;
-
-    // Enable Block Data Memory Control
-    bq27427_i2c_command_write( BQ27427_BLOCK_DATA_CONTROL, 0x0000 );
-
-    HAL_Delay( BQ27427_DELAY );
-
-    // Access Registers subclass
-    bq27427_i2c_command_write( BQ27427_DATA_CLASS, 0x0040 );
-
-    // Write the block offset
-    bq27427_i2c_command_write( BQ27427_DATA_BLOCK, 0x0000 );
-
-    // Write 32-byte block of updated data
-    bq27427_i2c_write_data_block( 0x00, block, 32 );
-
-    // Write new checksum
-    bq27427_i2c_command_write( BQ27427_BLOCK_DATA_CHECKSUM, checksumNew );
-
-    // Access Registers subclass
-    bq27427_i2c_command_write( BQ27427_DATA_CLASS, 0x0040 );
-
-    // Write the block offset
-    bq27427_i2c_command_write( BQ27427_DATA_BLOCK, 0x0000 );
-
-    // Read block checksum
-    bq27427_i2c_command_read( BQ27427_BLOCK_DATA_CHECKSUM, &checksumRead );
-
-    // Verify
-    if( checksumRead != (uint8_t)checksumNew )
-    {
-        return false;
-    }
-
-    // ============================================================================
-    // CRITICAL FIX: Proper exit from CONFIG UPDATE mode
-    // ============================================================================
-
-    // Step 1: Send SOFT_RESET subcommand to exit CONFIG UPDATE mode
-    // This is required per datasheet section 8.5
     bq27427_i2c_control_write( BQ27427_CONTROL_SOFT_RESET );
+    HAL_Delay(1000);
 
-    HAL_Delay(1000);  // Wait 1 second for reset to complete
-
-    // Step 2: Poll Flags register until CFGUPMODE (bit 4) is cleared
-    // ITPOR (bit 2) may remain set until battery learning is complete - this is normal
-    uint8_t exit_timeout = 100;  // 10 second timeout
+    // Wait for CFGUPMODE to clear
+    uint8_t exit_timeout = 100;
     do
     {
         bq27427_i2c_command_read( BQ27427_FLAGS_LOW, &flags );
@@ -383,35 +359,21 @@ bool bq27427_init( uint16_t designCapacity_mAh, uint16_t terminateVoltage_mV, ui
         exit_timeout--;
         if( exit_timeout == 0 )
         {
-            return false;  // Timeout - device stuck in CONFIG UPDATE mode
+            return false;
         }
     }
-    while( flags & 0x0010 );  // Wait ONLY for CFGUPMODE to clear (bit 4)
+    while( flags & 0x0010 );
 
-    // Step 3: Configure BAT_DET to enable battery detection
+    // Configure BAT_DET
     bq27427_i2c_control_write( BQ27427_CONTROL_BAT_INSERT );
-
     HAL_Delay(500);
 
     bq27427_readFlagsReg(&flags);
-
-    if (!(flags & 0x0008)) {   // BAT_DET bit
-        return false;         // Battery not detected → SOC invalid
+    if (!(flags & 0x0008)) {
+        return false;
     }
 
-
-    // Step 4: Check CONTROL_STATUS for initialization status
-    // Note: INITCOMP (bit 7) may not be set immediately on fresh battery
-    uint16_t control_status;
-    bq27427_i2c_control_read( BQ27427_CONTROL_STATUS, &control_status );
-
-    // We won't fail if INITCOMP is not set - it will set after first charge cycle
-    // Just log the status for debugging
-    // if( !(control_status & 0x0080) ) {
-    //     return false;  // Initialization not complete
-    // }
-
-    // Step 5: Seal gauge to protect configuration
+    // Seal gauge
     bq27427_i2c_control_write( BQ27427_CONTROL_SEALED );
 
     return true;
@@ -460,13 +422,13 @@ bool bq27427_update( bq27427_info *battery )
     battery->isFull = temp & 0x0200;
     if( battery->current_mA <= 0 )
     {
-        battery->isDischarging = 1;
-        battery->isCharging = 0;
+        battery->isDischarging = 0;
+        battery->isCharging = 1;
     }
     else
     {
-        battery->isDischarging = 0;
-        battery->isCharging = 1;
+        battery->isDischarging = 1;
+        battery->isCharging = 0;
     }
 
     return true;

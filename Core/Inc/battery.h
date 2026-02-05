@@ -8,6 +8,8 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 
+bool BATTERY_TestCapacityRead(uint16_t *design_cap);
+
 /**
  * @brief Initialize the BQ27427 fuel gauge
  * @return true if initialization successful, false otherwise

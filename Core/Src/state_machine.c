@@ -20,6 +20,7 @@ volatile SystemState_t previousState = STATE_CONNECTED_IDLE;
 volatile uint8_t deviceState = 0;
 volatile uint8_t deviceInfo = 0;
 volatile uint8_t deviceBattery = 100;
+volatile uint8_t connectionStatus = 0;
 
 // Static variables for timing
 static uint32_t stateEntryTime = 0;
@@ -30,7 +31,7 @@ static uint32_t lastActivityTime = 0;
 
 void StateMachine_Init(void)
 {
-    currentState = STATE_CONNECTED_IDLE;
+    currentState = STATE_DISCONNECTED_IDLE;
     stateEntryTime = HAL_GetTick();
 
     deviceState = 0;
@@ -64,10 +65,41 @@ void StateMachine_CheckInactivityTimeout(void) {
 }
 
 void State_Disconnected_Idle_Loop(){
-    // bluetoothPairingLED
+    //Lights
+    if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
+        if (BATTERY_Charging()) {
+            LED_Pulse(800, 255, 100, 0, 60); // orange pulse - charging
+        } else {
+            LED_Pulse(1000, 0, 255, 0, 60);  // green pulse - charged
+        }
+    } else {
+        LED_Pulse(2000, 0, 0, 255, 20);  // blue pulse - normal
+    }
+
+    //State Switch
+    if (connectionStatus){
+        StateMachine_ChangeState(STATE_CONNECTED_IDLE);
+    }
 }
 
 void State_Connected_Idle_Loop(){
+
+	//Lights
+    if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
+        if (BATTERY_Charging()) {
+            LED_Pulse(800, 255, 100, 0, 60); // orange pulse - charging
+        } else {
+            LED_Pulse(1000, 0, 255, 0, 60);  // green pulse - charged
+        }
+    } else {
+        LED_Rainbow(5, 15);  // rainbow - normal
+    }
+
+    //State Switch
+	if (!connectionStatus){
+		StateMachine_ChangeState(STATE_DISCONNECTED_IDLE);
+	}
+
     if (GET_ARMED_BIT(deviceState)) {
         LIS2DUX12_ClearMotion();
         StateMachine_ChangeState(STATE_LOCKED);
@@ -114,47 +146,8 @@ void State_Locked_Loop(){
 }
 
 void State_Sleep_Loop(){
-    // ============ ENTERING SLEEP ============
-    // Debug sequence: 3 descending tones
-    BUZZER_Tone(400, 50);
-    HAL_Delay(100);
-    BUZZER_Tone(300, 50);
-    HAL_Delay(100);
-    BUZZER_Tone(200, 50);
-    HAL_Delay(100);
 
-    LED_Off();
 
-    // Enter deep stop mode
-    Enter_DeepStop_Mode();
-
-    // ============ WOKE UP FROM SLEEP ============
-    // System execution resumes here after wakeup
-
-    // SHORT DELAY before any peripheral access
-    HAL_Delay(100);
-
-    // Debug sequence: 3 ascending tones to confirm wakeup
-    BUZZER_Tone(200, 50);
-    HAL_Delay(100);
-    BUZZER_Tone(300, 50);
-    HAL_Delay(100);
-    BUZZER_Tone(400, 50);
-    HAL_Delay(200);
-
-    // Reinitialize system
-    Wakeup_System_Init();
-
-    // Confirm reinitialization with rapid beeps
-    BUZZER_Tone(500, 30);
-    HAL_Delay(50);
-    BUZZER_Tone(500, 30);
-    HAL_Delay(50);
-    BUZZER_Tone(500, 30);
-    HAL_Delay(200);
-
-    // Go back to armed/locked state
-    StateMachine_ChangeState(STATE_LOCKED);
 }
 
 void State_Alarm_Active_Loop(){
@@ -246,35 +239,21 @@ void StateMachine_ChangeState(SystemState_t newState)
 
 void ChargingCheck(void)
 {
-    static GPIO_PinState prev_charge_pin = GPIO_PIN_RESET;
-
     GPIO_PinState charge_pin = HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin);
 
-    // Detect plug/unplug edge
-    if (charge_pin != prev_charge_pin) {
-        LED_Off();                 // immediate hard stop
-        prev_charge_pin = charge_pin;
-    }
-
     if (IS_CHARGING(charge_pin)) {
-
-        if (!GET_ARMED_BIT(deviceState)) {
-
-            if (BATTERY_Charging()) {
-                SET_BATTERY_CHARGING(deviceBattery);
-                LED_Pulse(800, 255, 100, 0, 60); // orange pulse
-            } else {
-                CLEAR_BATTERY_CHARGING(deviceBattery);
-                LED_Pulse(1000, 0, 255, 0, 60);  // green pulse
-            }
+        // Update battery charging flag for BLE transmission
+        if (BATTERY_Charging()) {
+            SET_BATTERY_CHARGING(deviceBattery);
+        } else {
+            CLEAR_BATTERY_CHARGING(deviceBattery);
         }
     }
 }
 
-
-
 void StateMachine_Run(void)
 {
+
     ChargingCheck();
 
     // Update buzzer state machine (non-blocking)

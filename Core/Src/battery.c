@@ -4,7 +4,7 @@
 
 // Battery configuration parameters
 #define BATTERY_DESIGN_CAPACITY_MAH     300     // 300mAh battery
-#define BATTERY_TERMINATE_VOLTAGE_MV    4100    // 4.10 (4100mV)
+#define BATTERY_TERMINATE_VOLTAGE_MV    3400    // 3.40 (3400mV)
 #define BATTERY_TAPER_CURRENT_MA        30      // 30mA (10% of capacity)
 
 // Debug info structure
@@ -20,13 +20,46 @@ typedef struct {
     uint16_t remaining_capacity_mAh;
 } bq27427_debug_info_t;
 
+bool BATTERY_TestCapacityRead(uint16_t *design_cap)
+{
+    // Try direct read from standard command
+    if (!bq27427_i2c_command_read(BQ27427_DESIGN_CAP_LOW, design_cap)) {
+        return false;
+    }
+    return true;
+}
+
 /**
  * @brief Initialize the BQ27427 fuel gauge
  * @return true if initialization successful, false otherwise
  */
 bool BATTERY_Init(void)
 {
-    // Initialize the BQ27427 with battery parameters
+    uint16_t device_type, design_cap, flags;
+    bool needs_init = false;
+
+    if (!bq27427_readDeviceType(&device_type)) {
+        return false;
+    }
+
+    if (device_type != 0x0427) {
+        return false;
+    }
+
+    // Check if stuck in CONFIG UPDATE mode
+    if (bq27427_readFlagsReg(&flags)) {
+        if (flags & 0x0010) {
+            bq27427_i2c_control_write(BQ27427_CONTROL_SOFT_RESET);
+            HAL_Delay(2000);
+            bq27427_readFlagsReg(&flags);
+            if (flags & 0x0010) {
+                return false;
+            }
+        }
+    }
+
+    // FORCE init to run at least once
+    // (Remove this after confirming it works)
     if (!bq27427_init(BATTERY_DESIGN_CAPACITY_MAH,
                       BATTERY_TERMINATE_VOLTAGE_MV,
                       BATTERY_TAPER_CURRENT_MA))
@@ -34,7 +67,19 @@ bool BATTERY_Init(void)
         return false;
     }
 
-    return true;
+    // NOW try to read back
+    HAL_Delay(500);  // Give it time to settle
+
+    if (bq27427_readDesignCapacity_mAh(&design_cap)) {
+        // Success - check if correct
+        if (design_cap == BATTERY_DESIGN_CAPACITY_MAH) {
+            return true;  // All good
+        } else {
+            return false;  // Written but wrong value
+        }
+    } else {
+        return false;  // Still can't read
+    }
 }
 
 /**
@@ -205,13 +250,7 @@ bool BATTERY_SelfTest(void)
 {
     bq27427_debug_info_t info;
 
-    printf("\n===================================\n");
-    printf("Running BQ27427 Self-Test...\n");
-    printf("===================================\n");
-
     if (!BATTERY_VerifyOperation(&info)) {
-        printf("\nERROR: Failed to read BQ27427 registers\n");
-        printf("Check I2C connection and power supply\n");
         return false;
     }
 
@@ -248,12 +287,8 @@ static uint8_t BATTERY_EstimateSOC_FromVoltage(uint16_t voltage_mV)
 
     if (voltage_mV >= 4200) {
         return 100;  // 4.2V = 100% (fully charged)
-    } else if (voltage_mV >= 4150) {
-        return 95;   // 4.15V = ~95%
     } else if (voltage_mV >= 4100) {
         return 90;   // 4.1V = ~90%
-    } else if (voltage_mV >= 4050) {
-        return 85;   // 4.05V = ~85%
     } else if (voltage_mV >= 4000) {
         return 80;   // 4.0V = ~80%
     } else if (voltage_mV >= 3950) {

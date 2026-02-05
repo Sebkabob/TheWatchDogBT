@@ -90,6 +90,8 @@ extern volatile uint8_t deviceState;
 extern volatile uint8_t deviceInfo;
 extern volatile uint8_t deviceBattery;
 
+extern volatile uint8_t connectionStatus;
+
 // Track current transfer state
 static uint16_t currentEventIndex = 0;
 static uint8_t transferInProgress = 0;
@@ -340,12 +342,14 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification)
     case LOCKSERVICE_CONN_HANDLE_EVT :
       LOCKSERVICE_APP_Context.ConnectionHandle = p_Notification->ConnectionHandle;
       /* USER CODE BEGIN Service1_APP_CENTR_CONN_HANDLE_EVT */
+      connectionStatus = 1;
       LOCKSERVICE_ForceStatusUpdate();  // Force send on connection
       /* USER CODE END Service1_APP_CENTR_CONN_HANDLE_EVT */
       break;
     case LOCKSERVICE_DISCON_HANDLE_EVT :
       LOCKSERVICE_APP_Context.ConnectionHandle = 0xFFFF;
       /* USER CODE BEGIN Service1_APP_DISCON_HANDLE_EVT */
+      connectionStatus = 0;
       SOUND_Disconnected();
       /* USER CODE END Service1_APP_DISCON_HANDLE_EVT */
       break;

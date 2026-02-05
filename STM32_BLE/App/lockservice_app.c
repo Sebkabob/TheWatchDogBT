@@ -435,6 +435,13 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
       CLEAR_BATTERY_CHARGING(deviceBattery);
   }
 
+  uint16_t soc_percent;
+  bool is_charging;
+
+  if (BATTERY_GetStatus(&voltage_mV, &soc_percent, &is_charging)) {
+              deviceBattery = soc_percent & 0x7F;
+  }
+
   a_LOCKSERVICE_UpdateCharData[0] = deviceState;
   a_LOCKSERVICE_UpdateCharData[1] = deviceBattery;
 

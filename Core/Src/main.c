@@ -211,25 +211,10 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     static uint32_t last_battery_check = 0;
-    if (HAL_GetTick() - last_battery_check > 500) {  // Changed from 3000 to 500
+    if (HAL_GetTick() - last_battery_check > 1000) {  // Changed from 3000 to 500
         last_battery_check = HAL_GetTick();
 
-        uint16_t voltage_mV, soc_percent;
-        bool is_charging;
-
-        if (BATTERY_GetStatus(&voltage_mV, &soc_percent, &is_charging)) {
-            deviceBattery = soc_percent & 0x7F;
-
-            // Update charging bit
-            if (is_charging) {
-                SET_BATTERY_CHARGING(deviceBattery);
-            } else {
-                CLEAR_BATTERY_CHARGING(deviceBattery);
-            }
-
-            // Send update to iOS
-            LOCKSERVICE_SendStatusUpdate();
-        }
+        LOCKSERVICE_SendStatusUpdate();
     }
 
     //BUZZER_Drain();

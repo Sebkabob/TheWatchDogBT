@@ -68,9 +68,9 @@ void State_Disconnected_Idle_Loop(){
     //Lights
     if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
         if (BATTERY_IsCharging()) {
-            LED_Pulse(800, 255, 100, 0, 60); // orange pulse - charging
+            LED_Pulse(4000, 255, 100, 0, 60); // orange pulse - charging
         } else {
-            LED_Pulse(1000, 0, 255, 0, 60);  // green pulse - charged
+            LED_Pulse(4000, 0, 255, 0, 60);  // green pulse - charged
         }
     } else {
         LED_Pulse(2000, 0, 0, 255, 20);  // blue pulse - normal
@@ -87,9 +87,9 @@ void State_Connected_Idle_Loop(){
 	//Lights
     if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
         if (BATTERY_IsCharging()) {
-            LED_Pulse(800, 255, 100, 0, 60); // orange pulse - charging
+            LED_Pulse(4000, 255, 100, 0, 60); // orange pulse - charging
         } else {
-            LED_Pulse(1000, 0, 255, 0, 60);  // green pulse - charged
+            LED_Pulse(4000, 0, 255, 0, 60);  // green pulse - charged
         }
     } else {
         LED_Rainbow(5, 15);  // rainbow - normal

@@ -73,8 +73,8 @@ typedef struct{
 static LOCKSERVICE_Context_t LOCKSERVICE_Context;
 
 /* USER CODE BEGIN PV */
-extern volatile uint8_t lockState;
-extern volatile uint8_t deviceBattery;
+//extern volatile uint8_t lockState;
+//extern volatile uint8_t deviceBattery;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/

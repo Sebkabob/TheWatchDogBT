@@ -19,8 +19,6 @@ extern TIM_HandleTypeDef htim16;
 extern uint8_t deviceState;
 extern uint8_t deviceInfo;
 
-static uint8_t initialized = 0;
-
 void LED_Rainbow(int ms_delay, uint8_t intensity)
 {
     // Static variables to maintain rainbow state
@@ -39,19 +37,13 @@ void LED_Rainbow(int ms_delay, uint8_t intensity)
     if ((current_time - last_call) > RAINBOW_RESET_TIMEOUT) {
         color_phase = 0;
         fade_step = 0;
-        initialized = 0;
         last_update = current_time;
     }
     last_call = current_time;
 
-    // One-time initialization
-    if (!initialized) {
-        // Start all three PWM channels since rainbow uses all colors
-        HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);  // LED1 - Red
-        HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1); // LED2 - Green
-        HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);  // LED3 - Blue
-        initialized = 1;
-    }
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);  // LED1 - Red
+    HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1); // LED2 - Green
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);  // LED3 - Blue
 
     // Check if enough time has passed since last update
     if ((current_time - last_update) < ms_delay) {
@@ -216,8 +208,6 @@ void LED_Off(void)
     HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
     HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
     HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_4);
-
-    initialized = 0;
 }
 
 

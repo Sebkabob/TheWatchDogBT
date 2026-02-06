@@ -50,7 +50,7 @@
 /**
  * Define Advertising parameters
  */
-#define CFG_PUBLIC_BD_ADDRESS               (0xF1D000000019)
+#define CFG_PUBLIC_BD_ADDRESS               (0xF1D000000016)
 #define CFG_BD_ADDRESS_TYPE                 HCI_ADDR_PUBLIC
 #define CFG_BLE_PRIVACY_ENABLED             (0)
 

@@ -40,7 +40,7 @@ extern "C" {
 
 /* Default Battery Configuration */
 #define BQ27427_DEFAULT_CAPACITY    300     /* Default design capacity in mAh */
-#define BQ27427_DEFAULT_TERM_V      3400    /* Default terminate voltage in mV */
+#define BQ27427_DEFAULT_TERM_V      3500    /* Default terminate voltage in mV */
 
 /* GPOUT Pin Configuration - Modify these for your hardware */
 #define BQ27427_GPOUT_PORT          GPIOA

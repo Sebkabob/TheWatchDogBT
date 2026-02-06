@@ -95,11 +95,6 @@ extern volatile uint8_t connectionStatus;
 // Track current transfer state
 static uint16_t currentEventIndex = 0;
 static uint8_t transferInProgress = 0;
-
-static uint32_t last_battery_read = 0;
-static uint16_t cached_voltage_mV = 0;
-static int16_t cached_current_mA = 0;
-static uint16_t cached_soc = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/

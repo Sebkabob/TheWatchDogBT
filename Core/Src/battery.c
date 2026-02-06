@@ -68,7 +68,7 @@ bool BATTERY_Init(void)
     uint16_t current_taper_rate = bq27427_taper_rate();
 
     bool needs_config = (current_capacity != 300) ||
-                        (current_terminate_voltage != 3400) ||
+                        (current_terminate_voltage != 3500) ||
                         (current_taper_rate != 100);
 
     if (needs_config) {
@@ -82,8 +82,8 @@ bool BATTERY_Init(void)
         }
 
         bq27427_set_capacity(300);
-        bq27427_set_terminate_voltage(3400);
-        bq27427_set_taper_rate(100);  // 300mAh / 30mA * 10 = 100
+        bq27427_set_terminate_voltage(3500);
+        bq27427_set_taper_rate(105);  // 300mAh / 30mA * 10 = 100, CUTS OFF AT 26mA CHARGING
 
         if (!bq27427_exit_config(true)) {
             return false;

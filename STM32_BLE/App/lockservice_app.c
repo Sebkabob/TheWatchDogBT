@@ -344,6 +344,7 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification)
     case LOCKSERVICE_CONN_HANDLE_EVT :
       LOCKSERVICE_APP_Context.ConnectionHandle = p_Notification->ConnectionHandle;
       /* USER CODE BEGIN Service1_APP_CENTR_CONN_HANDLE_EVT */
+      PowerMgmt_RestoreAll();
       StateMachine_UpdateBLEActivity();
       connectionStatus = 1;
       LOCKSERVICE_ForceStatusUpdate();  // Force send on connection

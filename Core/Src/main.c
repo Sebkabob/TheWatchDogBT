@@ -84,48 +84,6 @@ static void MX_TIM16_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-void Enter_Sleep_Mode_Optimized(void) {
-    // Stop BLE if active
-    if (APP_BLE_Get_Server_Connection_Status() != APP_BLE_IDLE) {
-        APP_BLE_Procedure_Gap_Peripheral(PROC_GAP_PERIPH_ADVERTISE_STOP);
-        HAL_Delay(100);  // Allow BLE stack to settle
-    }
-
-    // Enter deep stop mode (sensor clearing is handled internally)
-    Enter_DeepStop_Mode();
-
-    // ---- System wakes up here ----
-
-    // Reinitialize after wakeup
-    Wakeup_System_Init();
-}
-
-/* Add this to your main.c in the USER CODE BEGIN 0 section */
-
-// Function to reinitialize after deep stop wakeup
-void Reinitialize_Peripherals_After_Wakeup(void)
-{
-	  HAL_Init();
-
-	  SystemClock_Config();
-
-	  PeriphCommonClock_Config();
-
-	  MX_GPIO_Init();
-	  MX_TIM2_Init();
-	  MX_I2C1_Init();
-	  MX_RNG_Init();
-	  MX_PKA_Init();
-	  MX_RADIO_Init();
-	  MX_RADIO_TIMER_Init();
-
-	  MotionLogger_Init();
-	  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-	  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
-	  firstBootTone();
-	  HAL_Delay(100);
-	  LIS2DUX12_Init();
-}
 /* USER CODE END 0 */
 
 /**
@@ -685,7 +643,9 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+void MX_I2C1_Reinit(void)  { MX_I2C1_Init();  }
+void MX_TIM2_Reinit(void)  { MX_TIM2_Init();   }
+void MX_TIM16_Reinit(void) { MX_TIM16_Init();  }
 /* USER CODE END 4 */
 
 /**

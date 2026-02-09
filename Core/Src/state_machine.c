@@ -88,23 +88,45 @@ void State_Disconnected_Idle_Loop(){
 
     //State Switch
     if (connectionStatus){
+    	PowerMgmt_RestoreAll();
         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
     }
 }
 
+//void State_Disconnected_Idle_Loop() {
+//
+//	if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
+//		// Charging — need full peripherals
+//		if (PowerMgmt_IsLowPower()) PowerMgmt_RestoreAll();
+//		stayAwakeFlag = 1;
+//
+//		if (BATTERY_IsCharging())
+//			LED_Pulse(4000, 255, 100, 0, 60);
+//		else
+//			LED_Pulse(4000, 0, 255, 0, 60);
+//
+//	} else {
+//		stayAwakeFlag = 0;
+//
+//		if (GET_ARMED_BIT(deviceState)) {
+//			// Armed + disconnected: keep accel interrupt
+//			if (!PowerMgmt_IsLowPower())
+//				PowerMgmt_EnterLowPower_Armed();
+//		} else {
+//        	 // Idle + disconnected: everything off
+//			if (!PowerMgmt_IsLowPower())
+//				PowerMgmt_EnterLowPower_Idle();
+//		}
+//	}
+//
+//	if (connectionStatus) {
+//		PowerMgmt_RestoreAll();
+//		StateMachine_ChangeState(STATE_CONNECTED_IDLE);
+//	}
+//}
+
 void State_Connected_Idle_Loop(){
 	stayAwakeFlag = 1;
-
-    // Timeout: disconnect after 10s of no BLE activity
-//    if ((HAL_GetTick() - lastBLEActivityTime)
-//            >= BLE_INACTIVITY_TIMEOUT_MS) {
-//        if (APP_BLE_Get_Server_Connection_Status()
-//                == APP_BLE_CONNECTED_SERVER) {
-//            APP_BLE_Procedure_Gap_Peripheral(
-//                PROC_GAP_PERIPH_CONN_TERMINATE);
-//        }
-//        StateMachine_ChangeState(STATE_DISCONNECTED_IDLE);
-//    }
 
 	//Lights
     if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
@@ -165,6 +187,17 @@ void State_Locked_Loop(){
         }
     }
     lastMotionState = currentMotionState;
+
+    // Timeout: disconnect after 10s of no BLE activity
+//    if ((HAL_GetTick() - lastBLEActivityTime)
+//            >= BLE_INACTIVITY_TIMEOUT_MS) {
+//        if (APP_BLE_Get_Server_Connection_Status()
+//                == APP_BLE_CONNECTED_SERVER) {
+//            APP_BLE_Procedure_Gap_Peripheral(
+//                PROC_GAP_PERIPH_CONN_TERMINATE);
+//        }
+//        StateMachine_ChangeState(STATE_DISCONNECTED_IDLE);
+//    }
 }
 
 void State_Sleep_Loop(){

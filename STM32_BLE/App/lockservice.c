@@ -62,7 +62,7 @@ typedef struct{
 #define CHARACTERISTIC_DESCRIPTOR_ATTRIBUTE_OFFSET        2
 #define CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET             1
 #define APPTOWD_SIZE        30	/* AppToWD Characteristic size */
-#define DEVICESTATUS_SIZE        2	/* DeviceStatus Characteristic size */
+#define DEVICESTATUS_SIZE        11	/* DeviceStatus Characteristic size */
 #define MOTIONDATA_SIZE        8	/* MotionData Characteristic size */
 /* USER CODE BEGIN PM */
 

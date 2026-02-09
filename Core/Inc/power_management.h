@@ -1,7 +1,17 @@
 /*
  * power_management.h
  *
- * Ultra-low power management for WatchDogBT
+ * Low-power peripheral gating for WatchDogBT
+ *
+ * Two low-power profiles:
+ *   1. DISCONNECTED IDLE (not armed): Only BLE radio advertising.
+ *      All timers, I2C, buzzer, LEDs, accelerometer interrupt OFF.
+ *
+ *   2. DISCONNECTED ARMED: BLE radio advertising + accelerometer
+ *      interrupt active. Timers, I2C, buzzer, LEDs OFF.
+ *
+ * On BLE connect (or charging), call PowerMgmt_RestoreAll() to
+ * bring everything back up.
  */
 
 #ifndef INC_POWER_MANAGEMENT_H_
@@ -9,15 +19,33 @@
 
 #include <stdint.h>
 
-/* Function prototypes */
-void Configure_GPIO_For_LowPower(void);
-void BQ25186_EnterLowPower(void);
-void LIS2DUX12_EnterLowPower(void);
-void Disable_Peripherals_For_Sleep(void);
-void Configure_Wakeup_Optimized(void);
-void Enter_DeepStop_Mode(void);
-void Wakeup_System_Init(void);
-uint8_t Should_Enter_Sleep(void);
-uint32_t Get_Estimated_Sleep_Current_uA(void);
+/* ---- Main API ---------------------------------------------------------- */
+
+/**
+ * @brief  Shut down all non-essential peripherals for idle advertising.
+ *         Accelerometer interrupt is DISABLED.
+ *         Call when: disconnected + not armed + not charging.
+ */
+void PowerMgmt_EnterLowPower_Idle(void);
+
+/**
+ * @brief  Shut down non-essential peripherals but keep accelerometer
+ *         interrupt active so motion can trigger an alarm.
+ *         Call when: disconnected + armed + not charging.
+ */
+void PowerMgmt_EnterLowPower_Armed(void);
+
+/**
+ * @brief  Restore all peripherals to full-run state.
+ *         Call when: BLE connection established, or charging detected.
+ *         Safe to call multiple times (idempotent).
+ */
+void PowerMgmt_RestoreAll(void);
+
+/**
+ * @brief  Query whether peripherals are currently gated.
+ * @return 1 if in a low-power gated state, 0 if fully running.
+ */
+uint8_t PowerMgmt_IsLowPower(void);
 
 #endif /* INC_POWER_MANAGEMENT_H_ */

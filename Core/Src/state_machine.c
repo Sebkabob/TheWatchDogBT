@@ -13,6 +13,7 @@
 #include "accelerometer.h"
 #include "motion_logger.h"
 #include "power_management.h"
+#include "app_ble.h"
 
 // Global state variables
 volatile SystemState_t currentState = STATE_CONNECTED_IDLE;
@@ -26,8 +27,14 @@ volatile uint8_t connectionStatus = 0;
 static uint32_t stateEntryTime = 0;
 static uint32_t lastActivityTime = 0;
 
-// Inactivity timeout constant
-#define INACTIVITY_TIMEOUT_MS  10000
+volatile uint8_t stayAwakeFlag = 0;
+
+static uint32_t lastBLEActivityTime = 0;
+#define BLE_INACTIVITY_TIMEOUT_MS  10000  // 10 seconds
+
+void StateMachine_UpdateBLEActivity(void) {
+    lastBLEActivityTime = HAL_GetTick();
+}
 
 void StateMachine_Init(void)
 {
@@ -59,21 +66,24 @@ void StateMachine_CheckInactivityTimeout(void) {
         return;
     }
 
-    if ((HAL_GetTick() - lastActivityTime) >= INACTIVITY_TIMEOUT_MS) {
+    if ((HAL_GetTick() - lastActivityTime) >= BLE_INACTIVITY_TIMEOUT_MS) {
         StateMachine_ChangeState(STATE_SLEEP);
     }
 }
 
 void State_Disconnected_Idle_Loop(){
+
     //Lights
     if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
+    	stayAwakeFlag = 1;
         if (BATTERY_IsCharging()) {
             LED_Pulse(4000, 255, 100, 0, 60); // orange pulse - charging
         } else {
             LED_Pulse(4000, 0, 255, 0, 60);  // green pulse - charged
         }
     } else {
-        LED_Pulse(2000, 0, 0, 255, 20);  // blue pulse - normal
+    	stayAwakeFlag = 0;
+    	LED_Off();
     }
 
     //State Switch
@@ -83,6 +93,18 @@ void State_Disconnected_Idle_Loop(){
 }
 
 void State_Connected_Idle_Loop(){
+	stayAwakeFlag = 1;
+
+    // Timeout: disconnect after 10s of no BLE activity
+//    if ((HAL_GetTick() - lastBLEActivityTime)
+//            >= BLE_INACTIVITY_TIMEOUT_MS) {
+//        if (APP_BLE_Get_Server_Connection_Status()
+//                == APP_BLE_CONNECTED_SERVER) {
+//            APP_BLE_Procedure_Gap_Peripheral(
+//                PROC_GAP_PERIPH_CONN_TERMINATE);
+//        }
+//        StateMachine_ChangeState(STATE_DISCONNECTED_IDLE);
+//    }
 
 	//Lights
     if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
@@ -151,6 +173,7 @@ void State_Sleep_Loop(){
 }
 
 void State_Alarm_Active_Loop(){
+	stayAwakeFlag = 1;
     static uint32_t last_motion_time = 0;
     static uint8_t alarm_started = 0;
     static uint32_t melody_duration_ms = 0;
@@ -250,6 +273,8 @@ void ChargingCheck(void) {
             CLEAR_BATTERY_CHARGING(deviceBattery);
         }
     }
+
+
 }
 void StateMachine_Run(void)
 {

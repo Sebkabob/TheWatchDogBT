@@ -59,25 +59,19 @@ bool BATTERY_Init(void)
     uint16_t current_taper_rate = bq27427_taper_rate();
 
     bool needs_config = (current_capacity != 300) ||
-                        (current_terminate_voltage != 3500) ||
+                        (current_terminate_voltage != 3000) ||
                         (current_taper_rate != 100);
 
     if (needs_config) {
-        // Reset to clear any bad state
-        bq27427_reset();
-        HAL_Delay(2000);
 
-        // Configure battery - enter config once, set everything, exit
         if (!bq27427_enter_config(true)) {
             return false;
         }
 
-        // Polarity bit = 1 means negative is charging
-        // Polarity bit = 0 means positive is charging
-        bq27427_set_current_polarity(0);
+        bq27427_set_current_polarity(0); // 0 = Positive current means battery is charging
 
         bq27427_set_capacity(300);
-        bq27427_set_terminate_voltage(3500);
+        bq27427_set_terminate_voltage(3000);
         bq27427_set_taper_rate(100);  // (300mAh / 30mA) * 10 = 100, CUTS OFF AT 26mA CHARGING
 
         if (!bq27427_exit_config(true)) {
@@ -101,12 +95,10 @@ bool BATTERY_UpdateState(void)
 {
     uint32_t now = HAL_GetTick();
 
-    // Rate limit to prevent I2C spam (minimum 1 second between updates)
     if ((now - battery_state.last_update) < 500) {
-        return true;  // Use cached values
+        return true;
     }
 
-    // Read all battery parameters in one burst
     battery_state.voltage_mV = bq27427_voltage();
     battery_state.current_mA = bq27427_current(BQ27427_CURRENT_AVG);
     battery_state.soc_percent = bq27427_soc(BQ27427_SOC_FILTERED);
@@ -115,11 +107,9 @@ bool BATTERY_UpdateState(void)
     battery_state.is_low = bq27427_soc_flag();
     battery_state.is_critical = bq27427_socf_flag();
 
-    // If gauge uncalibrated (SOC = 0), estimate from voltage
-    if (battery_state.soc_percent == 0 && battery_state.voltage_mV > 0) {
-        //battery_state.soc_percent = BATTERY_EstimateSOC_FromVoltage(battery_state.voltage_mV);
-        battery_state.soc_percent = 127;
-
+    // If gauge reports 0% but voltage is good, use estimation
+    if (battery_state.soc_percent == 0 && battery_state.voltage_mV > 3200) {
+        battery_state.soc_percent = BATTERY_EstimateSOC_FromVoltage(battery_state.voltage_mV);
     }
 
     battery_state.last_update = now;

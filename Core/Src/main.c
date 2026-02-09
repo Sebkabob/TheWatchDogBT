@@ -169,8 +169,6 @@ int main(void)
   MX_TIM16_Init();
   /* USER CODE BEGIN 2 */
   MotionLogger_Init();
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   HAL_Delay(100);
   LIS2DUX12_Init();
   BATTERY_Init();
@@ -182,7 +180,7 @@ int main(void)
 	  BUZZER_Tone(100,20);
 	  while(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0);
   } else {
-	  //Enter_Sleep_Mode_Optimized();
+
   }
   /* USER CODE END 2 */
 
@@ -203,7 +201,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     static uint32_t last_battery_check = 0;
-    if (HAL_GetTick() - last_battery_check > 500) {
+    if (HAL_GetTick() - last_battery_check > 1000) {
         last_battery_check = HAL_GetTick();
         BATTERY_UpdateState();  // Update once per second
         LOCKSERVICE_SendStatusUpdate();

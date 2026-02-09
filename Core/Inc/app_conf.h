@@ -50,14 +50,14 @@
 /**
  * Define Advertising parameters
  */
-#define CFG_PUBLIC_BD_ADDRESS               (0xF1D000000016)
+#define CFG_PUBLIC_BD_ADDRESS               (0xF1D000000018)
 #define CFG_BD_ADDRESS_TYPE                 HCI_ADDR_PUBLIC
 #define CFG_BLE_PRIVACY_ENABLED             (0)
 
-#define ADV_INTERVAL_MIN                    (0x0100)
-#define ADV_INTERVAL_MAX                    (0x0200)
-#define ADV_LP_INTERVAL_MIN                 (0x0140)
-#define ADV_LP_INTERVAL_MAX                 (0x0280)
+#define ADV_INTERVAL_MIN                    (0x0A00)
+#define ADV_INTERVAL_MAX                    (0x0A00)
+#define ADV_LP_INTERVAL_MIN                 (0x0640)
+#define ADV_LP_INTERVAL_MAX                 (0x0C80)
 #define ADV_TYPE                            (HCI_ADV_EVENT_PROP_LEGACY|HCI_ADV_EVENT_PROP_CONNECTABLE|HCI_ADV_EVENT_PROP_SCANNABLE)
 #define ADV_FILTER                          HCI_ADV_FILTER_ACCEPT_LIST_CONNECT
 
@@ -354,9 +354,9 @@
  *
  ******************************************************************************/
 
-#define CFG_FULL_LOW_POWER       (0)
+#define CFG_FULL_LOW_POWER       (1)
 
-#define CFG_LPM_SUPPORTED        (0)
+#define CFG_LPM_SUPPORTED        (1)
 
 #define CFG_LPM_EMULATED         (0)
 

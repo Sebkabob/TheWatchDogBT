@@ -38,6 +38,7 @@
 #include "accelerometer.h"
 #include "power_management.h"
 
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -251,6 +252,7 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
 
     case LOCKSERVICE_APPTOWD_WRITE_EVT:
       /* USER CODE BEGIN Service1Char1_WRITE_EVT */
+    	StateMachine_UpdateBLEActivity();
     	uint8_t *received_data = p_Notification->DataTransfered.p_Payload;
     	    uint8_t data_length = p_Notification->DataTransfered.Length;
 
@@ -342,6 +344,7 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification)
     case LOCKSERVICE_CONN_HANDLE_EVT :
       LOCKSERVICE_APP_Context.ConnectionHandle = p_Notification->ConnectionHandle;
       /* USER CODE BEGIN Service1_APP_CENTR_CONN_HANDLE_EVT */
+      StateMachine_UpdateBLEActivity();
       connectionStatus = 1;
       LOCKSERVICE_ForceStatusUpdate();  // Force send on connection
       /* USER CODE END Service1_APP_CENTR_CONN_HANDLE_EVT */

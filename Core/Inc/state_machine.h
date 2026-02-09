@@ -54,6 +54,10 @@ extern volatile uint8_t deviceState;
 extern volatile uint8_t deviceInfo;
 extern volatile uint8_t deviceBattery;
 
+extern volatile uint8_t stayAwakeFlag;
+
+void StateMachine_UpdateBLEActivity(void);
+
 // Function prototypes
 void StateMachine_Init(void);
 void StateMachine_Run(void);

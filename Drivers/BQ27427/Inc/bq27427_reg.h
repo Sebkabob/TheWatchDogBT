@@ -329,6 +329,8 @@ bool bq27427_current_polarity(void);
  */
 bool bq27427_change_current_polarity(void);
 
+bool bq27427_set_current_polarity(int bit);
+
 /******************************************************************************
  * Function Prototypes - Battery Characteristics
  ******************************************************************************/

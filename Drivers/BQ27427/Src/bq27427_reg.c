@@ -179,6 +179,16 @@ bool bq27427_change_current_polarity(void)
     return bq27427_write_extended_data(BQ27427_ID_CC_CAL, 5, &cal_bit0, 1);
 }
 
+bool bq27427_set_current_polarity(int bit)
+{
+    uint8_t cal_bit0 = bq27427_read_extended_data(BQ27427_ID_CC_CAL, 5);
+    if (bit)
+        cal_bit0 |= 0x80;
+    else
+        cal_bit0 &= ~0x80;
+    return bq27427_write_extended_data(BQ27427_ID_CC_CAL, 5, &cal_bit0, 1);
+}
+
 /******************************************************************************
  * Battery Characteristics Functions
  ******************************************************************************/

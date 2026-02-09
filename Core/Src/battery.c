@@ -53,15 +53,6 @@ bool BATTERY_Init(void)
         return false;
     }
 
-    bool current_pol = bq27427_current_polarity();
-    // Polarity bit = 1 means negative is charging (WRONG for your battery)
-    // Polarity bit = 0 means positive is charging (CORRECT for your battery)
-    if (current_pol) {
-        // Current polarity is inverted - fix it!
-        bq27427_change_current_polarity();
-        HAL_Delay(500);  // Wait for change to take effect
-    }
-
     // Check if already configured correctly
     uint16_t current_capacity = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
     uint16_t current_terminate_voltage = bq27427_terminate_voltage();
@@ -81,9 +72,13 @@ bool BATTERY_Init(void)
             return false;
         }
 
+        // Polarity bit = 1 means negative is charging
+        // Polarity bit = 0 means positive is charging
+        bq27427_set_current_polarity(0);
+
         bq27427_set_capacity(300);
         bq27427_set_terminate_voltage(3500);
-        bq27427_set_taper_rate(105);  // 300mAh / 30mA * 10 = 100, CUTS OFF AT 26mA CHARGING
+        bq27427_set_taper_rate(100);  // (300mAh / 30mA) * 10 = 100, CUTS OFF AT 26mA CHARGING
 
         if (!bq27427_exit_config(true)) {
             return false;
@@ -122,7 +117,9 @@ bool BATTERY_UpdateState(void)
 
     // If gauge uncalibrated (SOC = 0), estimate from voltage
     if (battery_state.soc_percent == 0 && battery_state.voltage_mV > 0) {
-        battery_state.soc_percent = BATTERY_EstimateSOC_FromVoltage(battery_state.voltage_mV);
+        //battery_state.soc_percent = BATTERY_EstimateSOC_FromVoltage(battery_state.voltage_mV);
+        battery_state.soc_percent = 127;
+
     }
 
     battery_state.last_update = now;

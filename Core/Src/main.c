@@ -360,7 +360,7 @@ static void MX_RADIO_TIMER_Init(void)
   }
   /* Wait to be sure that the Radio Timer is active */
   while(LL_RADIO_TIMER_GetAbsoluteTime(WAKEUP) < 0x10);
-  RADIO_TIMER_InitStruct.XTAL_StartupTime = 1000;
+  RADIO_TIMER_InitStruct.XTAL_StartupTime = 320;
   RADIO_TIMER_InitStruct.enableInitialCalibration = FALSE;
   RADIO_TIMER_InitStruct.periodicCalibrationInterval = 0;
   HAL_RADIO_TIMER_Init(&RADIO_TIMER_InitStruct);

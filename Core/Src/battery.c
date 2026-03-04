@@ -109,7 +109,7 @@ bool BATTERY_UpdateState(void)
 
     // If gauge reports 0% but voltage is good, use estimation
     if (battery_state.soc_percent == 0 && battery_state.voltage_mV > 3200) {
-        battery_state.soc_percent = BATTERY_EstimateSOC_FromVoltage(battery_state.voltage_mV);
+//        battery_state.soc_percent = BATTERY_EstimateSOC_FromVoltage(battery_state.voltage_mV);
     }
 
     battery_state.last_update = now;

@@ -139,11 +139,12 @@ void State_Connected_Idle_Loop(){
         LED_Rainbow(5, 15);  // rainbow - normal
     }
 
-    //State Switch
+    //State Switch - DISCONNECTED
 	if (!connectionStatus){
 		StateMachine_ChangeState(STATE_DISCONNECTED_IDLE);
 	}
 
+	//State Switch - LOCKED
     if (GET_ARMED_BIT(deviceState)) {
         LIS2DUX12_ClearMotion();
         StateMachine_ChangeState(STATE_LOCKED);
@@ -154,7 +155,7 @@ void State_Connected_Idle_Loop(){
 void State_Locked_Loop(){
     static uint8_t lastMotionState = GPIO_PIN_RESET;
 
-    // EXIT
+    // State Switch - UNLOCKED
     if (!GET_ARMED_BIT(deviceState)) {
         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
         lastMotionState = GPIO_PIN_RESET;
@@ -162,8 +163,8 @@ void State_Locked_Loop(){
         return;
     }
 
+
     if (GET_LIGHTS_BIT(deviceState)) {
-        //Locked LED
         LED_Armed(10,150);
     } else {
         LED_Off();
@@ -174,6 +175,7 @@ void State_Locked_Loop(){
     uint8_t currentMotionState = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_2);
     if (currentMotionState == GPIO_PIN_SET && lastMotionState == GPIO_PIN_RESET) {
         if (GET_LOGGING_BIT(deviceState)) {
+        	stayAwakeFlag = 1;
             MotionLogger_LogEvent(1);
             LOCKSERVICE_SendMotionAlert();
         }
@@ -188,16 +190,11 @@ void State_Locked_Loop(){
     }
     lastMotionState = currentMotionState;
 
-    // Timeout: disconnect after 10s of no BLE activity
-//    if ((HAL_GetTick() - lastBLEActivityTime)
-//            >= BLE_INACTIVITY_TIMEOUT_MS) {
-//        if (APP_BLE_Get_Server_Connection_Status()
-//                == APP_BLE_CONNECTED_SERVER) {
-//            APP_BLE_Procedure_Gap_Peripheral(
-//                PROC_GAP_PERIPH_CONN_TERMINATE);
-//        }
-//        StateMachine_ChangeState(STATE_DISCONNECTED_IDLE);
-//    }
+    //Sleep if not connected
+    if (!connectionStatus){
+    	LED_Off();
+    	stayAwakeFlag = 0;
+    }
 }
 
 void State_Sleep_Loop(){
@@ -314,7 +311,6 @@ void StateMachine_Run(void)
 
     ChargingCheck();
 
-    // Update buzzer state machine (non-blocking)
     BUZZER_Update();
 
     switch(currentState)

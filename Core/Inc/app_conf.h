@@ -57,7 +57,7 @@
 #define ADV_INTERVAL_MIN                    (0x0A00)
 #define ADV_INTERVAL_MAX                    (0x0A00)
 #define ADV_LP_INTERVAL_MIN                 (0x0640)
-#define ADV_LP_INTERVAL_MAX                 (0x0C80)
+#define ADV_LP_INTERVAL_MAX                 (0x0640)
 #define ADV_TYPE                            (HCI_ADV_EVENT_PROP_LEGACY|HCI_ADV_EVENT_PROP_CONNECTABLE|HCI_ADV_EVENT_PROP_SCANNABLE)
 #define ADV_FILTER                          HCI_ADV_FILTER_ACCEPT_LIST_CONNECT
 

@@ -123,6 +123,15 @@ void LED_Rainbow(int ms_delay, uint8_t intensity)
 
 void LED_Armed(int ms_delay, uint8_t intensity)
 {
+    // Start RED PWM only
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);  // LED1 - Red
+
+    // Turn off and stop green and blue LEDs
+    __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 999); // Green OFF
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 999);  // Blue OFF
+    HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1); // Stop green timer
+    HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_4);  // Stop blue timer
+
     // Static variables to maintain fade state for red LED
     static uint16_t pulse_value = 0;
     static uint8_t pulse_direction = 1;  // 1 = increasing (fade in), 0 = decreasing (fade out)
@@ -145,20 +154,6 @@ void LED_Armed(int ms_delay, uint8_t intensity)
     }
 
     last_call = current_time;
-
-    // One-time initialization
-    if (!initialized_armed) {
-        // Start RED PWM only
-        HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);  // LED1 - Red
-
-        // Turn off and stop green and blue LEDs
-        __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 999); // Green OFF
-        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 999);  // Blue OFF
-        HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1); // Stop green timer
-        HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_4);  // Stop blue timer
-
-        initialized_armed = 1;
-    }
 
     // Check if enough time has passed since last update
     if ((current_time - last_update) < ms_delay) {

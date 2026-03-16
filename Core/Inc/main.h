@@ -57,33 +57,32 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
-void MX_USART1_UART_Init(void);
 
 /* USER CODE BEGIN EFP */
 
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define LED3_Pin GPIO_PIN_3
-#define LED3_GPIO_Port GPIOB
-#define INT1_Pin GPIO_PIN_2
-#define INT1_GPIO_Port GPIOB
-#define CHARGE_Pin GPIO_PIN_1
-#define CHARGE_GPIO_Port GPIOB
-#define LED2_Pin GPIO_PIN_0
+#define LED1_Pin GPIO_PIN_3
+#define LED1_GPIO_Port GPIOB
+#define LED2_Pin GPIO_PIN_2
 #define LED2_GPIO_Port GPIOB
-#define LED1_Pin GPIO_PIN_8
-#define LED1_GPIO_Port GPIOA
-#define EN_2_Pin GPIO_PIN_11
-#define EN_2_GPIO_Port GPIOA
-#define EN_1_Pin GPIO_PIN_15
-#define EN_1_GPIO_Port GPIOB
-#define DIN_Pin GPIO_PIN_7
-#define DIN_GPIO_Port GPIOB
+#define LED3_Pin GPIO_PIN_1
+#define LED3_GPIO_Port GPIOB
+#define EEPROM_POWER_Pin GPIO_PIN_0
+#define EEPROM_POWER_GPIO_Port GPIOB
+#define GPOUT_Pin GPIO_PIN_8
+#define GPOUT_GPIO_Port GPIOA
+#define BQ251_STAT_Pin GPIO_PIN_9
+#define BQ251_STAT_GPIO_Port GPIOA
+#define I2C_POWER_Pin GPIO_PIN_10
+#define I2C_POWER_GPIO_Port GPIOA
+#define ACCEL_INT_Pin GPIO_PIN_15
+#define ACCEL_INT_GPIO_Port GPIOB
 #define BUZZ_1_Pin GPIO_PIN_6
 #define BUZZ_1_GPIO_Port GPIOB
-#define GPOUT_Pin GPIO_PIN_5
-#define GPOUT_GPIO_Port GPIOB
+#define BQ251_PG_Pin GPIO_PIN_4
+#define BQ251_PG_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

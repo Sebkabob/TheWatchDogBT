@@ -18,6 +18,34 @@
   */
 /* USER CODE END Header */
 
+/*
+ *	(!) No platform settings set in Cube MX for the MW STM32_WPAN. The Logs will not be used (!)
+ *
+ *	--------------------------------------------------------------------
+ *	If you intend to use the Logs, please follow the procedure below :
+ *	--------------------------------------------------------------------
+ *
+ *	1.	Open your project on Cube MX.
+ *
+ *	2.	Click on the MW "STM32_BLE".
+ *
+ *	3.	Click on the "Configuration" panel.
+ *
+ *	4.	Open the sub-section "Application configuration - Logs".
+ *
+ *	5.	Enable one of the following according to your needs :
+ *		. CFG_LOG_INSERT_TIME_STAMP_INSIDE_THE_TRACE
+ *		. CFG_LOG_SUPPORTED
+ *
+ *	6.	Click on the "Platform Settings" panel.
+ *
+ *	7.	Select the BSP you'll use for the Logs. It can be one of the following :
+ *		In order to select them, you need to activate the corresponding IP beforehand in Cube MX.
+ *		. USART1
+ *		. LPUART1
+ *
+ */
+
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32_adv_trace.h"
@@ -40,10 +68,6 @@
 /* USER CODE END PD */
 
 /* External variables --------------------------------------------------------*/
-/**
-  * @brief USART1 handle
-  */
-extern UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN EV */
 
@@ -104,8 +128,6 @@ static void (*RxCpltCallback)(uint8_t *pdata, uint16_t size, uint8_t error);
 
 #if (CFG_DEBUG_APP_ADV_TRACE != 0)
 
-static void USART1_DMA_MspDeInit(void);
-
 #endif /* (CFG_DEBUG_APP_ADV_TRACE != 0) */
 
 /* USER CODE BEGIN PFP */
@@ -127,8 +149,6 @@ UTIL_ADV_TRACE_Status_t UART_Init(  void (*cb)(void *))
   /* USER CODE END UART_Init 1 */
 
   /* Init done in main : GPIO */
-  HAL_UART_MspInit(&huart1);
-  MX_USART1_UART_Init();
 
   /* USER CODE BEGIN UART_Init 2 */
 
@@ -159,13 +179,10 @@ UTIL_ADV_TRACE_Status_t UART_DeInit( void )
 
   HAL_StatusTypeDef result;
 
-  USART1_DMA_MspDeInit();
-
   /* USER CODE BEGIN UART_DeInit 2 */
 
   /* USER CODE END UART_DeInit 2 */
 
-  result = HAL_UART_DeInit(&huart1);
   if (result != HAL_OK)
   {
     TxCpltCallback = NULL;
@@ -176,27 +193,9 @@ UTIL_ADV_TRACE_Status_t UART_DeInit( void )
 
   /* USER CODE END UART_DeInit 3 */
 
-  if(huart1.hdmatx)
-  {
-    result = HAL_DMA_DeInit(huart1.hdmatx);
-    if (result != HAL_OK)
-    {
-      return UTIL_ADV_TRACE_UNKNOWN_ERROR;
-    }
-  }
-
   /* USER CODE BEGIN UART_DeInit 4 */
 
   /* USER CODE END UART_DeInit 4 */
-
-  if(huart1.hdmarx)
-  {
-    result = HAL_DMA_DeInit(huart1.hdmarx);
-    if (result != HAL_OK)
-    {
-      return UTIL_ADV_TRACE_UNKNOWN_ERROR;
-    }
-  }
 
   /* USER CODE BEGIN UART_DeInit 5 */
 
@@ -218,9 +217,6 @@ UTIL_ADV_TRACE_Status_t UART_StartRx(void (*cb)(uint8_t *pdata, uint16_t size, u
   /* USER CODE BEGIN UART_StartRx 1 */
 
   /* USER CODE END UART_StartRx 1 */
-
-  /* Configure USART1 in Receive mode */
-  HAL_UART_Receive_IT(&huart1, &charRx, 1);
 
   if (cb != NULL)
   {
@@ -256,22 +252,12 @@ UTIL_ADV_TRACE_Status_t UART_TransmitDMA ( uint8_t *pdata, uint16_t size )
 
   HAL_StatusTypeDef result;
 
-  if(huart1.hdmatx)
-  {
-    result = HAL_UART_Transmit_DMA(&huart1, pdata, size);
-  }
-  else
-  {
-    result = HAL_UART_Transmit_IT(&huart1, pdata, size);
-  }
-
   if (result != HAL_OK)
   {
     status = UTIL_ADV_TRACE_HW_ERROR;
   }
 
 #if RECEIVE_AFTER_TRANSMIT
-    HAL_UART_Receive_IT(&huart1, &charRx, 1);
 #endif
 
   /* USER CODE BEGIN UART_TransmitDMA 3 */

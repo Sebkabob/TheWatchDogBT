@@ -57,6 +57,7 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
+void MX_USART1_UART_Init(void);
 
 /* USER CODE BEGIN EFP */
 
@@ -73,8 +74,6 @@ void Error_Handler(void);
 #define EEPROM_POWER_GPIO_Port GPIOB
 #define GPOUT_Pin GPIO_PIN_8
 #define GPOUT_GPIO_Port GPIOA
-#define BQ251_STAT_Pin GPIO_PIN_9
-#define BQ251_STAT_GPIO_Port GPIOA
 #define I2C_POWER_Pin GPIO_PIN_10
 #define I2C_POWER_GPIO_Port GPIOA
 #define ACCEL_INT_Pin GPIO_PIN_15
@@ -85,6 +84,12 @@ void Error_Handler(void);
 #define BQ251_PG_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
+
+#define BQ251_STAT_Pin GPIO_PIN_9
+#define BQ251_STAT_GPIO_Port GPIOA
+
+#define IS_CABLE_PLUGGED()  (HAL_GPIO_ReadPin(BQ251_PG_GPIO_Port, BQ251_PG_Pin) == GPIO_PIN_RESET)
+#define IS_CHARGING_NOW()   (HAL_GPIO_ReadPin(BQ251_STAT_GPIO_Port, BQ251_STAT_Pin) == GPIO_PIN_RESET)
 
 /* USER CODE END Private defines */
 

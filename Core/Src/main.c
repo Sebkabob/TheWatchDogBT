@@ -60,6 +60,8 @@ RNG_HandleTypeDef hrng;
 
 TIM_HandleTypeDef htim2;
 
+UART_HandleTypeDef huart1;
+
 /* USER CODE BEGIN PV */
 /* USER CODE END PV */
 
@@ -73,7 +75,6 @@ static void MX_RNG_Init(void);
 static void MX_PKA_Init(void);
 static void MX_RADIO_Init(void);
 static void MX_RADIO_TIMER_Init(void);
-static void MX_TIM16_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -121,7 +122,6 @@ int main(void)
   MX_PKA_Init();
   MX_RADIO_Init();
   MX_RADIO_TIMER_Init();
-  MX_TIM16_Init();
   /* USER CODE BEGIN 2 */
 
   /* === Power up I2C bus BEFORE I2C init === */
@@ -461,34 +461,50 @@ static void MX_TIM2_Init(void)
 }
 
 /**
-  * @brief TIM16 Initialization Function
+  * @brief USART1 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_TIM16_Init(void)
+void MX_USART1_UART_Init(void)
 {
 
-  /* USER CODE BEGIN TIM16_Init 0 */
+  /* USER CODE BEGIN USART1_Init 0 */
 
-  /* USER CODE END TIM16_Init 0 */
+  /* USER CODE END USART1_Init 0 */
 
-  /* USER CODE BEGIN TIM16_Init 1 */
+  /* USER CODE BEGIN USART1_Init 1 */
 
-  /* USER CODE END TIM16_Init 1 */
-  htim16.Instance = TIM16;
-  htim16.Init.Prescaler = 63;
-  htim16.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim16.Init.Period = 999;
-  htim16.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim16.Init.RepetitionCounter = 0;
-  htim16.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
-  if (HAL_TIM_Base_Init(&htim16) != HAL_OK)
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart1.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN TIM16_Init 2 */
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart1, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart1, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
 
-  /* USER CODE END TIM16_Init 2 */
+  /* USER CODE END USART1_Init 2 */
 
 }
 
@@ -536,12 +552,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : BQ251_STAT_Pin */
-  GPIO_InitStruct.Pin = BQ251_STAT_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(BQ251_STAT_GPIO_Port, &GPIO_InitStruct);
-
   /*Configure GPIO pin : ACCEL_INT_Pin */
   GPIO_InitStruct.Pin = ACCEL_INT_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
@@ -558,13 +568,13 @@ static void MX_GPIO_Init(void)
   HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_1|PWR_GPIO_BIT_0|PWR_GPIO_BIT_4);
 
   /**/
-  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_9|PWR_GPIO_BIT_10);
+  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_10);
 
   /**/
   HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_1|PWR_GPIO_BIT_0|PWR_GPIO_BIT_4);
 
   /**/
-  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_9|PWR_GPIO_BIT_10);
+  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_10);
 
   /**/
   HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_2);
@@ -580,7 +590,6 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void MX_I2C1_Reinit(void)  { MX_I2C1_Init();  }
 void MX_TIM2_Reinit(void)  { MX_TIM2_Init();   }
-void MX_TIM16_Reinit(void) { MX_TIM16_Init();  }
 /* USER CODE END 4 */
 
 /**

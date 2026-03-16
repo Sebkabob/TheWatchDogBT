@@ -1,38 +1,155 @@
 /***************************************************************************
  * lights.c
- * created by __Sebastian__ __Forenza__ 2026
+ * created by Sebastian Forenza 2026
  *
- * Functions in charge of interfacing with the
- * __onboard__ LEDs
+ * Functions in charge of interfacing with the onboard LEDs
+ *
+ * NEW PCB pin mapping:
+ *   LED1 (Red)   = PB3  -> TIM2_CH4  (hardware PWM, active LOW)
+ *   LED2 (Green) = PB2  -> TIM2_CH3  (hardware PWM, active LOW)
+ *   LED3 (Blue)  = PB1  -> GPIO soft-PWM via SysTick (active LOW)
+ *
+ * All LEDs are active-LOW: driving the pin LOW turns the LED ON.
+ * For hardware PWM: CCR = 999 -> fully OFF, CCR = 0 -> fully ON.
+ * For software PWM: GPIO RESET (low) = ON, SET (high) = OFF.
  ***************************************************************************/
 
 #include "main.h"
 #include "lights.h"
 #include "sound.h"
-#include "lockservice_app.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 extern TIM_HandleTypeDef htim2;
-extern TIM_HandleTypeDef htim16;
-extern uint8_t deviceState;
-extern uint8_t deviceInfo;
+
+/* =========================================================================
+ * SOFTWARE PWM FOR LED3 (BLUE) ON PB1
+ *
+ * A simple 8-bit resolution PWM driven from SysTick at 1 kHz.
+ * PWM frequency ≈ 1000 / 256 ≈ ~3.9 Hz per full cycle BUT we only
+ * need perceived brightness so we run a fast counter that wraps at
+ * a smaller period.  Using period = 100 gives ~10 Hz flicker-free
+ * at 1 kHz tick rate (100 ticks per cycle = 10 cycles/sec ... still
+ * visible).  Better: period = 20 gives 50 Hz, good enough.
+ *
+ * We use a period of 20 ticks (50 Hz PWM).  Duty 0-20 maps from
+ * the requested 0-999 range to keep the interface consistent with
+ * the hardware PWM channels.
+ * ========================================================================= */
+
+#define SOFT_PWM_PERIOD  20   /* 1 kHz / 20 = 50 Hz PWM — flicker-free */
+
+static volatile uint16_t soft_pwm_blue_duty = SOFT_PWM_PERIOD; /* 0=full ON, PERIOD=full OFF (active low) */
+static volatile uint8_t  soft_pwm_counter   = 0;
+static volatile uint8_t  soft_pwm_enabled   = 0;
+
+/**
+ * @brief Initialise soft-PWM (call once at startup)
+ */
+void LED_SoftPWM_Init(void)
+{
+    /* Make sure PB1 is push-pull output, driven HIGH (LED off) */
+    HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_SET);
+    soft_pwm_blue_duty = SOFT_PWM_PERIOD;  /* OFF */
+    soft_pwm_counter   = 0;
+    soft_pwm_enabled   = 0;
+}
+
+/**
+ * @brief Call from SysTick_Handler every 1 ms
+ */
+void LED_SoftPWM_Tick(void)
+{
+    if (!soft_pwm_enabled) {
+        return;
+    }
+
+    soft_pwm_counter++;
+    if (soft_pwm_counter >= SOFT_PWM_PERIOD) {
+        soft_pwm_counter = 0;
+    }
+
+    /* Active-LOW: pin LOW = LED on.
+     * duty == 0           -> always HIGH (off)
+     * duty == SOFT_PWM_PERIOD -> always LOW  (full on)  ... wait, inverted.
+     *
+     * Let's define: soft_pwm_blue_duty = how many ticks out of PERIOD the LED is ON.
+     *   0              = LED fully OFF
+     *   SOFT_PWM_PERIOD = LED fully ON
+     */
+    if (soft_pwm_counter < soft_pwm_blue_duty) {
+        /* LED ON (active low) */
+        LED3_GPIO_Port->BRR = LED3_Pin;   /* fast reset = LOW = ON */
+    } else {
+        /* LED OFF */
+        LED3_GPIO_Port->BSRR = LED3_Pin;  /* fast set = HIGH = OFF */
+    }
+}
+
+/**
+ * @brief Set blue LED brightness using soft PWM
+ * @param pwm_val 0-999 range matching hardware PWM convention
+ *                999 = OFF (active low), 0 = full ON
+ */
+static void LED3_SetBrightness(uint32_t pwm_val)
+{
+    /* Convert from 0-999 (active-low HW convention) to duty ticks.
+     * pwm_val 999 = OFF  -> duty = 0
+     * pwm_val 0   = ON   -> duty = SOFT_PWM_PERIOD
+     */
+    if (pwm_val >= 999) {
+        soft_pwm_blue_duty = 0;
+    } else {
+        /* Map: brightness = 999 - pwm_val (0..999), then scale to 0..PERIOD */
+        uint32_t brightness = 999 - pwm_val;
+        soft_pwm_blue_duty = (uint16_t)((brightness * SOFT_PWM_PERIOD) / 999);
+    }
+}
+
+static void LED3_Enable(void)
+{
+    soft_pwm_enabled = 1;
+}
+
+static void LED3_Disable(void)
+{
+    soft_pwm_enabled = 0;
+    soft_pwm_blue_duty = 0;
+    HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_SET); /* OFF */
+}
+
+/* =========================================================================
+ * HELPER: start / stop hardware PWM channels
+ * ========================================================================= */
+
+static void StartRedPWM(void)   { HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4); }
+static void StartGreenPWM(void) { HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3); }
+static void StartBlueSoft(void) { LED3_Enable(); }
+
+static void StopRedPWM(void)    { __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 999); HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_4); }
+static void StopGreenPWM(void)  { __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 999); HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3); }
+static void StopBlueSoft(void)  { LED3_Disable(); }
+
+static inline void SetRed(uint32_t pwm)   { __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, pwm); }
+static inline void SetGreen(uint32_t pwm) { __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pwm); }
+static inline void SetBlue(uint32_t pwm)  { LED3_SetBrightness(pwm); }
+
+/* =========================================================================
+ * PUBLIC API
+ * ========================================================================= */
 
 void LED_Rainbow(int ms_delay, uint8_t intensity)
 {
-    // Static variables to maintain rainbow state
-    static uint8_t color_phase = 0;  // 0-5 for the 6 color transitions
-    static uint8_t fade_step = 0;    // 0-255 within each phase
+    static uint8_t color_phase = 0;
+    static uint8_t fade_step = 0;
     static uint32_t last_update = 0;
     static uint32_t last_call = 0;
 
-    // Clamp intensity to 0-255 range
     if (intensity > 255) intensity = 255;
 
     uint32_t current_time = HAL_GetTick();
 
-    // Reset if function hasn't been called for more than 500ms
     #define RAINBOW_RESET_TIMEOUT 500
     if ((current_time - last_call) > RAINBOW_RESET_TIMEOUT) {
         color_phase = 0;
@@ -41,190 +158,104 @@ void LED_Rainbow(int ms_delay, uint8_t intensity)
     }
     last_call = current_time;
 
-    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);  // LED1 - Red
-    HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1); // LED2 - Green
-    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);  // LED3 - Blue
+    StartRedPWM();
+    StartGreenPWM();
+    StartBlueSoft();
 
-    // Check if enough time has passed since last update
-    if ((current_time - last_update) < ms_delay) {
+    if ((current_time - last_update) < (uint32_t)ms_delay) {
         return;
     }
     last_update = current_time;
 
-    // RGB values (0-255)
     uint16_t red = 0, green = 0, blue = 0;
 
-    // Calculate RGB values based on current phase and fade step
-    // Transitions: R->Y->G->C->B->M->R
     switch(color_phase) {
-        case 0: // Red (255,0,0) -> Yellow (255,255,0) - fade in green
-            red = 255;
-            green = fade_step;
-            blue = 0;
-            break;
-
-        case 1: // Yellow (255,255,0) -> Green (0,255,0) - fade out red
-            red = 255 - fade_step;
-            green = 255;
-            blue = 0;
-            break;
-
-        case 2: // Green (0,255,0) -> Cyan (0,255,255) - fade in blue
-            red = 0;
-            green = 255;
-            blue = fade_step;
-            break;
-
-        case 3: // Cyan (0,255,255) -> Blue (0,0,255) - fade out green
-            red = 0;
-            green = 255 - fade_step;
-            blue = 255;
-            break;
-
-        case 4: // Blue (0,0,255) -> Magenta (255,0,255) - fade in red
-            red = fade_step;
-            green = 0;
-            blue = 255;
-            break;
-
-        case 5: // Magenta (255,0,255) -> Red (255,0,0) - fade out blue
-            red = 255;
-            green = 0;
-            blue = 255 - fade_step;
-            break;
+        case 0: red = 255; green = fade_step; blue = 0; break;
+        case 1: red = 255 - fade_step; green = 255; blue = 0; break;
+        case 2: red = 0; green = 255; blue = fade_step; break;
+        case 3: red = 0; green = 255 - fade_step; blue = 255; break;
+        case 4: red = fade_step; green = 0; blue = 255; break;
+        case 5: red = 255; green = 0; blue = 255 - fade_step; break;
     }
 
-    // Apply intensity scaling (0-255)
-    // This caps the maximum brightness
-    red = (red * intensity) / 255;
+    red   = (red   * intensity) / 255;
     green = (green * intensity) / 255;
-    blue = (blue * intensity) / 255;
+    blue  = (blue  * intensity) / 255;
 
-    // Convert RGB (0-255) to PWM duty cycle (0-999)
-    // For active LOW LEDs: higher PWM value = dimmer LED
-    // So we invert: 0 RGB = 999 PWM (off), 255 RGB = 0 PWM (full brightness)
-    uint32_t red_pwm = 999 - ((red * 999) / 255);
-    uint32_t green_pwm = 999 - ((green * 999) / 255);
-    uint32_t blue_pwm = 999 - ((blue * 999) / 255);
+    /* Convert RGB 0-255 to active-low PWM 0-999 */
+    SetRed(  999 - ((red   * 999) / 255));
+    SetGreen(999 - ((green * 999) / 255));
+    SetBlue( 999 - ((blue  * 999) / 255));
 
-    // Set PWM duty cycles
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, red_pwm);    // LED1 - Red
-    __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, green_pwm); // LED2 - Green
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, blue_pwm);   // LED3 - Blue
-
-    // Increment fade step - use smaller increment for smoother transition
-    if (fade_step < 250) {  // Prevent overflow
+    if (fade_step < 250) {
         fade_step += 5;
     } else {
         fade_step = 0;
-        color_phase = (color_phase + 1) % 6;  // Move to next color phase
+        color_phase = (color_phase + 1) % 6;
     }
 }
 
 void LED_Armed(int ms_delay, uint8_t intensity)
 {
-    // Start RED PWM only
-    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);  // LED1 - Red
+    StartRedPWM();
+    StopGreenPWM();
+    StopBlueSoft();
 
-    // Turn off and stop green and blue LEDs
-    __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 999); // Green OFF
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 999);  // Blue OFF
-    HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1); // Stop green timer
-    HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_4);  // Stop blue timer
-
-    // Static variables to maintain fade state for red LED
     static uint16_t pulse_value = 0;
-    static uint8_t pulse_direction = 1;  // 1 = increasing (fade in), 0 = decreasing (fade out)
+    static uint8_t pulse_direction = 1;
     static uint32_t last_update = 0;
     static uint32_t last_call = 0;
-    static uint8_t initialized_armed = 0;
 
-    // Clamp intensity to 0-255 range
     if (intensity > 255) intensity = 255;
 
     uint32_t current_time = HAL_GetTick();
 
-    // Reset if function hasn't been called for more than 500ms
     #define ARMED_RESET_TIMEOUT 500
     if ((current_time - last_call) > ARMED_RESET_TIMEOUT) {
         pulse_value = 0;
         pulse_direction = 1;
         last_update = current_time;
-        initialized_armed = 0;
     }
-
     last_call = current_time;
 
-    // Check if enough time has passed since last update
-    if ((current_time - last_update) < ms_delay) {
+    if ((current_time - last_update) < (uint32_t)ms_delay) {
         return;
     }
-
     last_update = current_time;
 
-    // Update pulse value (0-255)
     if (pulse_direction) {
-        pulse_value += 3;  // Adjust for fade speed
-        if (pulse_value >= 255) {
-            pulse_value = 255;
-            pulse_direction = 0;  // Start fading out
-        }
+        pulse_value += 3;
+        if (pulse_value >= 255) { pulse_value = 255; pulse_direction = 0; }
     } else {
-        if (pulse_value >= 3) {
-            pulse_value -= 3;
-        } else {
-            pulse_value = 0;
-        }
-
-        if (pulse_value == 0) {
-            pulse_direction = 1;  // Start fading in
-        }
+        if (pulse_value >= 3) pulse_value -= 3; else pulse_value = 0;
+        if (pulse_value == 0) pulse_direction = 1;
     }
 
-    // Apply intensity scaling
     uint16_t scaled_brightness = (pulse_value * intensity) / 255;
-
-    // Convert brightness (0-255) to PWM (0-999)
-    // Active LOW: 0 brightness = 999 PWM (off), 255 brightness = 0 PWM (full on)
-    uint32_t red_pwm = 999 - ((scaled_brightness * 999) / 255);
-
-    // Set red LED PWM
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, red_pwm);
+    SetRed(999 - ((scaled_brightness * 999) / 255));
 }
 
 void LED_Off(void)
 {
-    // For active LOW LEDs, set PWM to full period (100% duty = OFF)
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 999);   // LED1 - Red OFF
-    __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 999);  // LED2 - Green OFF
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 999);   // LED3 - Blue OFF
+    SetRed(999);
+    SetGreen(999);
+    SetBlue(999);
 
-    // Stop all PWM timers to save power
-    HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
-    HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
-    HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_4);
+    StopRedPWM();
+    StopGreenPWM();
+    StopBlueSoft();
 }
 
-
-/**
- * @brief Flash LED with custom color (non-blocking)
- * @param flash_interval_ms Time between on and off in milliseconds
- * @param red Red component (0-255)
- * @param green Green component (0-255)
- * @param blue Blue component (0-255)
- * @param intensity Overall brightness multiplier (0-255, where 255 is full)
- */
 void LED_Alarm(int flash_interval_ms, uint8_t red, uint8_t green, uint8_t blue, uint8_t intensity)
 {
-    static uint8_t led_state = 0;  // 0 = OFF, 1 = ON
+    static uint8_t led_state = 0;
     static uint32_t last_toggle_time = 0;
     static uint32_t last_call = 0;
     static uint8_t initialized_alarm = 0;
-    static uint8_t last_r = 0, last_g = 0, last_b = 0;  // Track which colors were active
+    static uint8_t last_r = 0, last_g = 0, last_b = 0;
 
     uint32_t current_time = HAL_GetTick();
 
-    // Reset if function hasn't been called for more than 500ms
     #define ALARM_RESET_TIMEOUT 500
     if ((current_time - last_call) > ALARM_RESET_TIMEOUT) {
         led_state = 0;
@@ -232,101 +263,50 @@ void LED_Alarm(int flash_interval_ms, uint8_t red, uint8_t green, uint8_t blue, 
         initialized_alarm = 0;
         last_r = last_g = last_b = 0;
     }
-
     last_call = current_time;
 
-    // One-time initialization OR when colors change
     if (!initialized_alarm || last_r != red || last_g != green || last_b != blue) {
-        // Start only the timers we need, stop the ones we don't
-        if (red > 0) {
-            HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);   // LED1 - Red
-        } else {
-            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 999);  // Set to OFF first
-            HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);    // Then stop timer
-        }
-
-        if (green > 0) {
-            HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1);  // LED2 - Green
-        } else {
-            __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 999);
-            HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
-        }
-
-        if (blue > 0) {
-            HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);   // LED3 - Blue
-        } else {
-            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 999);
-            HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_4);
-        }
+        if (red > 0)   { StartRedPWM(); }   else { StopRedPWM(); }
+        if (green > 0) { StartGreenPWM(); } else { StopGreenPWM(); }
+        if (blue > 0)  { StartBlueSoft(); }  else { StopBlueSoft(); }
 
         initialized_alarm = 1;
         last_toggle_time = current_time;
-        led_state = 1;  // Start with LED ON
-        last_r = red;
-        last_g = green;
-        last_b = blue;
+        led_state = 1;
+        last_r = red; last_g = green; last_b = blue;
     }
 
-    // Check if it's time to toggle
-    if ((current_time - last_toggle_time) >= flash_interval_ms) {
-        led_state = !led_state;  // Toggle state
+    if ((current_time - last_toggle_time) >= (uint32_t)flash_interval_ms) {
+        led_state = !led_state;
         last_toggle_time = current_time;
     }
 
     if (led_state) {
-        // LED ON - apply color and intensity
-
-        // Clamp intensity to 0-255
         if (intensity > 255) intensity = 255;
-
-        // Apply intensity scaling to each color component and update only active channels
-        if (red > 0) {
-            uint16_t scaled_red = (red * intensity) / 255;
-            uint32_t red_pwm = 999 - ((scaled_red * 999) / 255);
-            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, red_pwm);
-        }
-
-        if (green > 0) {
-            uint16_t scaled_green = (green * intensity) / 255;
-            uint32_t green_pwm = 999 - ((scaled_green * 999) / 255);
-            __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, green_pwm);
-        }
-
-        if (blue > 0) {
-            uint16_t scaled_blue = (blue * intensity) / 255;
-            uint32_t blue_pwm = 999 - ((scaled_blue * 999) / 255);
-            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, blue_pwm);
-        }
+        if (red > 0)   { uint16_t sr = (red   * intensity) / 255; SetRed(  999 - ((sr * 999) / 255)); }
+        if (green > 0) { uint16_t sg = (green * intensity) / 255; SetGreen(999 - ((sg * 999) / 255)); }
+        if (blue > 0)  { uint16_t sb = (blue  * intensity) / 255; SetBlue( 999 - ((sb * 999) / 255)); }
     } else {
-        // LED OFF - turn off only the active colors
-        if (red > 0) {
-            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 999);    // Red OFF
-        }
-        if (green > 0) {
-            __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 999);   // Green OFF
-        }
-        if (blue > 0) {
-            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 999);    // Blue OFF
-        }
+        if (red > 0)   SetRed(999);
+        if (green > 0) SetGreen(999);
+        if (blue > 0)  SetBlue(999);
     }
 }
 
 void LED_Pulse(int duration, uint8_t r, uint8_t g, uint8_t b, uint8_t intensity)
 {
-    static uint16_t pulse_value = 0;     // 0–255
-    static uint8_t direction = 1;        // 1 = up, 0 = down
+    static uint16_t pulse_value = 0;
+    static uint8_t direction = 1;
     static uint32_t last_update = 0;
     static uint32_t last_call = 0;
     static uint8_t initialized_pulse = 0;
-    static uint8_t last_r = 0, last_g = 0, last_b = 0;  // Track which colors were active
+    static uint8_t last_r = 0, last_g = 0, last_b = 0;
 
     uint32_t now = HAL_GetTick();
 
-    // Clamp intensity
     if (intensity > 255) intensity = 255;
-    if (duration < 20) duration = 20;   // prevent divide-by-zero / jitter
+    if (duration < 20) duration = 20;
 
-    // Reset if function hasn't been called recently
     #define PULSE_RESET_TIMEOUT 500
     if ((now - last_call) > PULSE_RESET_TIMEOUT) {
         pulse_value = 0;
@@ -337,38 +317,15 @@ void LED_Pulse(int duration, uint8_t r, uint8_t g, uint8_t b, uint8_t intensity)
     }
     last_call = now;
 
-    // One-time init OR when colors change
     if (!initialized_pulse || last_r != r || last_g != g || last_b != b) {
-        // Start only the timers we need, stop the ones we don't
-        if (r > 0) {
-            HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);   // Red needed
-        } else {
-            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 999);  // Set to OFF first
-            HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);    // Then stop timer
-        }
-
-        if (g > 0) {
-            HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1);  // Green needed
-        } else {
-            __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 999);
-            HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
-        }
-
-        if (b > 0) {
-            HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);   // Blue needed
-        } else {
-            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 999);
-            HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_4);
-        }
+        if (r > 0) { StartRedPWM(); }   else { StopRedPWM(); }
+        if (g > 0) { StartGreenPWM(); } else { StopGreenPWM(); }
+        if (b > 0) { StartBlueSoft(); }  else { StopBlueSoft(); }
 
         initialized_pulse = 1;
-        last_r = r;
-        last_g = g;
-        last_b = b;
+        last_r = r; last_g = g; last_b = b;
     }
 
-    // Calculate step timing
-    // 512 steps total (256 up + 256 down)
     uint16_t step_delay = duration / 512;
     if (step_delay < 1) step_delay = 1;
 
@@ -377,38 +334,15 @@ void LED_Pulse(int duration, uint8_t r, uint8_t g, uint8_t b, uint8_t intensity)
     }
     last_update = now;
 
-    // Update pulse
     if (direction) {
         pulse_value++;
-        if (pulse_value >= 255) {
-            pulse_value = 255;
-            direction = 0;
-        }
+        if (pulse_value >= 255) { pulse_value = 255; direction = 0; }
     } else {
-        if (pulse_value > 0) {
-            pulse_value--;
-        }
-        if (pulse_value == 0) {
-            direction = 1;
-        }
+        if (pulse_value > 0) pulse_value--;
+        if (pulse_value == 0) direction = 1;
     }
 
-    // Apply pulse + intensity and update only active channels
-    if (r > 0) {
-        uint16_t pr = (r * pulse_value * intensity) / (255 * 255);
-        uint32_t red_pwm = 999 - ((pr * 999) / 255);
-        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, red_pwm);
-    }
-
-    if (g > 0) {
-        uint16_t pg = (g * pulse_value * intensity) / (255 * 255);
-        uint32_t green_pwm = 999 - ((pg * 999) / 255);
-        __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, green_pwm);
-    }
-
-    if (b > 0) {
-        uint16_t pb = (b * pulse_value * intensity) / (255 * 255);
-        uint32_t blue_pwm = 999 - ((pb * 999) / 255);
-        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, blue_pwm);
-    }
+    if (r > 0) { uint16_t pr = (r * pulse_value * intensity) / (255 * 255); SetRed(  999 - ((pr * 999) / 255)); }
+    if (g > 0) { uint16_t pg = (g * pulse_value * intensity) / (255 * 255); SetGreen(999 - ((pg * 999) / 255)); }
+    if (b > 0) { uint16_t pb = (b * pulse_value * intensity) / (255 * 255); SetBlue( 999 - ((pb * 999) / 255)); }
 }

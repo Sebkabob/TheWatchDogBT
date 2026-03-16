@@ -26,6 +26,7 @@
 #include "stm32wb0x_ll_usart.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "lights.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -134,6 +135,9 @@ void SysTick_Handler(void)
   /* USER CODE END SysTick_IRQn 0 */
   HAL_IncTick();
   /* USER CODE BEGIN SysTick_IRQn 1 */
+
+  /* Drive software PWM for LED3 (Blue, PB1) at 1 kHz */
+  LED_SoftPWM_Tick();
 
   /* USER CODE END SysTick_IRQn 1 */
 }

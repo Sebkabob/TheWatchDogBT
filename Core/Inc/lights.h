@@ -1,8 +1,12 @@
 /***************************************************************************
  * lights.h
- * created by __Sebastian__ __Forenza__ 2026
+ * created by Sebastian Forenza 2026
  *
  * Header file for LED interface functions
+ *
+ * LED1 (Red)  = PB3  -> TIM2_CH4 (hardware PWM)
+ * LED2 (Green)= PB2  -> TIM2_CH3 (hardware PWM)  [NOTE: TIM16_CH1 removed]
+ * LED3 (Blue) = PB1  -> GPIO soft-PWM via SysTick
  ***************************************************************************/
 
 #ifndef __LIGHTS_H
@@ -14,7 +18,21 @@ extern "C" {
 
 #include <stdint.h>
 
-/* Function prototypes */
+/* ---- Software PWM for LED3 (Blue, PB1) ---- */
+
+/**
+ * @brief  Must be called once before using any LED function.
+ *         Sets up internal soft-PWM state for LED3.
+ */
+void LED_SoftPWM_Init(void);
+
+/**
+ * @brief  Call this from SysTick_Handler() every 1 ms.
+ *         Drives the software PWM on PB1 (LED3 / blue).
+ */
+void LED_SoftPWM_Tick(void);
+
+/* ---- Public LED API (unchanged interface) ---- */
 
 /**
  * @brief Display rainbow color cycle on RGB LED

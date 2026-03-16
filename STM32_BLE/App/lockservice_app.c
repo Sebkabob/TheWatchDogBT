@@ -416,33 +416,31 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
   lockservice_notification_data.Length = 0;
 
   /* USER CODE BEGIN Service1Char2_NS_1*/
-  // Set notification to ON so it actually sends
-  notification_on_off = Devicestatus_NOTIFICATION_ON;
+  	notification_on_off = Devicestatus_NOTIFICATION_ON;
 
-  // Use cached battery values (updated by BATTERY_UpdateState in main loop)
-  uint16_t voltage_mV = BATTERY_GetVoltage();
-  int16_t current_mA = BATTERY_GetCurrent();
-  uint16_t soc_percent = BATTERY_GetSOC();
+    /* Use cached battery values */
+    uint16_t voltage_mV = BATTERY_GetVoltage();
+    int16_t current_mA = BATTERY_GetCurrent();
+    uint16_t soc_percent = BATTERY_GetSOC();
 
-  deviceBattery = soc_percent & 0x7F;
+    deviceBattery = soc_percent & 0x7F;
 
-  // Set charging flag based on GPIO pin
-  if (!(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
-      SET_BATTERY_CHARGING(deviceBattery);
-  } else {
-      CLEAR_BATTERY_CHARGING(deviceBattery);
-  }
+    /* Set charging flag based on BQ251_STAT (PA9): LOW = charging */
+    if (IS_CABLE_PLUGGED() && IS_CHARGING_NOW()) {
+        SET_BATTERY_CHARGING(deviceBattery);
+    } else {
+        CLEAR_BATTERY_CHARGING(deviceBattery);
+    }
 
+    /* Pack data into BLE notification */
+    a_LOCKSERVICE_UpdateCharData[0] = deviceState;
+    a_LOCKSERVICE_UpdateCharData[1] = deviceBattery;
+    a_LOCKSERVICE_UpdateCharData[2] = (uint8_t)(current_mA & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[3] = (uint8_t)((current_mA >> 8) & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[4] = (uint8_t)(voltage_mV & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[5] = (uint8_t)((voltage_mV >> 8) & 0xFF);
 
-  // Pack data into BLE notification
-  a_LOCKSERVICE_UpdateCharData[0] = deviceState;
-  a_LOCKSERVICE_UpdateCharData[1] = deviceBattery;
-  a_LOCKSERVICE_UpdateCharData[2] = (uint8_t)(current_mA & 0xFF);        // Current low byte
-  a_LOCKSERVICE_UpdateCharData[3] = (uint8_t)((current_mA >> 8) & 0xFF); // Current high byte
-  a_LOCKSERVICE_UpdateCharData[4] = (uint8_t)(voltage_mV & 0xFF);        // Voltage low byte
-  a_LOCKSERVICE_UpdateCharData[5] = (uint8_t)((voltage_mV >> 8) & 0xFF); // Voltage high byte
-
-  lockservice_notification_data.Length = 6;
+    lockservice_notification_data.Length = 6;
   /* USER CODE END Service1Char2_NS_1*/
 
   if (notification_on_off != Devicestatus_NOTIFICATION_OFF && LOCKSERVICE_APP_Context.ConnectionHandle != 0xFFFF)

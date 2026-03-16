@@ -4,17 +4,14 @@
  *
  * Peripheral gating for low-power advertising states.
  *
- * The BLE stack and radio are NOT touched here — they are managed by
- * app_ble.c / the sequencer.  We only gate the "application" peripherals:
- *   - TIM2  (buzzer CH1/CH2, LED red CH3, LED blue CH4)
- *   - TIM16 (LED green CH1)
- *   - I2C1  (accelerometer + fuel gauge)
- *   - USART1 (debug UART)
- *   - GPIO outputs (EN_1, EN_2, GPOUT)
- *   - EXTI on PB2 (accelerometer INT1)
+ * NEW PCB pin management:
+ *   - I2C_POWER (PA10): Must be HIGH for any I2C (accel + fuel gauge).
+ *                        Drive LOW to cut I2C bus power and save current.
+ *   - EEPROM_POWER (PB0): Must be HIGH for EEPROM access.
+ *                          Drive LOW when not in use.
+ *   - ACCEL_INT (PB15): Accelerometer interrupt, EXTI rising edge.
  *
- * Calling PowerMgmt_RestoreAll() re-initialises everything so the rest
- * of the firmware can carry on as if nothing happened.
+ * The BLE stack and radio are NOT touched here.
  ***************************************************************************/
 
 #include "main.h"
@@ -28,57 +25,29 @@
 /* ---- External handles from main.c -------------------------------------- */
 extern I2C_HandleTypeDef  hi2c1;
 extern TIM_HandleTypeDef  htim2;
-extern TIM_HandleTypeDef  htim16;
-extern UART_HandleTypeDef huart1;
 
 /* ---- Private state ----------------------------------------------------- */
-static volatile uint8_t peripherals_gated = 0;   /* 1 = low-power, 0 = running */
+static volatile uint8_t peripherals_gated = 0;
 
-/* Forward declarations of init functions defined in main.c               */
-/* (They are static there, so we re-declare the ones we need as extern.   *
- *  Alternatively you can remove the 'static' keyword in main.c.)         */
-extern void MX_USART1_UART_Init(void);
-
-/* We cannot call the static MX_*_Init() functions from main.c directly.
- * Instead we provide thin wrappers that main.c must expose.  See the
- * "WHAT TO CHANGE IN main.c" comment block at the bottom of this file.  */
+/* ---- Reinit wrappers defined in main.c ---- */
 extern void MX_I2C1_Reinit(void);
 extern void MX_TIM2_Reinit(void);
-extern void MX_TIM16_Reinit(void);
 
 /***************************************************************************
  * PRIVATE HELPERS
  ***************************************************************************/
 
 /**
- * @brief Stop all PWM outputs and de-init timers to save power.
- */
-static void Gate_Timers(void)
-{
-    /* Make sure all PWM channels are off first */
-    LED_Off();
-    BUZZER_Stop();
-
-    /* Stop base timers */
-    HAL_TIM_Base_Stop(&htim2);
-    HAL_TIM_Base_Stop(&htim16);
-
-    /* De-init to release GPIO back to analog */
-    HAL_TIM_Base_DeInit(&htim2);
-    HAL_TIM_Base_DeInit(&htim16);
-
-    /* Disable peripheral clocks */
-    __HAL_RCC_TIM2_CLK_DISABLE();
-    __HAL_RCC_TIM16_CLK_DISABLE();
-}
-
-/**
- * @brief De-init I2C1 and set its pins to analog to cut leakage.
+ * @brief Turn off I2C bus power (PA10 LOW), then de-init I2C peripheral.
+ *        Sets SDA/SCL pins to analog to prevent leakage.
  */
 static void Gate_I2C(void)
 {
     HAL_I2C_DeInit(&hi2c1);
     __HAL_RCC_I2C1_CLK_DISABLE();
+
+    /* Cut power to I2C bus */
+    HAL_GPIO_WritePin(I2C_POWER_GPIO_Port, I2C_POWER_Pin, GPIO_PIN_RESET);
 
     /* Set PA0 (SCL) and PA1 (SDA) to analog / no-pull */
     GPIO_InitTypeDef gpio = {0};
@@ -89,82 +58,73 @@ static void Gate_I2C(void)
 }
 
 /**
- * @brief Disable the accelerometer EXTI interrupt so motion
- *        events don't wake the CPU.
+ * @brief Turn off EEPROM power (PB0 LOW).
  */
-static void Gate_AccelInterrupt(void)
+static void Gate_EEPROM(void)
 {
-    /* Reconfigure PB2 (INT1) as plain analog input */
-    GPIO_InitTypeDef gpio = {0};
-    gpio.Pin  = INT1_Pin;
-    gpio.Mode = GPIO_MODE_ANALOG;
-    gpio.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(INT1_GPIO_Port, &gpio);
+    HAL_GPIO_WritePin(EEPROM_POWER_GPIO_Port, EEPROM_POWER_Pin, GPIO_PIN_RESET);
 }
 
 /**
- * @brief Keep PB2 (INT1) as rising-edge EXTI so the accelerometer
- *        interrupt still fires.
+ * @brief Stop all PWM outputs and de-init timers to save power.
+ *        This covers TIM2 (buzzer, red LED, green LED).
+ *        Blue LED (soft PWM on PB1) is turned off via LED_Off().
+ */
+static void Gate_Timers(void)
+{
+    LED_Off();
+    BUZZER_Stop();
+
+    HAL_TIM_Base_Stop(&htim2);
+    HAL_TIM_Base_DeInit(&htim2);
+    __HAL_RCC_TIM2_CLK_DISABLE();
+}
+
+/**
+ * @brief Disable the accelerometer EXTI interrupt (PB15 -> analog).
+ */
+static void Gate_AccelInterrupt(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin  = ACCEL_INT_Pin;
+    gpio.Mode = GPIO_MODE_ANALOG;
+    gpio.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(ACCEL_INT_GPIO_Port, &gpio);
+}
+
+/**
+ * @brief Keep PB15 as rising-edge EXTI so the accelerometer
+ *        interrupt still fires (for armed mode).
  */
 static void Keep_AccelInterrupt(void)
 {
-    /* Make sure the EXTI config is correct (it was set in MX_GPIO_Init) */
     GPIO_InitTypeDef gpio = {0};
-    gpio.Pin  = INT1_Pin;
+    gpio.Pin  = ACCEL_INT_Pin;
     gpio.Mode = GPIO_MODE_IT_RISING;
     gpio.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(INT1_GPIO_Port, &gpio);
+    HAL_GPIO_Init(ACCEL_INT_GPIO_Port, &gpio);
 
-    __HAL_GPIO_EXTI_CLEAR_IT(INT1_GPIO_Port, INT1_Pin);
+    __HAL_GPIO_EXTI_CLEAR_IT(ACCEL_INT_GPIO_Port, ACCEL_INT_Pin);
     HAL_NVIC_EnableIRQ(GPIOB_IRQn);
 }
 
 /**
- * @brief Set unused GPIO outputs low / analog to prevent leakage.
+ * @brief Set misc GPIO outputs low / analog to prevent leakage.
  */
 static void Gate_GPIO_Outputs(void)
 {
-    /* Drive enable pins low, then switch to analog */
-    HAL_GPIO_WritePin(EN_1_GPIO_Port, EN_1_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(EN_2_GPIO_Port, EN_2_Pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPOUT_GPIO_Port, GPOUT_Pin, GPIO_PIN_RESET);
 
     GPIO_InitTypeDef gpio = {0};
     gpio.Mode = GPIO_MODE_ANALOG;
     gpio.Pull = GPIO_NOPULL;
 
-    gpio.Pin = EN_1_Pin;
-    HAL_GPIO_Init(EN_1_GPIO_Port, &gpio);
-
-    gpio.Pin = EN_2_Pin;
-    HAL_GPIO_Init(EN_2_GPIO_Port, &gpio);
-
     gpio.Pin = GPOUT_Pin;
     HAL_GPIO_Init(GPOUT_GPIO_Port, &gpio);
 }
 
 /**
- * @brief Disable USART1 clock (debug UART).
- */
-static void Gate_UART(void)
-{
-    HAL_UART_DeInit(&huart1);
-    __HAL_RCC_USART1_CLK_DISABLE();
-
-    /* Set TX/RX pins to analog */
-    GPIO_InitTypeDef gpio = {0};
-    gpio.Mode = GPIO_MODE_ANALOG;
-    gpio.Pull = GPIO_NOPULL;
-
-    gpio.Pin = GPIO_PIN_9;          /* PA9  = USART1_TX */
-    HAL_GPIO_Init(GPIOA, &gpio);
-
-    gpio.Pin = GPIO_PIN_14;         /* PB14 = USART1_RX */
-    HAL_GPIO_Init(GPIOB, &gpio);
-}
-
-/**
- * @brief Restore GPIO outputs to their normal push-pull config.
+ * @brief Restore misc GPIO outputs to push-pull.
  */
 static void Restore_GPIO_Outputs(void)
 {
@@ -173,27 +133,23 @@ static void Restore_GPIO_Outputs(void)
     gpio.Pull  = GPIO_NOPULL;
     gpio.Speed = GPIO_SPEED_FREQ_LOW;
 
-    gpio.Pin = EN_2_Pin;
-    HAL_GPIO_Init(EN_2_GPIO_Port, &gpio);
-    HAL_GPIO_WritePin(EN_2_GPIO_Port, EN_2_Pin, GPIO_PIN_RESET);
-
-    gpio.Pin = EN_1_Pin | GPOUT_Pin;
-    HAL_GPIO_Init(GPIOB, &gpio);
-    HAL_GPIO_WritePin(GPIOB, EN_1_Pin | GPOUT_Pin, GPIO_PIN_RESET);
+    gpio.Pin = GPOUT_Pin;
+    HAL_GPIO_Init(GPOUT_GPIO_Port, &gpio);
+    HAL_GPIO_WritePin(GPOUT_GPIO_Port, GPOUT_Pin, GPIO_PIN_RESET);
 }
 
 /**
- * @brief Restore the accelerometer EXTI pin.
+ * @brief Restore the accelerometer EXTI pin (PB15).
  */
 static void Restore_AccelInterrupt(void)
 {
     GPIO_InitTypeDef gpio = {0};
-    gpio.Pin  = INT1_Pin;
+    gpio.Pin  = ACCEL_INT_Pin;
     gpio.Mode = GPIO_MODE_IT_RISING;
     gpio.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(INT1_GPIO_Port, &gpio);
+    HAL_GPIO_Init(ACCEL_INT_GPIO_Port, &gpio);
 
-    __HAL_GPIO_EXTI_CLEAR_IT(INT1_GPIO_Port, INT1_Pin);
+    __HAL_GPIO_EXTI_CLEAR_IT(ACCEL_INT_GPIO_Port, ACCEL_INT_Pin);
     HAL_NVIC_EnableIRQ(GPIOB_IRQn);
 }
 
@@ -203,13 +159,13 @@ static void Restore_AccelInterrupt(void)
 
 void PowerMgmt_EnterLowPower_Idle(void)
 {
-    if (peripherals_gated) return;           /* already gated */
+    if (peripherals_gated) return;
 
     Gate_Timers();
     Gate_I2C();
-    Gate_AccelInterrupt();                   /* no motion wake */
+    Gate_EEPROM();
+    Gate_AccelInterrupt();   /* no motion wake */
     Gate_GPIO_Outputs();
-    Gate_UART();
 
     peripherals_gated = 1;
 }
@@ -220,36 +176,35 @@ void PowerMgmt_EnterLowPower_Armed(void)
 
     Gate_Timers();
     Gate_I2C();
-    Keep_AccelInterrupt();                   /* motion wake stays active */
+    Gate_EEPROM();
+    Keep_AccelInterrupt();   /* motion wake stays active */
     Gate_GPIO_Outputs();
-    Gate_UART();
 
     peripherals_gated = 1;
 }
 
 void PowerMgmt_RestoreAll(void)
 {
-    if (!peripherals_gated) return;          /* nothing to do */
+    if (!peripherals_gated) return;
 
-    /* --- Re-enable clocks first --- */
+    /* --- Power up I2C bus FIRST (PA10 HIGH) --- */
+    HAL_GPIO_WritePin(I2C_POWER_GPIO_Port, I2C_POWER_Pin, GPIO_PIN_SET);
+    HAL_Delay(5);  /* let power rail stabilize */
+
+    /* --- Re-enable clocks --- */
     __HAL_RCC_TIM2_CLK_ENABLE();
-    __HAL_RCC_TIM16_CLK_ENABLE();
     __HAL_RCC_I2C1_CLK_ENABLE();
 
-    /* --- Reinitialise peripherals via wrappers in main.c --- */
+    /* --- Reinitialise peripherals --- */
     MX_I2C1_Reinit();
     MX_TIM2_Reinit();
-    MX_TIM16_Reinit();
 
     /* --- Restore GPIO --- */
     Restore_GPIO_Outputs();
     Restore_AccelInterrupt();
 
-    /* --- Restore UART (optional – remove if you don't need debug) --- */
-    MX_USART1_UART_Init();
-
     /* --- Re-init drivers that depend on I2C --- */
-    HAL_Delay(10);                           /* let I2C bus settle */
+    HAL_Delay(10);
     LIS2DUX12_QuickReinit();
     LIS2DUX12_ClearMotion();
     BATTERY_Init();
@@ -263,68 +218,22 @@ uint8_t PowerMgmt_IsLowPower(void)
 }
 
 /***************************************************************************
- * WHAT TO CHANGE IN main.c
- * =========================================================================
- *
- * The static MX_*_Init() functions generated by CubeMX can't be called
- * from another .c file.  Add these thin public wrappers at the bottom of
- * main.c (inside a USER CODE BEGIN/END block so CubeMX doesn't delete
- * them):
- *
- *   // ---- In USER CODE BEGIN 4 section of main.c ----
- *
- *   void MX_I2C1_Reinit(void)  { MX_I2C1_Init();  }
- *   void MX_TIM2_Reinit(void)  { MX_TIM2_Init();   }
- *   void MX_TIM16_Reinit(void) { MX_TIM16_Init();  }
- *
- * That's it — everything else is handled here.
- *
- * =========================================================================
- * HOW TO USE IN state_machine.c
- * =========================================================================
- *
- * #include "power_management.h"
- *
- * void State_Disconnected_Idle_Loop() {
- *
- *     if (IS_CHARGING(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin))) {
- *         // Charging — need full peripherals
- *         if (PowerMgmt_IsLowPower()) PowerMgmt_RestoreAll();
- *         stayAwakeFlag = 1;
- *
- *         if (BATTERY_IsCharging())
- *             LED_Pulse(4000, 255, 100, 0, 60);
- *         else
- *             LED_Pulse(4000, 0, 255, 0, 60);
- *
- *     } else {
- *         stayAwakeFlag = 0;
- *
- *         if (GET_ARMED_BIT(deviceState)) {
- *             // Armed + disconnected: keep accel interrupt
- *             if (!PowerMgmt_IsLowPower())
- *                 PowerMgmt_EnterLowPower_Armed();
- *         } else {
- *             // Idle + disconnected: everything off
- *             if (!PowerMgmt_IsLowPower())
- *                 PowerMgmt_EnterLowPower_Idle();
- *         }
- *     }
- *
- *     if (connectionStatus) {
- *         PowerMgmt_RestoreAll();
- *         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
- *     }
- * }
- *
- * Also guard the battery polling in main.c while(1):
- *
- *     if (HAL_GetTick() - last_battery_check > 1000) {
- *         last_battery_check = HAL_GetTick();
- *         if (!PowerMgmt_IsLowPower()) {
- *             BATTERY_UpdateState();
- *             LOCKSERVICE_SendStatusUpdate();
- *         }
- *     }
- *
+ * EEPROM POWER HELPERS (for future use)
  ***************************************************************************/
+
+/**
+ * @brief Turn on EEPROM power (PB0 HIGH). Call before EEPROM access.
+ */
+void PowerMgmt_EEPROM_PowerOn(void)
+{
+    HAL_GPIO_WritePin(EEPROM_POWER_GPIO_Port, EEPROM_POWER_Pin, GPIO_PIN_SET);
+    HAL_Delay(2);  /* let EEPROM power up */
+}
+
+/**
+ * @brief Turn off EEPROM power (PB0 LOW). Call after EEPROM access.
+ */
+void PowerMgmt_EEPROM_PowerOff(void)
+{
+    HAL_GPIO_WritePin(EEPROM_POWER_GPIO_Port, EEPROM_POWER_Pin, GPIO_PIN_RESET);
+}

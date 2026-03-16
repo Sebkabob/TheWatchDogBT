@@ -59,7 +59,6 @@ PKA_HandleTypeDef hpka;
 RNG_HandleTypeDef hrng;
 
 TIM_HandleTypeDef htim2;
-TIM_HandleTypeDef htim16;
 
 /* USER CODE BEGIN PV */
 /* USER CODE END PV */
@@ -124,19 +123,26 @@ int main(void)
   MX_RADIO_TIMER_Init();
   MX_TIM16_Init();
   /* USER CODE BEGIN 2 */
+
+  /* === Power up I2C bus BEFORE I2C init === */
+  HAL_GPIO_WritePin(I2C_POWER_GPIO_Port, I2C_POWER_Pin, GPIO_PIN_SET);
+  HAL_Delay(5); /* let power rail stabilize */
+
+  /* === Keep EEPROM off by default === */
+  HAL_GPIO_WritePin(EEPROM_POWER_GPIO_Port, EEPROM_POWER_Pin, GPIO_PIN_RESET);
+
+  LED_SoftPWM_Init();   /* Init software PWM for LED3 (blue, PB1) */
   MotionLogger_Init();
   HAL_Delay(100);
   LIS2DUX12_Init();
   BATTERY_Init();
 
-  // Safe boot mode in case of sleep loop
-  if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0){
-	  BUZZER_Tone(300,50);
-	  BUZZER_Tone(200,30);
-	  BUZZER_Tone(100,20);
-	  while(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0);
-  } else {
-
+  /* Safe boot mode: hold while cable plugged in */
+  if (IS_CABLE_PLUGGED()) {
+      BUZZER_Tone(300, 50);
+      BUZZER_Tone(200, 30);
+      BUZZER_Tone(100, 20);
+      while (IS_CABLE_PLUGGED());
   }
   /* USER CODE END 2 */
 
@@ -159,11 +165,11 @@ int main(void)
     static uint32_t last_battery_check = 0;
     if (HAL_GetTick() - last_battery_check > 1000) {
         last_battery_check = HAL_GetTick();
-        BATTERY_UpdateState();  // Update once per second
-        LOCKSERVICE_SendStatusUpdate();
+        if (!PowerMgmt_IsLowPower()) {
+            BATTERY_UpdateState();
+            LOCKSERVICE_SendStatusUpdate();
+        }
     }
-
-    //BUZZER_Drain();
 
     StateMachine_Run();
   }

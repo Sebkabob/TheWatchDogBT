@@ -188,9 +188,9 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE|RCC_OSCILLATORTYPE_LSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -365,8 +365,8 @@ static void MX_RADIO_TIMER_Init(void)
   /* Wait to be sure that the Radio Timer is active */
   while(LL_RADIO_TIMER_GetAbsoluteTime(WAKEUP) < 0x10);
   RADIO_TIMER_InitStruct.XTAL_StartupTime = 320;
-  RADIO_TIMER_InitStruct.enableInitialCalibration = FALSE;
-  RADIO_TIMER_InitStruct.periodicCalibrationInterval = 0;
+  RADIO_TIMER_InitStruct.enableInitialCalibration = TRUE;
+  RADIO_TIMER_InitStruct.periodicCalibrationInterval = 10000;
   HAL_RADIO_TIMER_Init(&RADIO_TIMER_InitStruct);
   /* USER CODE BEGIN RADIO_TIMER_Init 2 */
 
@@ -518,6 +518,15 @@ static void MX_GPIO_Init(void)
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
+  // Make sure buzzer pin is not driving DC until timer PWM starts
+  GPIO_InitTypeDef buzzer_safe = {0};
+  buzzer_safe.Pin = BUZZ_1_Pin;
+  buzzer_safe.Mode = GPIO_MODE_OUTPUT_PP;
+  buzzer_safe.Pull = GPIO_PULLUP;
+  buzzer_safe.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(BUZZ_1_GPIO_Port, &buzzer_safe);
+  HAL_GPIO_WritePin(BUZZ_1_GPIO_Port, BUZZ_1_Pin, GPIO_PIN_SET);
+
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
@@ -561,17 +570,17 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin : BQ251_PG_Pin */
   GPIO_InitStruct.Pin = BQ251_PG_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(BQ251_PG_GPIO_Port, &GPIO_InitStruct);
 
   /**/
-  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_1|PWR_GPIO_BIT_0|PWR_GPIO_BIT_4);
+  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_1|PWR_GPIO_BIT_0);
 
   /**/
   HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_10);
 
   /**/
-  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_1|PWR_GPIO_BIT_0|PWR_GPIO_BIT_4);
+  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_1|PWR_GPIO_BIT_0);
 
   /**/
   HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_10);
@@ -579,8 +588,15 @@ static void MX_GPIO_Init(void)
   /**/
   HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_2);
 
+  /**/
+  HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_4);
+
   /*RT DEBUG GPIO_Init */
   RT_DEBUG_GPIO_Init();
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(GPIOB_IRQn, 1, 0);
+  HAL_NVIC_EnableIRQ(GPIOB_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 

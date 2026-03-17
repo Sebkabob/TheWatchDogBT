@@ -101,11 +101,11 @@ static BuzzerState_t buzzer_state = {0};
  * @param frequency_hz Frequency in Hz, 0 = stop/silence
  */
 static void BUZZER_SetFrequency(uint32_t frequency_hz) {
-    if (frequency_hz == 0) {
-        // Stop PWM for silence
-        HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_1);
-        return;
-    }
+	if (frequency_hz == 0) {
+	    HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_1);
+	    HAL_GPIO_WritePin(BUZZ_1_GPIO_Port, BUZZ_1_Pin, GPIO_PIN_SET);  // MOSFET off
+	    return;
+	}
 
     // Calculate period for this frequency
     uint32_t timer_clock = 64000000 / 64;  // 1MHz after prescaler
@@ -207,9 +207,11 @@ void BUZZER_Stop(void) {
     buzzer_state.is_playing = 0;
     BUZZER_SetFrequency(0);
 
-    // Restore original timer period for LEDs (999)
     HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_1);
     __HAL_TIM_SET_AUTORELOAD(&htim2, 999);
+
+    // Force PB6 HIGH to turn off P-channel MOSFET
+    HAL_GPIO_WritePin(BUZZ_1_GPIO_Port, BUZZ_1_Pin, GPIO_PIN_SET);
 }
 
 /**

@@ -31,7 +31,7 @@
 /**
  * Define to 1 if LSE is used, otherwise set it to 0.
  */
-#define CFG_LSCLK_LSE                       (1)
+#define CFG_LSCLK_LSE                       (0)
 
 /******************************************************************************
  * Application Config
@@ -40,17 +40,17 @@
 /**
  * Define Tx Power Mode
  */
-#define CFG_TX_POWER_MODE                   (1) /* Tx high power mode */
+#define CFG_TX_POWER_MODE                   (0) /* Tx normal power mode */
 
 /**
  * Define Tx Power
  */
-#define CFG_TX_POWER                        (0x1C) /* 0x1C <=> 8 dBm */
+#define CFG_TX_POWER                        (0x18) /* 0x18 <=> 0 dBm */
 
 /**
  * Define Advertising parameters
  */
-#define CFG_PUBLIC_BD_ADDRESS               (0xF1D000000018)
+#define CFG_PUBLIC_BD_ADDRESS               (0xF1D000000020)
 #define CFG_BD_ADDRESS_TYPE                 HCI_ADDR_PUBLIC
 #define CFG_BLE_PRIVACY_ENABLED             (0)
 

@@ -124,6 +124,8 @@ int main(void)
   MX_RADIO_TIMER_Init();
   /* USER CODE BEGIN 2 */
 
+  BUZZER_Init();
+
   /* === Power up I2C bus BEFORE I2C init === */
   HAL_GPIO_WritePin(I2C_POWER_GPIO_Port, I2C_POWER_Pin, GPIO_PIN_SET);
   HAL_Delay(5); /* let power rail stabilize */
@@ -518,14 +520,14 @@ static void MX_GPIO_Init(void)
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
-  // Make sure buzzer pin is not driving DC until timer PWM starts
+  // Make sure buzzer pin is LOW (N-ch MOSFET OFF) until timer PWM starts
   GPIO_InitTypeDef buzzer_safe = {0};
   buzzer_safe.Pin = BUZZ_1_Pin;
   buzzer_safe.Mode = GPIO_MODE_OUTPUT_PP;
-  buzzer_safe.Pull = GPIO_PULLUP;
+  buzzer_safe.Pull = GPIO_PULLDOWN;          // was GPIO_PULLUP — WRONG for N-ch
   buzzer_safe.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(BUZZ_1_GPIO_Port, &buzzer_safe);
-  HAL_GPIO_WritePin(BUZZ_1_GPIO_Port, BUZZ_1_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(BUZZ_1_GPIO_Port, BUZZ_1_Pin, GPIO_PIN_RESET);  // was GPIO_PIN_SET — WRONG for N-ch
 
   /* USER CODE END MX_GPIO_Init_1 */
 

@@ -19,6 +19,13 @@ typedef struct {
     uint16_t delay_ms;      // Delay AFTER this note before next one
 } Note_t;
 
+/**
+ * @brief  MUST be called immediately after MX_TIM2_Init() in main().
+ *         Forces CH1 output LOW so the N-channel MOSFET is OFF.
+ *         Without this, the OC idle state is HIGH → MOSFET on → buzzer overheats.
+ */
+void BUZZER_Init(void);
+
 /* Legacy blocking functions (for boot tones, etc) */
 void BUZZER_Tone(uint32_t frequency_hz, uint32_t duration_ms);
 void firstBootTone(void);
@@ -31,7 +38,7 @@ void BUZZER_Stop(void);
 uint8_t BUZZER_IsPlaying(void);
 uint32_t BUZZER_GetSequenceDuration(const Note_t* sequence, uint8_t num_notes);
 
-/* Alarm sequences - start playing the alarm pattern */
+/* Alarm sequences */
 void BUZZER_StartCalmAlarm(void);
 void BUZZER_StartNormalAlarm(void);
 void BUZZER_StartLoudAlarm(void);

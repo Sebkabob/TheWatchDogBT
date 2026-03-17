@@ -426,7 +426,7 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
     deviceBattery = soc_percent & 0x7F;
 
     /* Set charging flag based on BQ251_STAT (PA9): LOW = charging */
-    if (IS_CABLE_PLUGGED() && IS_CHARGING_NOW()) {
+    if (IS_CABLE_PLUGGED()) {
         SET_BATTERY_CHARGING(deviceBattery);
     } else {
         CLEAR_BATTERY_CHARGING(deviceBattery);

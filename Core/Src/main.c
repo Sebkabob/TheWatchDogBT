@@ -78,11 +78,39 @@ static void MX_RADIO_Init(void);
 static void MX_RADIO_TIMER_Init(void);
 static void MX_TIM16_Init(void);
 /* USER CODE BEGIN PFP */
+static void MX_GPIO_LowPower_Unused(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/**
+ * @brief Configure unused pins as analog to minimize leakage current.
+ *        Call after MX_GPIO_Init() and before entering main loop.
+ */
+static void MX_GPIO_LowPower_Unused(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Mode = GPIO_MODE_ANALOG;
+    gpio.Pull = GPIO_NOPULL;
 
+    /*
+     * PA9 — BQ251_STAT: configure as input with pull-up.
+     * This was previously USART1_TX (AF push-pull) which wasted current
+     * and conflicted with reading the charge status.
+     */
+    GPIO_InitTypeDef stat_gpio = {0};
+    stat_gpio.Pin  = BQ251_STAT_Pin;
+    stat_gpio.Mode = GPIO_MODE_INPUT;
+    stat_gpio.Pull = GPIO_PULLUP;  /* BQ25186 STAT is open-drain, needs pull-up */
+    HAL_GPIO_Init(BQ251_STAT_GPIO_Port, &stat_gpio);
+
+    /*
+     * PB14 — was USART1_RX. Set to analog since UART is disabled.
+     * This eliminates the AF-mode leakage on this pin.
+     */
+    gpio.Pin = GPIO_PIN_14;
+    HAL_GPIO_Init(GPIOB, &gpio);
+}
 /* USER CODE END 0 */
 
 /**
@@ -126,6 +154,14 @@ int main(void)
   MX_TIM16_Init();
   /* USER CODE BEGIN 2 */
 
+  /*
+   * DO NOT call MX_USART1_UART_Init() here in production!
+   * PA9 is used for BQ251_STAT (charge status input).
+   * UART conflicts with this pin and wastes ~100+µA.
+   * If you need debug UART, call MX_USART1_UART_Init() manually
+   * only while cable is plugged in.
+   */
+
   BUZZER_Init();
 
   /* === Power up I2C bus BEFORE I2C init === */
@@ -134,6 +170,9 @@ int main(void)
 
   /* === Keep EEPROM off by default === */
   HAL_GPIO_WritePin(EEPROM_POWER_GPIO_Port, EEPROM_POWER_Pin, GPIO_PIN_RESET);
+
+  /* === Fix unused pins for low power === */
+  MX_GPIO_LowPower_Unused();
 
   LED_SoftPWM_Init();   /* Init software PWM for LED3 (blue, PB1) */
   MotionLogger_Init();
@@ -174,8 +213,6 @@ int main(void)
             LOCKSERVICE_SendStatusUpdate();
         }
     }
-
-
 
     StateMachine_Run();
 

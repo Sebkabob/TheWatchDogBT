@@ -8,6 +8,11 @@
  *   - Charging detect: BQ251_STAT (PA9) LOW = charging
  *   - Cable detect:    BQ251_PG   (PB4) LOW = cable plugged in
  *   - Accel interrupt: ACCEL_INT  (PB15)
+ *
+ * LOW POWER FIX:
+ *   - Enter PowerMgmt_EnterLowPower_Idle when disconnected + no cable
+ *   - Enter PowerMgmt_EnterLowPower_Armed when locked + disconnected
+ *   - Restore peripherals on reconnection or cable plug-in
  ***************************************************************************/
 
 #include "state_machine.h"
@@ -79,22 +84,35 @@ void StateMachine_CheckInactivityTimeout(void) {
 
 void State_Disconnected_Idle_Loop(void)
 {
-    /* Lights */
+    /* === Cable plugged in: stay awake, show charging status === */
     if (IS_CABLE_PLUGGED()) {
+        /* Restore peripherals if we were in low power */
+        if (PowerMgmt_IsLowPower()) {
+            PowerMgmt_RestoreAll();
+        }
         stayAwakeFlag = 1;
+
         if (IS_CHARGING_NOW()) {
             LED_Pulse(4000, 255, 100, 0, 60); /* orange pulse - charging */
         } else {
             LED_Pulse(4000, 0, 255, 0, 60);   /* green pulse - charged */
         }
     } else {
+        /* === No cable, no connection: enter low power === */
         stayAwakeFlag = 0;
         LED_Off();
+
+        if (!PowerMgmt_IsLowPower()) {
+            PowerMgmt_EnterLowPower_Idle();
+        }
     }
 
     /* State Switch */
     if (connectionStatus) {
-        PowerMgmt_RestoreAll();
+        /* Restore everything before entering connected state */
+        if (PowerMgmt_IsLowPower()) {
+            PowerMgmt_RestoreAll();
+        }
         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
     }
 }
@@ -164,10 +182,20 @@ void State_Locked_Loop(void)
     }
     lastMotionState = currentMotionState;
 
-    /* Sleep if not connected */
+    /* === If not connected while locked, enter armed low power === */
     if (!connectionStatus) {
         LED_Off();
         stayAwakeFlag = 0;
+
+        if (!PowerMgmt_IsLowPower()) {
+            /* Armed low power keeps accel interrupt active */
+            PowerMgmt_EnterLowPower_Armed();
+        }
+    } else {
+        /* Connected: make sure peripherals are restored */
+        if (PowerMgmt_IsLowPower()) {
+            PowerMgmt_RestoreAll();
+        }
     }
 }
 
@@ -179,6 +207,12 @@ void State_Sleep_Loop(void)
 void State_Alarm_Active_Loop(void)
 {
     stayAwakeFlag = 1;
+
+    /* Make sure peripherals are up for alarm */
+    if (PowerMgmt_IsLowPower()) {
+        PowerMgmt_RestoreAll();
+    }
+
     static uint32_t last_motion_time = 0;
     static uint8_t alarm_started = 0;
     static uint32_t melody_duration_ms = 0;

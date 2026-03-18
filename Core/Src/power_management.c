@@ -6,6 +6,11 @@
  *
  * BUZZER FIX: TIM2 is LED-only. TIM16 is buzzer-only.
  *             Both are gated/restored independently.
+ *
+ * LOW POWER FIX:
+ *   - Also gates USART1 clock if it was left enabled
+ *   - Sets PA9 (BQ251_STAT) and PB14 (USART1_RX) to analog during LP
+ *   - Restores PA9 as input on wake
  ***************************************************************************/
 
 #include "main.h"
@@ -77,6 +82,29 @@ static void Gate_Timers(void)
     HAL_GPIO_WritePin(BUZZ_1_GPIO_Port, BUZZ_1_Pin, GPIO_PIN_RESET);
 }
 
+/**
+ * @brief Gate USART1 if its clock is still enabled.
+ *        Set PA9 and PB14 to analog to prevent leakage.
+ */
+static void Gate_UART(void)
+{
+    /* Disable USART1 clock if enabled */
+    if (__HAL_RCC_USART1_IS_CLK_ENABLED()) {
+        __HAL_RCC_USART1_CLK_DISABLE();
+    }
+
+    /* PA9 (was USART1_TX or BQ251_STAT) -> analog in deep LP */
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin  = GPIO_PIN_9;
+    gpio.Mode = GPIO_MODE_ANALOG;
+    gpio.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOA, &gpio);
+
+    /* PB14 (was USART1_RX) -> analog */
+    gpio.Pin  = GPIO_PIN_14;
+    HAL_GPIO_Init(GPIOB, &gpio);
+}
+
 static void Gate_AccelInterrupt(void)
 {
     GPIO_InitTypeDef gpio = {0};
@@ -134,6 +162,25 @@ static void Restore_AccelInterrupt(void)
     HAL_NVIC_EnableIRQ(GPIOB_IRQn);
 }
 
+/**
+ * @brief Restore PA9 as BQ251_STAT input after low power
+ */
+static void Restore_UART_Pins(void)
+{
+    /* PA9 -> input with pull-up for BQ251_STAT (open-drain from BQ25186) */
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin  = BQ251_STAT_Pin;
+    gpio.Mode = GPIO_MODE_INPUT;
+    gpio.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(BQ251_STAT_GPIO_Port, &gpio);
+
+    /* PB14 -> analog (not used unless UART is explicitly enabled) */
+    gpio.Pin  = GPIO_PIN_14;
+    gpio.Mode = GPIO_MODE_ANALOG;
+    gpio.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOB, &gpio);
+}
+
 /***************************************************************************
  * PUBLIC API
  ***************************************************************************/
@@ -145,6 +192,7 @@ void PowerMgmt_EnterLowPower_Idle(void)
     Gate_Timers();
     Gate_I2C();
     Gate_EEPROM();
+    Gate_UART();
     Gate_AccelInterrupt();
     Gate_GPIO_Outputs();
 
@@ -158,6 +206,7 @@ void PowerMgmt_EnterLowPower_Armed(void)
     Gate_Timers();
     Gate_I2C();
     Gate_EEPROM();
+    Gate_UART();
     Keep_AccelInterrupt();
     Gate_GPIO_Outputs();
 
@@ -176,6 +225,8 @@ void PowerMgmt_RestoreAll(void)
     __HAL_RCC_TIM2_CLK_ENABLE();
     __HAL_RCC_TIM16_CLK_ENABLE();
     __HAL_RCC_I2C1_CLK_ENABLE();
+    /* Note: USART1 clock is NOT re-enabled here.
+     * UART is debug-only. Call MX_USART1_UART_Init() explicitly if needed. */
 
     /* --- Reinitialise peripherals --- */
     MX_I2C1_Reinit();
@@ -188,6 +239,7 @@ void PowerMgmt_RestoreAll(void)
     /* --- Restore GPIO --- */
     Restore_GPIO_Outputs();
     Restore_AccelInterrupt();
+    Restore_UART_Pins();
 
     /* --- Re-init drivers that depend on I2C --- */
     HAL_Delay(10);

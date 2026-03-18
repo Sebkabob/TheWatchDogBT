@@ -140,7 +140,9 @@ static PowerSaveLevels App_PowerSaveLevel_Check(void)
     return POWER_SAVE_LEVEL_RUNNING;
 
   if (APP_BLE_Get_Server_Connection_Status() == APP_BLE_CONNECTED_SERVER){
-	  output_level = POWER_SAVE_LEVEL_STOP_LS_CLOCK_ON;
+      output_level = POWER_SAVE_LEVEL_STOP_LS_CLOCK_ON;
+  } else {
+      output_level = POWER_SAVE_LEVEL_STOP;
   }
   /* USER CODE END App_PowerSaveLevel_Check_1 */
 

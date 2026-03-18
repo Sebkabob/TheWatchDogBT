@@ -3,14 +3,16 @@
  *
  *  Created on: Oct 29, 2025
  *      Author: sebkabob
+ *
+ *  REWORKED: Buzzer now uses TIM16 interrupt to toggle PB6 as GPIO.
+ *            TIM2 is left exclusively for LED PWM (CH3, CH4) with a
+ *            fixed ARR of 999.  No more ARR conflicts.
  */
 
 #ifndef INC_SOUND_H_
 #define INC_SOUND_H_
 
 #include <stdint.h>
-
-extern TIM_HandleTypeDef htim2;
 
 /* Note structure for sequences */
 typedef struct {
@@ -20,13 +22,14 @@ typedef struct {
 } Note_t;
 
 /**
- * @brief  MUST be called immediately after MX_TIM2_Init() in main().
- *         Forces CH1 output LOW so the N-channel MOSFET is OFF.
- *         Without this, the OC idle state is HIGH → MOSFET on → buzzer overheats.
+ * @brief  Initialise the buzzer subsystem.
+ *         - Configures PB6 as push-pull GPIO output (LOW = MOSFET off).
+ *         - Initialises TIM16 but does NOT start it yet.
+ *         Call once after MX_GPIO_Init() and MX_TIM16_Init() in main().
  */
 void BUZZER_Init(void);
 
-/* Legacy blocking functions (for boot tones, etc) */
+/* Legacy blocking functions (for boot tones, etc.) */
 void BUZZER_Tone(uint32_t frequency_hz, uint32_t duration_ms);
 void firstBootTone(void);
 void SOUND_Disconnected(void);
@@ -49,5 +52,11 @@ uint32_t BUZZER_GetLoudAlarmDuration(void);
 /* Fun melody */
 void BUZZER_StartLaCucaracha(void);
 uint32_t BUZZER_GetLaCucarachaDuration(void);
+
+/**
+ * @brief  TIM16 period-elapsed callback — called from TIM16_IRQHandler.
+ *         Toggles PB6 to produce the square wave.
+ */
+void BUZZER_TIM16_IRQCallback(void);
 
 #endif /* INC_SOUND_H_ */

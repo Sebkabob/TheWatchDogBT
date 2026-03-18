@@ -2,46 +2,41 @@
  * sound.c
  * created by Sebastian Forenza 2026
  *
- * Functions in charge of interfacing with the
- * onboard magnetic transducers
+ * Functions in charge of interfacing with the onboard magnetic transducers
  *
- * BUZZER HARDWARE:
- *   PB6 -> TIM2_CH1 (AF4) -> N-channel MOSFET gate
- *   Gate HIGH = MOSFET ON  (current flows through buzzer)
- *   Gate LOW  = MOSFET OFF (no current)
+ * REWORKED BUZZER HARDWARE:
+ *   PB6 is now a plain GPIO output (push-pull, no AF).
+ *   TIM16 runs as an interrupt-driven timebase.  Its period-elapsed ISR
+ *   toggles PB6, producing a 50 % duty square wave at the desired
+ *   frequency.  Gate HIGH = N-channel MOSFET ON (current through buzzer).
  *
- * CRITICAL BOOT SEQUENCE:
- *   MX_TIM2_Init() calls HAL_TIM_MspPostInit() which configures PB6
- *   as AF push-pull for TIM2_CH1.  At that moment the timer isn't
- *   counting yet, so the OC1 output sits at its idle level — which
- *   is HIGH for PWM1 + OCPOLARITY_HIGH.  This turns the N-channel
- *   MOSFET on immediately and sends DC through the buzzer.
+ *   TIM2 is NO LONGER TOUCHED by this module — its ARR stays at 999
+ *   permanently, so LED PWM on CH3/CH4 is unaffected.
  *
- *   FIX: Call BUZZER_Init() immediately after MX_TIM2_Init() in main().
- *   It forces CCR1=0 and starts CH1 so the output goes LOW before
- *   anything else happens.
+ *   TIM16 clock = 64 MHz HSI (APB = 64 MHz on STM32WB05 after PLL).
+ *   With a prescaler of 63 the TIM16 tick is 1 MHz (1 µs).
+ *   For a frequency F the half-period in ticks = 1 000 000 / (2*F) − 1.
  ***************************************************************************/
 
 #include "main.h"
 #include "sound.h"
 #include <stdint.h>
 #include <string.h>
-#include <stdio.h>
-#include <stdlib.h>
 
 /***************************************************************************
  * PRIVATE DEFINES
  ***************************************************************************/
-#define LED_ARR  999
-#define BUZZER_TIMER_CLK  (64000000UL / 64)  /* 1 MHz after PSC=63 */
+/* TIM16 input clock after PSC = 63 → 1 MHz */
+#define BUZZER_TIMER_CLK  (1000000UL)
+
+/***************************************************************************
+ * EXTERN — TIM16 handle (declared in main.c, initialised by MX_TIM16_Init)
+ ***************************************************************************/
+extern TIM_HandleTypeDef htim16;
 
 /***************************************************************************
  * ALARM PATTERN DEFINITIONS
  ***************************************************************************/
-
-static const Note_t DRAIN_PATTERN[] = {
-    {20, 57600, 0},
-};
 
 static const Note_t CALM_ALARM_PATTERN[] = {
     {415, 20, 15},
@@ -101,88 +96,69 @@ typedef struct {
 } BuzzerState_t;
 
 static BuzzerState_t buzzer_state = {0};
-static uint8_t ch1_started = 0;
+
+/* Flag: is TIM16 currently generating a tone? */
+static volatile uint8_t buzzer_tone_active = 0;
 
 /***************************************************************************
- * BUZZER_Init — CALL IMMEDIATELY AFTER MX_TIM2_Init() IN main()
+ * PRIVATE: Start / stop the square wave on PB6 via TIM16
  ***************************************************************************/
 
 /**
- * @brief  Safe-start the buzzer channel.
- *
- *         MX_TIM2_Init → HAL_TIM_MspPostInit puts PB6 in AF mode
- *         with the OC1 output idling HIGH (N-ch MOSFET on!).
- *
- *         This function forces CCR1=0 and starts CH1 + the timer
- *         base so the PWM output immediately goes LOW.
- *
- *         MUST be called right after MX_TIM2_Init() in main(),
- *         before any HAL_Delay or other code that takes time.
+ * @brief  Set buzzer frequency (0 = silence).
+ *         Reconfigures TIM16 ARR and starts/stops it.
  */
-void BUZZER_Init(void)
-{
-    /* Force compare value to 0 BEFORE starting the channel.
-     * PWM1 + OCPOLARITY_HIGH: output HIGH while cnt < CCR.
-     * CCR=0 means output is NEVER HIGH → always LOW → MOSFET OFF. */
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0);
-
-    /* Make sure the counter is at 0 */
-    __HAL_TIM_SET_COUNTER(&htim2, 0);
-
-    /* Start the timer base (needed for ALL channels incl. LEDs) */
-    HAL_TIM_Base_Start(&htim2);
-
-    /* Start CH1 output — pin goes LOW immediately */
-    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-
-    ch1_started = 1;
-}
-
-/***************************************************************************
- * PRIVATE: Ensure CH1 is running
- ***************************************************************************/
-static void BUZZER_EnsureCH1Started(void)
-{
-    if (!ch1_started) {
-        BUZZER_Init();
-    }
-}
-
-/***************************************************************************
- * PRIVATE: Set buzzer frequency
- ***************************************************************************/
 static void BUZZER_SetFrequency(uint32_t frequency_hz)
 {
-    BUZZER_EnsureCH1Started();
-
     if (frequency_hz == 0) {
-        /* Silence: CCR1=0 → output always LOW → MOSFET OFF */
-        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0);
-        __HAL_TIM_SET_AUTORELOAD(&htim2, LED_ARR);
+        /* Stop TIM16, drive PB6 LOW (MOSFET off) */
+        HAL_TIM_Base_Stop_IT(&htim16);
+        HAL_GPIO_WritePin(BUZZ_1_GPIO_Port, BUZZ_1_Pin, GPIO_PIN_RESET);
+        buzzer_tone_active = 0;
         return;
     }
 
-    uint32_t period = BUZZER_TIMER_CLK / frequency_hz;
-    if (period > 65535) period = 65535;
-    if (period < 2)     period = 2;
+    /* half-period in 1 µs ticks */
+    uint32_t half_period = BUZZER_TIMER_CLK / (2U * frequency_hz);
+    if (half_period < 2)  half_period = 2;
+    if (half_period > 65535) half_period = 65535;
 
-    uint32_t new_arr = period - 1;
-    uint32_t old_arr = __HAL_TIM_GET_AUTORELOAD(&htim2);
+    /* If already running, just update the period on-the-fly */
+    __HAL_TIM_SET_AUTORELOAD(&htim16, half_period - 1);
+    __HAL_TIM_SET_COUNTER(&htim16, 0);
 
-    /* Rescale LED CCR values so brightness doesn't jump */
-    if (old_arr > 0 && new_arr != old_arr) {
-        uint32_t ccr3 = __HAL_TIM_GET_COMPARE(&htim2, TIM_CHANNEL_3);
-        uint32_t ccr4 = __HAL_TIM_GET_COMPARE(&htim2, TIM_CHANNEL_4);
-        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3,
-                              (ccr3 * new_arr) / old_arr);
-        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4,
-                              (ccr4 * new_arr) / old_arr);
+    if (!buzzer_tone_active) {
+        HAL_GPIO_WritePin(BUZZ_1_GPIO_Port, BUZZ_1_Pin, GPIO_PIN_RESET);
+        HAL_TIM_Base_Start_IT(&htim16);
+        buzzer_tone_active = 1;
     }
+}
 
-    __HAL_TIM_SET_AUTORELOAD(&htim2, new_arr);
+/***************************************************************************
+ * TIM16 ISR CALLBACK — called from TIM16_IRQHandler via HAL
+ ***************************************************************************/
 
-    /* 50% duty on CH1 → square wave on MOSFET gate */
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, period / 2);
+/**
+ * @brief  Toggle PB6 on every TIM16 update event → 50 % square wave.
+ */
+void BUZZER_TIM16_IRQCallback(void)
+{
+    /* Fast toggle using BSRR / BRR (much faster than HAL_GPIO_TogglePin) */
+    if (BUZZ_1_GPIO_Port->ODR & BUZZ_1_Pin) {
+        BUZZ_1_GPIO_Port->BRR = BUZZ_1_Pin;   /* LOW  */
+    } else {
+        BUZZ_1_GPIO_Port->BSRR = BUZZ_1_Pin;  /* HIGH */
+    }
+}
+
+/***************************************************************************
+ * BUZZER_Init — call once in main() after MX_GPIO_Init / MX_TIM16_Init
+ ***************************************************************************/
+void BUZZER_Init(void)
+{
+    /* Ensure PB6 is LOW (MOSFET off) */
+    HAL_GPIO_WritePin(BUZZ_1_GPIO_Port, BUZZ_1_Pin, GPIO_PIN_RESET);
+    buzzer_tone_active = 0;
 }
 
 /***************************************************************************
@@ -264,12 +240,6 @@ uint32_t BUZZER_GetSequenceDuration(const Note_t* sequence, uint8_t num_notes)
  * ALARM SEQUENCE STARTERS
  ***************************************************************************/
 
-void BUZZER_Drain(void)
-{
-    BUZZER_PlaySequence(DRAIN_PATTERN,
-        sizeof(DRAIN_PATTERN) / sizeof(Note_t), 1);
-}
-
 void BUZZER_StartCalmAlarm(void)
 {
     BUZZER_PlaySequence(CALM_ALARM_PATTERN,
@@ -347,4 +317,12 @@ void SOUND_Disconnected(void)
     BUZZER_Tone(280, 12);
     HAL_Delay(10);
     BUZZER_Tone(100, 15);
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  if (htim->Instance == TIM16)
+  {
+    BUZZER_TIM16_IRQCallback();
+  }
 }

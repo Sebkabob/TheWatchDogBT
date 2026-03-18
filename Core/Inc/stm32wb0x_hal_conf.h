@@ -123,11 +123,11 @@
 #endif /* RC64MPLL_VALUE */
 
 #if !defined (LSE_STARTUP_TIMEOUT)
-  #define LSE_STARTUP_TIMEOUT    (100UL)   /*!< Time out for LSE start up, in ms */
+  #define LSE_STARTUP_TIMEOUT    (750UL)   /*!< Time out for LSE start up, in ms */
 #endif /* LSE_STARTUP_TIMEOUT */
 
 #if !defined  (LSE_DRIVE_LEVEL)
-#define LSE_DRIVE_LEVEL    RCC_LSEDRIVE_MEDIUMLOW     /*!< Drive level for LSE oscillator. */
+#define LSE_DRIVE_LEVEL    RCC_LSEDRIVE_MEDIUMHIGH     /*!< Drive level for LSE oscillator. */
 #endif /* LSE_DRIVE_LEVEL */
 
 /* ########################### System Configuration ######################### */

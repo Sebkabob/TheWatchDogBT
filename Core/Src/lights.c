@@ -12,6 +12,14 @@
  * All LEDs are active-LOW: driving the pin LOW turns the LED ON.
  * For hardware PWM: CCR = 999 -> fully OFF, CCR = 0 -> fully ON.
  * For software PWM: GPIO RESET (low) = ON, SET (high) = OFF.
+ *
+ * SOFT PWM IMPROVEMENTS (v2):
+ *   - Period increased to 50 ticks = 20 Hz PWM (flicker-free)
+ *   - 50 brightness levels (2% steps) — much smoother than the old 20
+ *   - Pre-sleep pin clamping: before the MCU enters deep sleep the pin
+ *     is forced to a static ON or OFF based on whether duty > 50%.
+ *     This prevents the LED freezing at a random brightness when
+ *     SysTick stops during BLE power save.
  ***************************************************************************/
 
 #include "main.h"
@@ -26,21 +34,18 @@ extern TIM_HandleTypeDef htim2;
 /* =========================================================================
  * SOFTWARE PWM FOR LED3 (BLUE) ON PB1
  *
- * A simple 8-bit resolution PWM driven from SysTick at 1 kHz.
- * PWM frequency ≈ 1000 / 256 ≈ ~3.9 Hz per full cycle BUT we only
- * need perceived brightness so we run a fast counter that wraps at
- * a smaller period.  Using period = 100 gives ~10 Hz flicker-free
- * at 1 kHz tick rate (100 ticks per cycle = 10 cycles/sec ... still
- * visible).  Better: period = 20 gives 50 Hz, good enough.
+ * Period = 50 ticks at 1 kHz SysTick = 20 Hz PWM.
+ * 20 Hz is comfortably above the ~16 Hz flicker-fusion threshold
+ * for peripheral vision LEDs.
  *
- * We use a period of 20 ticks (50 Hz PWM).  Duty 0-20 maps from
- * the requested 0-999 range to keep the interface consistent with
- * the hardware PWM channels.
+ * Duty is expressed as 0..SOFT_PWM_PERIOD where:
+ *   0                = LED fully OFF
+ *   SOFT_PWM_PERIOD  = LED fully ON
  * ========================================================================= */
 
-#define SOFT_PWM_PERIOD  20   /* 1 kHz / 20 = 50 Hz PWM — flicker-free */
+#define SOFT_PWM_PERIOD  50   /* 1 kHz / 50 = 20 Hz PWM — flicker-free */
 
-static volatile uint16_t soft_pwm_blue_duty = SOFT_PWM_PERIOD; /* 0=full ON, PERIOD=full OFF (active low) */
+static volatile uint16_t soft_pwm_blue_duty = 0;          /* 0 = OFF, PERIOD = full ON */
 static volatile uint8_t  soft_pwm_counter   = 0;
 static volatile uint8_t  soft_pwm_enabled   = 0;
 
@@ -51,7 +56,7 @@ void LED_SoftPWM_Init(void)
 {
     /* Make sure PB1 is push-pull output, driven HIGH (LED off) */
     HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_SET);
-    soft_pwm_blue_duty = SOFT_PWM_PERIOD;  /* OFF */
+    soft_pwm_blue_duty = 0;  /* OFF */
     soft_pwm_counter   = 0;
     soft_pwm_enabled   = 0;
 }
@@ -70,19 +75,17 @@ void LED_SoftPWM_Tick(void)
         soft_pwm_counter = 0;
     }
 
-    /* Active-LOW: pin LOW = LED on.
-     * duty == 0           -> always HIGH (off)
-     * duty == SOFT_PWM_PERIOD -> always LOW  (full on)  ... wait, inverted.
+    /*
+     * Active-LOW LED:
+     *   duty == 0              -> always HIGH (LED off)
+     *   duty == SOFT_PWM_PERIOD -> always LOW  (LED full on)
      *
-     * Let's define: soft_pwm_blue_duty = how many ticks out of PERIOD the LED is ON.
-     *   0              = LED fully OFF
-     *   SOFT_PWM_PERIOD = LED fully ON
+     * When counter < duty  -> LED ON  (pin LOW)
+     * When counter >= duty -> LED OFF (pin HIGH)
      */
     if (soft_pwm_counter < soft_pwm_blue_duty) {
-        /* LED ON (active low) */
         LED3_GPIO_Port->BRR = LED3_Pin;   /* fast reset = LOW = ON */
     } else {
-        /* LED OFF */
         LED3_GPIO_Port->BSRR = LED3_Pin;  /* fast set = HIGH = OFF */
     }
 }
@@ -94,16 +97,21 @@ void LED_SoftPWM_Tick(void)
  */
 static void LED3_SetBrightness(uint32_t pwm_val)
 {
-    /* Convert from 0-999 (active-low HW convention) to duty ticks.
-     * pwm_val 999 = OFF  -> duty = 0
-     * pwm_val 0   = ON   -> duty = SOFT_PWM_PERIOD
+    /*
+     * Convert from active-low HW convention (0 = full ON, 999 = OFF)
+     * to soft-PWM duty ticks (0 = OFF, SOFT_PWM_PERIOD = full ON).
      */
     if (pwm_val >= 999) {
-        soft_pwm_blue_duty = 0;
+        soft_pwm_blue_duty = 0;        /* OFF */
+    } else if (pwm_val == 0) {
+        soft_pwm_blue_duty = SOFT_PWM_PERIOD;  /* full ON */
     } else {
-        /* Map: brightness = 999 - pwm_val (0..999), then scale to 0..PERIOD */
-        uint32_t brightness = 999 - pwm_val;
-        soft_pwm_blue_duty = (uint16_t)((brightness * SOFT_PWM_PERIOD) / 999);
+        uint32_t brightness = 999 - pwm_val;   /* 0..999 where 999 = brightest */
+        soft_pwm_blue_duty = (uint16_t)((brightness * SOFT_PWM_PERIOD + 499) / 999);
+        /* Clamp: avoid stuck-off at very low brightness */
+        if (soft_pwm_blue_duty == 0 && brightness > 0) {
+            soft_pwm_blue_duty = 1;
+        }
     }
 }
 
@@ -116,7 +124,38 @@ static void LED3_Disable(void)
 {
     soft_pwm_enabled = 0;
     soft_pwm_blue_duty = 0;
+    soft_pwm_counter = 0;
     HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_SET); /* OFF */
+}
+
+/**
+ * @brief  Clamp the blue LED pin to a static state before entering sleep.
+ *
+ * Call this right before the MCU enters a low-power mode that stops SysTick
+ * (STOP, DEEPSTOP, etc.).  It forces PB1 to a clean ON or OFF based on the
+ * current duty setting so the LED doesn't freeze at a random mid-PWM state.
+ *
+ * After waking, SysTick resumes and the soft-PWM takes over again
+ * automatically — no "restore" call is needed.
+ *
+ * Rule:  duty >= half-period → clamp ON (pin LOW)
+ *        otherwise           → clamp OFF (pin HIGH)
+ *
+ * In practice the LED functions always start/stop the soft-PWM around
+ * state transitions, so this is mainly a safety net.
+ */
+void LED_SoftPWM_ClampForSleep(void)
+{
+    if (!soft_pwm_enabled || soft_pwm_blue_duty == 0) {
+        /* Off or disabled — make sure pin is HIGH (LED off) */
+        LED3_GPIO_Port->BSRR = LED3_Pin;
+    } else if (soft_pwm_blue_duty >= (SOFT_PWM_PERIOD / 2)) {
+        /* Bright enough that it looks "on" — clamp ON */
+        LED3_GPIO_Port->BRR = LED3_Pin;
+    } else {
+        /* Dim — clamp OFF to avoid ghosting */
+        LED3_GPIO_Port->BSRR = LED3_Pin;
+    }
 }
 
 /* =========================================================================

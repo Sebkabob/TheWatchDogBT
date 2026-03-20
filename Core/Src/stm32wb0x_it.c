@@ -27,6 +27,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "lights.h"
+#include "state_machine.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -183,8 +184,21 @@ void GPIOB_IRQHandler(void)
 {
   /* USER CODE BEGIN GPIOB_IRQn 0 */
 
+	  /*
+	   * Check PB4 (BQ251_PG) FIRST — cable plug/unplug event.
+	   * PG is active-low: falling edge = cable plugged in.
+	   */
+	  if (__HAL_GPIO_EXTI_GET_IT(GPIOB, BQ251_PG_Pin)) {
+	      __HAL_GPIO_EXTI_CLEAR_IT(GPIOB, BQ251_PG_Pin);
+
+	      /* Wake MCU and keep it awake — the state machine will
+	       * handle restoring peripherals and showing charge status. */
+	      CablePlug_IRQCallback();
+	  }
+
   /* USER CODE END GPIOB_IRQn 0 */
   HAL_GPIO_EXTI_IRQHandler(GPIOB,GPIO_PIN_15);
+  HAL_GPIO_EXTI_IRQHandler(GPIOB,GPIO_PIN_4);
   /* USER CODE BEGIN GPIOB_IRQn 1 */
 
   /* USER CODE END GPIOB_IRQn 1 */

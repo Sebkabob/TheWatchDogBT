@@ -13,6 +13,12 @@
  *   - Enter PowerMgmt_EnterLowPower_Idle when disconnected + no cable
  *   - Enter PowerMgmt_EnterLowPower_Armed when locked + disconnected
  *   - Restore peripherals on reconnection or cable plug-in
+ *
+ * CABLE PLUG INTERRUPT:
+ *   - PB4 is now EXTI falling-edge: fires when cable is plugged in
+ *   - ISR sets cablePlugFlag + stayAwakeFlag
+ *   - After cable is removed, device stays awake for CABLE_UNPLUG_AWAKE_MS
+ *     then returns to low power
  ***************************************************************************/
 
 #include "state_machine.h"
@@ -39,11 +45,26 @@ static uint32_t lastActivityTime = 0;
 
 volatile uint8_t stayAwakeFlag = 0;
 
+/* Cable plug detection */
+volatile uint8_t cablePlugFlag = 0;
+static uint32_t cableUnplugTime = 0;      /* tick when cable was last seen removed */
+static uint8_t  cableWasPlugged = 0;       /* tracks previous cable state for edge detect */
+
 static uint32_t lastBLEActivityTime = 0;
 #define BLE_INACTIVITY_TIMEOUT_MS  10000  /* 10 seconds */
 
 void StateMachine_UpdateBLEActivity(void) {
     lastBLEActivityTime = HAL_GetTick();
+}
+
+/***************************************************************************
+ * CABLE PLUG ISR CALLBACK
+ * Called from GPIOB_IRQHandler when PB4 fires (falling edge = cable in)
+ ***************************************************************************/
+void CablePlug_IRQCallback(void)
+{
+    cablePlugFlag = 1;
+    stayAwakeFlag = 1;
 }
 
 void StateMachine_Init(void)
@@ -60,6 +81,10 @@ void StateMachine_Init(void)
     SET_SILENCE_BIT(deviceState, 0);
 
     deviceInfo = 0;
+
+    /* Initialise cable state tracking */
+    cableWasPlugged = IS_CABLE_PLUGGED() ? 1 : 0;
+    cableUnplugTime = 0;
 }
 
 void StateMachine_UpdateActivity(void) {
@@ -82,6 +107,46 @@ void StateMachine_CheckInactivityTimeout(void) {
     }
 }
 
+/***************************************************************************
+ * CABLE PLUG MANAGEMENT
+ * Handles the post-unplug awake window so the device doesn't slam
+ * straight back to deep sleep.
+ ***************************************************************************/
+static void CablePlug_UpdateState(void)
+{
+    uint8_t pluggedNow = IS_CABLE_PLUGGED() ? 1 : 0;
+
+    if (pluggedNow) {
+        /* Cable is in — stay awake, clear unplug timer */
+        stayAwakeFlag = 1;
+        cableUnplugTime = 0;
+        cableWasPlugged = 1;
+        return;
+    }
+
+    /* Cable is NOT plugged in */
+    if (cableWasPlugged) {
+        /* Just unplugged — start the awake window */
+        cableUnplugTime = HAL_GetTick();
+        cableWasPlugged = 0;
+    }
+
+    /* If we're in the post-unplug awake window, keep stayAwakeFlag set */
+    if (cableUnplugTime != 0) {
+        if ((HAL_GetTick() - cableUnplugTime) < CABLE_UNPLUG_AWAKE_MS) {
+            stayAwakeFlag = 1;
+        } else {
+            /* Window expired — let the state machine decide */
+            cableUnplugTime = 0;
+            /* Don't clear stayAwakeFlag here — the state loop will
+             * set it appropriately based on the current state */
+        }
+    }
+
+    /* Clear the ISR flag after we've handled it */
+    cablePlugFlag = 0;
+}
+
 void State_Disconnected_Idle_Loop(void)
 {
     /* === Cable plugged in: stay awake, show charging status === */
@@ -99,10 +164,15 @@ void State_Disconnected_Idle_Loop(void)
         }
     } else {
         /* === No cable, no connection: enter low power === */
-        stayAwakeFlag = 0;
+
+        /* Only clear stayAwakeFlag if the post-unplug window has expired */
+        if (cableUnplugTime == 0) {
+            stayAwakeFlag = 0;
+        }
+
         LED_Off();
 
-        if (!PowerMgmt_IsLowPower()) {
+        if (!stayAwakeFlag && !PowerMgmt_IsLowPower()) {
             PowerMgmt_EnterLowPower_Idle();
         }
     }
@@ -185,9 +255,13 @@ void State_Locked_Loop(void)
     /* === If not connected while locked, enter armed low power === */
     if (!connectionStatus) {
         LED_Off();
-        stayAwakeFlag = 0;
 
-        if (!PowerMgmt_IsLowPower()) {
+        /* Only sleep if the post-unplug window is done */
+        if (cableUnplugTime == 0 && !IS_CABLE_PLUGGED()) {
+            stayAwakeFlag = 0;
+        }
+
+        if (!stayAwakeFlag && !PowerMgmt_IsLowPower()) {
             /* Armed low power keeps accel interrupt active */
             PowerMgmt_EnterLowPower_Armed();
         }
@@ -311,6 +385,9 @@ void ChargingCheck(void)
 
 void StateMachine_Run(void)
 {
+    /* Handle cable plug/unplug events (ISR flag + debounce + timeout) */
+    CablePlug_UpdateState();
+
     ChargingCheck();
     BUZZER_Update();
 

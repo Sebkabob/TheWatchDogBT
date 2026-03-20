@@ -11,6 +11,10 @@
  *   - Also gates USART1 clock if it was left enabled
  *   - Sets PA9 (BQ251_STAT) and PB14 (USART1_RX) to analog during LP
  *   - Restores PA9 as input on wake
+ *
+ * CABLE PLUG WAKEUP:
+ *   - PB4 (BQ251_PG) is kept as EXTI falling-edge in ALL low-power modes
+ *   - Configured as PWR wakeup pin so it can wake from DEEPSTOP
  ***************************************************************************/
 
 #include "main.h"
@@ -126,6 +130,27 @@ static void Keep_AccelInterrupt(void)
     HAL_NVIC_EnableIRQ(GPIOB_IRQn);
 }
 
+/**
+ * @brief Keep PB4 (BQ251_PG) as EXTI falling-edge so it can wake from sleep.
+ *        Also configure as PWR wakeup pin for DEEPSTOP wakeup.
+ */
+static void Keep_CablePlugInterrupt(void)
+{
+    /* PB4 stays as EXTI falling-edge with pull-up (already configured in MX_GPIO_Init).
+     * Just make sure the EXTI line is clear and the NVIC is enabled. */
+    __HAL_GPIO_EXTI_CLEAR_IT(BQ251_PG_GPIO_Port, BQ251_PG_Pin);
+
+    /* Enable PB4 as a wakeup source from DEEPSTOP.
+     * Polarity LOW = wake when pin goes LOW (cable plugged in).
+     * Note: The exact LL_PWR_WAKEUP_PBx define depends on your HAL version.
+     * On STM32WB05, PB4 maps to IO9 in the wakeup pin table. */
+    LL_PWR_EnableWakeUpPin(LL_PWR_WAKEUP_PB4);
+    LL_PWR_SetWakeUpPinPolarityLow(LL_PWR_WAKEUP_PB4);
+
+    /* Make sure GPIOB NVIC is still enabled (shared with PB15) */
+    HAL_NVIC_EnableIRQ(GPIOB_IRQn);
+}
+
 static void Gate_GPIO_Outputs(void)
 {
     HAL_GPIO_WritePin(GPOUT_GPIO_Port, GPOUT_Pin, GPIO_PIN_RESET);
@@ -163,6 +188,21 @@ static void Restore_AccelInterrupt(void)
 }
 
 /**
+ * @brief Restore PB4 as EXTI falling-edge after wake
+ */
+static void Restore_CablePlugInterrupt(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin  = BQ251_PG_Pin;
+    gpio.Mode = GPIO_MODE_IT_FALLING;
+    gpio.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(BQ251_PG_GPIO_Port, &gpio);
+
+    __HAL_GPIO_EXTI_CLEAR_IT(BQ251_PG_GPIO_Port, BQ251_PG_Pin);
+    HAL_NVIC_EnableIRQ(GPIOB_IRQn);
+}
+
+/**
  * @brief Restore PA9 as BQ251_STAT input after low power
  */
 static void Restore_UART_Pins(void)
@@ -196,6 +236,9 @@ void PowerMgmt_EnterLowPower_Idle(void)
     Gate_AccelInterrupt();
     Gate_GPIO_Outputs();
 
+    /* Keep PB4 (cable detect) active so plugging in wakes us */
+    Keep_CablePlugInterrupt();
+
     peripherals_gated = 1;
 }
 
@@ -209,6 +252,9 @@ void PowerMgmt_EnterLowPower_Armed(void)
     Gate_UART();
     Keep_AccelInterrupt();
     Gate_GPIO_Outputs();
+
+    /* Keep PB4 (cable detect) active so plugging in wakes us */
+    Keep_CablePlugInterrupt();
 
     peripherals_gated = 1;
 }
@@ -239,6 +285,7 @@ void PowerMgmt_RestoreAll(void)
     /* --- Restore GPIO --- */
     Restore_GPIO_Outputs();
     Restore_AccelInterrupt();
+    Restore_CablePlugInterrupt();
     Restore_UART_Pins();
 
     /* --- Re-init drivers that depend on I2C --- */

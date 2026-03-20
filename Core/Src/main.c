@@ -232,9 +232,9 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE|RCC_OSCILLATORTYPE_LSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -409,8 +409,8 @@ static void MX_RADIO_TIMER_Init(void)
   /* Wait to be sure that the Radio Timer is active */
   while(LL_RADIO_TIMER_GetAbsoluteTime(WAKEUP) < 0x10);
   RADIO_TIMER_InitStruct.XTAL_StartupTime = 320;
-  RADIO_TIMER_InitStruct.enableInitialCalibration = FALSE;
-  RADIO_TIMER_InitStruct.periodicCalibrationInterval = 0;
+  RADIO_TIMER_InitStruct.enableInitialCalibration = TRUE;
+  RADIO_TIMER_InitStruct.periodicCalibrationInterval = 10000;
   HAL_RADIO_TIMER_Init(&RADIO_TIMER_InitStruct);
   /* USER CODE BEGIN RADIO_TIMER_Init 2 */
 

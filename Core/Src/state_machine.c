@@ -124,9 +124,9 @@ void State_Connected_Idle_Loop(void)
     /* Lights */
     if (IS_CABLE_PLUGGED()) {
         if (IS_CHARGING_NOW()) {
-            LED_Pulse(4000, 255, 100, 0, 60); /* orange pulse - charging */
+            LED_Pulse(4000, 255, 100, 0, 200); /* orange pulse - charging */
         } else {
-            LED_Pulse(4000, 0, 255, 0, 60);   /* green pulse - charged */
+            LED_Pulse(4000, 0, 255, 0, 200);   /* green pulse - charged */
         }
     } else {
         LED_Rainbow(5, 15);  /* rainbow - normal */

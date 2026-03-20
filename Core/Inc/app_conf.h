@@ -31,7 +31,7 @@
 /**
  * Define to 1 if LSE is used, otherwise set it to 0.
  */
-#define CFG_LSCLK_LSE                       (1)
+#define CFG_LSCLK_LSE                       (0)
 
 /******************************************************************************
  * Application Config

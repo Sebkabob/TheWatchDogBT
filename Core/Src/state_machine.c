@@ -158,9 +158,9 @@ void State_Disconnected_Idle_Loop(void)
         stayAwakeFlag = 1;
 
         if (IS_CHARGING_NOW()) {
-            LED_Pulse(4000, 255, 100, 0, 60); /* orange pulse - charging */
+            LED_Pulse(4000, 255, 100, 0, 255); /* orange pulse - charging */
         } else {
-            LED_Pulse(4000, 0, 255, 0, 60);   /* green pulse - charged */
+            LED_Pulse(4000, 0, 255, 0, 255);   /* green pulse - charged */
         }
     } else {
         /* === No cable, no connection: enter low power === */
@@ -194,12 +194,12 @@ void State_Connected_Idle_Loop(void)
     /* Lights — charging status always visible, others respect lights bit */
     if (IS_CABLE_PLUGGED()) {
         if (IS_CHARGING_NOW()) {
-            LED_Pulse(4000, 255, 100, 0, 200); /* orange pulse - charging */
+            LED_Pulse(4000, 255, 100, 0, 255); /* orange pulse - charging */
         } else {
-            LED_Pulse(4000, 0, 255, 0, 200);   /* green pulse - charged */
+            LED_Pulse(4000, 0, 255, 0, 255);   /* green pulse - charged */
         }
     } else if (GET_LIGHTS_BIT(deviceState)) {
-        LED_Rainbow(5, 15);  /* rainbow - normal */
+        LED_Rainbow(5, 255);  /* rainbow - normal */
     } else {
         LED_Off();
     }
@@ -230,7 +230,7 @@ void State_Locked_Loop(void)
     }
 
     if (GET_LIGHTS_BIT(deviceState)) {
-        LED_Armed(10, 150);
+        LED_Armed(10, 255);
     } else {
         LED_Off();
     }
@@ -321,7 +321,7 @@ void State_Alarm_Active_Loop(void)
                 melody_duration_ms = BUZZER_GetNormalAlarmDuration();
                 break;
             case ALARM_LOUD:
-                if (showLights) LED_Alarm(125, 255, 225, 0, 100);
+                if (showLights) LED_Alarm(125, 255, 225, 0, 255);
                 BUZZER_StartLaCucaracha();
                 melody_duration_ms = BUZZER_GetLaCucarachaDuration();
                 break;

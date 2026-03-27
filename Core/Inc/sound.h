@@ -39,6 +39,7 @@ void BUZZER_PlaySequence(const Note_t* sequence, uint8_t num_notes, uint8_t loop
 void BUZZER_Update(void);  // Call in main loop
 void BUZZER_Stop(void);
 uint8_t BUZZER_IsPlaying(void);
+uint8_t BUZZER_IsToneActive(void);
 uint32_t BUZZER_GetSequenceDuration(const Note_t* sequence, uint8_t num_notes);
 
 /* Alarm sequences */
@@ -52,6 +53,9 @@ uint32_t BUZZER_GetLoudAlarmDuration(void);
 /* Fun melody */
 void BUZZER_StartLaCucaracha(void);
 uint32_t BUZZER_GetLaCucarachaDuration(void);
+
+/* Find My Device ping */
+void BUZZER_StartFindMe(void);
 
 /**
  * @brief  TIM16 period-elapsed callback — called from TIM16_IRQHandler.

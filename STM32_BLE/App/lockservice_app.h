@@ -69,6 +69,7 @@ typedef struct
 #define CMD_REQUEST_EVENT        0xF1  // iOS: Request specific event by index
 #define CMD_CLEAR_LOG            0xF2  // iOS: Clear all events
 #define CMD_ACK_EVENT            0xF3  // iOS: Acknowledge received event
+#define CMD_FIND_MY_DEVICE       0xFA  // iOS: Find my device ping
 
 /* Response Types */
 #define RESP_LOG_COUNT           0xE0  // WD: Sending log count

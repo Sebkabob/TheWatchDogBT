@@ -61,6 +61,22 @@ static const Note_t LOUD_ALARM_PATTERN[] = {
     {3520, 300, 15},
 };
 
+/* 3-tone ascending chirp × 3 repetitions — Apple "Find My" style ping */
+static const Note_t FIND_MY_PATTERN[] = {
+    /* Rep 1 */
+    {1000, 120, 50},
+    {1200, 120, 50},
+    {1400, 120, 300},
+    /* Rep 2 */
+    {1000, 120, 50},
+    {1200, 120, 50},
+    {1400, 120, 300},
+    /* Rep 3 */
+    {1000, 120, 50},
+    {1200, 120, 50},
+    {1400, 120, 50},
+};
+
 static const Note_t LA_CUCARACHA_PATTERN[] = {
     {523, 125, 25},
     {523, 125, 25},
@@ -226,6 +242,11 @@ uint8_t BUZZER_IsPlaying(void)
     return buzzer_state.is_playing;
 }
 
+uint8_t BUZZER_IsToneActive(void)
+{
+    return buzzer_state.is_playing && !buzzer_state.in_delay;
+}
+
 uint32_t BUZZER_GetSequenceDuration(const Note_t* sequence, uint8_t num_notes)
 {
     uint32_t total = 0;
@@ -286,6 +307,12 @@ uint32_t BUZZER_GetLaCucarachaDuration(void)
 {
     return BUZZER_GetSequenceDuration(LA_CUCARACHA_PATTERN,
         sizeof(LA_CUCARACHA_PATTERN) / sizeof(Note_t));
+}
+
+void BUZZER_StartFindMe(void)
+{
+    BUZZER_PlaySequence(FIND_MY_PATTERN,
+        sizeof(FIND_MY_PATTERN) / sizeof(Note_t), 0);
 }
 
 /***************************************************************************

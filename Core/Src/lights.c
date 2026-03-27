@@ -285,6 +285,17 @@ void LED_Off(void)
     StopBlueSoft();
 }
 
+void LED_Solid(uint8_t r, uint8_t g, uint8_t b, uint8_t intensity)
+{
+    if (r > 0) { StartRedPWM(); }   else { StopRedPWM(); }
+    if (g > 0) { StartGreenPWM(); } else { StopGreenPWM(); }
+    if (b > 0) { StartBlueSoft(); }  else { StopBlueSoft(); }
+
+    if (r > 0) { uint16_t sr = (r * intensity) / 255; SetRed(  999 - ((sr * 999) / 255)); }
+    if (g > 0) { uint16_t sg = (g * intensity) / 255; SetGreen(999 - ((sg * 999) / 255)); }
+    if (b > 0) { uint16_t sb = (b * intensity) / 255; SetBlue( 999 - ((sb * 999) / 255)); }
+}
+
 void LED_Alarm(int flash_interval_ms, uint8_t red, uint8_t green, uint8_t blue, uint8_t intensity)
 {
     static uint8_t led_state = 0;

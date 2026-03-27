@@ -64,6 +64,11 @@ void LED_Armed(int ms_delay, uint8_t intensity);
 void LED_Off(void);
 
 /**
+ * @brief Set a solid (non-animated) color — no internal state, safe to call rapidly
+ */
+void LED_Solid(uint8_t r, uint8_t g, uint8_t b, uint8_t intensity);
+
+/**
  * @brief Flash LED with custom color (non-blocking)
  * @param flash_interval_ms Time between on and off in milliseconds
  * @param red Red component (0-255)

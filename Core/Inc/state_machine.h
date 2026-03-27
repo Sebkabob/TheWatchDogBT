@@ -77,4 +77,8 @@ void StateMachine_CheckInactivityTimeout(void);
  */
 void CablePlug_IRQCallback(void);
 
+/* Find My Device — non-blocking ping routine */
+void FindMyDevice_Start(void);
+void FindMyDevice_Update(void);
+
 #endif

@@ -191,15 +191,17 @@ void State_Connected_Idle_Loop(void)
 {
     stayAwakeFlag = 1;
 
-    /* Lights */
+    /* Lights — charging status always visible, others respect lights bit */
     if (IS_CABLE_PLUGGED()) {
         if (IS_CHARGING_NOW()) {
             LED_Pulse(4000, 255, 100, 0, 200); /* orange pulse - charging */
         } else {
             LED_Pulse(4000, 0, 255, 0, 200);   /* green pulse - charged */
         }
-    } else {
+    } else if (GET_LIGHTS_BIT(deviceState)) {
         LED_Rainbow(5, 15);  /* rainbow - normal */
+    } else {
+        LED_Off();
     }
 
     /* State Switch - DISCONNECTED */
@@ -303,22 +305,23 @@ void State_Alarm_Active_Loop(void)
     /* Start the appropriate alarm if not already playing */
     if (!alarm_started) {
         uint8_t alarmType = GET_ALARM_TYPE(deviceState);
+        uint8_t showLights = GET_LIGHTS_BIT(deviceState);
         switch (alarmType) {
             case ALARM_NONE:
                 melody_duration_ms = 1000;
                 break;
             case ALARM_CALM:
-                LED_Alarm(300, 255, 0, 0, 255);
+                if (showLights) LED_Alarm(300, 255, 0, 0, 255);
                 BUZZER_StartCalmAlarm();
                 melody_duration_ms = BUZZER_GetCalmAlarmDuration();
                 break;
             case ALARM_NORMAL:
-                LED_Alarm(300, 255, 0, 0, 255);
+                if (showLights) LED_Alarm(300, 255, 0, 0, 255);
                 BUZZER_StartNormalAlarm();
                 melody_duration_ms = BUZZER_GetNormalAlarmDuration();
                 break;
             case ALARM_LOUD:
-                LED_Alarm(125, 255, 225, 0, 100);
+                if (showLights) LED_Alarm(125, 255, 225, 0, 100);
                 BUZZER_StartLaCucaracha();
                 melody_duration_ms = BUZZER_GetLaCucarachaDuration();
                 break;
@@ -383,6 +386,36 @@ void ChargingCheck(void)
     }
 }
 
+/***************************************************************************
+ * FIND MY DEVICE — non-blocking ping with synced green LED
+ ***************************************************************************/
+static volatile uint8_t findMyActive = 0;
+
+void FindMyDevice_Start(void)
+{
+    BUZZER_StartFindMe();
+    findMyActive = 1;
+}
+
+void FindMyDevice_Update(void)
+{
+    if (!findMyActive) return;
+
+    if (!BUZZER_IsPlaying()) {
+        /* Sequence finished — clean up */
+        LED_Off();
+        findMyActive = 0;
+        return;
+    }
+
+    /* Green LED on during each tone, off during gaps */
+    if (BUZZER_IsToneActive()) {
+        LED_Solid(0, 255, 0, 255);
+    } else {
+        LED_Off();
+    }
+}
+
 void StateMachine_Run(void)
 {
     /* Handle cable plug/unplug events (ISR flag + debounce + timeout) */
@@ -390,6 +423,7 @@ void StateMachine_Run(void)
 
     ChargingCheck();
     BUZZER_Update();
+    FindMyDevice_Update();
 
     switch (currentState) {
         case STATE_DISCONNECTED_IDLE:

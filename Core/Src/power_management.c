@@ -290,7 +290,7 @@ void PowerMgmt_RestoreAll(void)
 
     /* --- Re-init drivers that depend on I2C --- */
     HAL_Delay(10);
-    LIS2DUX12_QuickReinit();
+    LIS2DUX12_Init();
     LIS2DUX12_ClearMotion();
     BATTERY_Init();
 

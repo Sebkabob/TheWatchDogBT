@@ -27,6 +27,7 @@
 #include "battery.h"
 #include "lockservice_app.h"
 #include "accelerometer.h"
+#include "lis2dux12_app.h"
 #include "motion_logger.h"
 #include "power_management.h"
 #include "app_ble.h"
@@ -212,6 +213,7 @@ void State_Connected_Idle_Loop(void)
     /* State Switch - LOCKED */
     if (GET_ARMED_BIT(deviceState)) {
         LIS2DUX12_ClearMotion();
+        LIS2DUX12_CaptureReference();  /* snapshot gravity vector for tilt detection */
         StateMachine_ChangeState(STATE_LOCKED);
         HAL_Delay(10);
     }
@@ -219,12 +221,9 @@ void State_Connected_Idle_Loop(void)
 
 void State_Locked_Loop(void)
 {
-    static uint8_t lastMotionState = GPIO_PIN_RESET;
-
     /* State Switch - UNLOCKED */
     if (!GET_ARMED_BIT(deviceState)) {
         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
-        lastMotionState = GPIO_PIN_RESET;
         LED_Off();
         return;
     }
@@ -235,24 +234,86 @@ void State_Locked_Loop(void)
         LED_Off();
     }
 
-    /* Motion detection via ACCEL_INT (PB15) */
-    uint8_t currentMotionState = HAL_GPIO_ReadPin(ACCEL_INT_GPIO_Port, ACCEL_INT_Pin);
-    if (currentMotionState == GPIO_PIN_SET && lastMotionState == GPIO_PIN_RESET) {
-        if (GET_LOGGING_BIT(deviceState)) {
-            stayAwakeFlag = 1;
-            MotionLogger_LogEvent(1);
-            LOCKSERVICE_SendMotionAlert();
-        }
+    /* MLC interrupt fired — read what the sensor classified */
+    if (LIS2DUX12_IsMotionDetected()) {
+        uint8_t mlc_out;
+        lis2dux12_app_get_mlc_output(&mlc_out);
+        lis2dux12_app_update_cached_state(mlc_out);
 
-        if (!GET_SILENCE_BIT(deviceState)) {
-            StateMachine_ChangeState(STATE_ALARM_ACTIVE);
-        } else {
-            while (HAL_GPIO_ReadPin(ACCEL_INT_GPIO_Port, ACCEL_INT_Pin) == GPIO_PIN_SET) {
-                HAL_Delay(10);
+        MotionType_t motionType = MOTION_TYPE_NONE;
+        if (mlc_out == MLC_STATE_IN_MOTION)  motionType = MOTION_TYPE_IN_MOTION;
+        if (mlc_out == MLC_STATE_SHAKEN)     motionType = MOTION_TYPE_SHAKEN;
+
+        /* Also check FSM (impact/freefall) opportunistically */
+        uint8_t impact, freefall;
+        lis2dux12_app_check_fsm_events(&impact, &freefall);
+        if (impact)   motionType = MOTION_TYPE_IMPACT;
+        if (freefall) motionType = MOTION_TYPE_FREEFALL;
+
+        if (motionType != MOTION_TYPE_NONE) {
+            stayAwakeFlag = 1;
+            if (GET_LOGGING_BIT(deviceState)) {
+                MotionLogger_LogEvent(motionType);
+                LOCKSERVICE_SendMotionAlert(motionType);
+            }
+
+            if (!GET_SILENCE_BIT(deviceState)) {
+                StateMachine_ChangeState(STATE_ALARM_ACTIVE);
             }
         }
     }
-    lastMotionState = currentMotionState;
+
+    /* Poll FSM + tilt every 500 ms */
+    static uint32_t last_poll = 0;
+    static uint8_t tilt_reported = 0;
+    /* Reset tilt latch when freshly armed (came from connected idle) */
+    if (previousState == STATE_CONNECTED_IDLE && tilt_reported) {
+        tilt_reported = 0;
+        lis2dux12_app_set_tilt_detected(0);
+    }
+    if (HAL_GetTick() - last_poll > 500) {
+        last_poll = HAL_GetTick();
+
+        /* FSM poll — INT2 (impact/freefall) is not connected */
+        uint8_t impact, freefall;
+        lis2dux12_app_check_fsm_events(&impact, &freefall);
+        if (impact || freefall) {
+            MotionType_t mt = impact ? MOTION_TYPE_IMPACT : MOTION_TYPE_FREEFALL;
+            stayAwakeFlag = 1;
+            if (GET_LOGGING_BIT(deviceState)) {
+                MotionLogger_LogEvent(mt);
+                LOCKSERVICE_SendMotionAlert(mt);
+            }
+            if (!GET_SILENCE_BIT(deviceState)) {
+                StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+            }
+        }
+
+        /* Tilt detection — only check when MLC says stationary
+         * (dynamic accel would corrupt the gravity comparison).
+         * CheckTilt() uses hysteresis (15° on, 10° off) internally
+         * to prevent noise flickering. */
+        uint8_t mlc_now = lis2dux12_app_get_cached_mlc_state();
+        if (mlc_now == 0 || mlc_now == 1) {  /* stationary */
+            uint8_t tilted = LIS2DUX12_CheckTilt();
+            lis2dux12_app_set_tilt_detected(tilted);
+
+            if (tilted && !tilt_reported) {
+                tilt_reported = 1;
+                stayAwakeFlag = 1;
+                if (GET_LOGGING_BIT(deviceState)) {
+                    MotionLogger_LogEvent(MOTION_TYPE_TILTED);
+                    LOCKSERVICE_SendMotionAlert(MOTION_TYPE_TILTED);
+                }
+                if (!GET_SILENCE_BIT(deviceState)) {
+                    StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+                }
+            }
+            if (!tilted) {
+                tilt_reported = 0;  /* allow re-trigger if tilted again */
+            }
+        }
+    }
 
     /* === If not connected while locked, enter armed low power === */
     if (!connectionStatus) {
@@ -334,13 +395,57 @@ void State_Alarm_Active_Loop(void)
         last_motion_time = HAL_GetTick();
     }
 
-    /* Check for new motion - RESET TIMER */
+    /* Check for new motion via MLC interrupt — RESET TIMER */
     if (LIS2DUX12_IsMotionDetected()) {
-        last_motion_time = HAL_GetTick();
+        uint8_t mlc_out;
+        lis2dux12_app_get_mlc_output(&mlc_out);
+        lis2dux12_app_update_cached_state(mlc_out);
+
+        MotionType_t motionType = MOTION_TYPE_IN_MOTION;
+        if (mlc_out == MLC_STATE_SHAKEN) motionType = MOTION_TYPE_SHAKEN;
+
+        uint8_t impact, freefall;
+        lis2dux12_app_check_fsm_events(&impact, &freefall);
+        if (impact)   motionType = MOTION_TYPE_IMPACT;
+        if (freefall) motionType = MOTION_TYPE_FREEFALL;
+
+        /* Only reset alarm timer on active motion states */
+        if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN
+            || impact || freefall) {
+            last_motion_time = HAL_GetTick();
+        }
 
         if (GET_LOGGING_BIT(deviceState)) {
-            MotionLogger_LogEvent(1);
-            LOCKSERVICE_SendMotionAlert();
+            MotionLogger_LogEvent(motionType);
+            LOCKSERVICE_SendMotionAlert(motionType);
+        }
+    }
+
+    /* Poll MLC output to keep alarm alive while device stays in motion.
+     * The MLC interrupt only fires on STATE CHANGES, so continuous motion
+     * won't re-trigger it. Polling every 500 ms catches this. */
+    static uint32_t last_mlc_poll = 0;
+    if (HAL_GetTick() - last_mlc_poll > 500) {
+        last_mlc_poll = HAL_GetTick();
+
+        uint8_t mlc_out;
+        if (lis2dux12_app_get_mlc_output(&mlc_out) == 0) {
+            lis2dux12_app_update_cached_state(mlc_out);
+            if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN) {
+                last_motion_time = HAL_GetTick();
+            }
+        }
+
+        /* Also poll FSM */
+        uint8_t impact, freefall;
+        lis2dux12_app_check_fsm_events(&impact, &freefall);
+        if (impact || freefall) {
+            last_motion_time = HAL_GetTick();
+            if (GET_LOGGING_BIT(deviceState)) {
+                MotionType_t mt = impact ? MOTION_TYPE_IMPACT : MOTION_TYPE_FREEFALL;
+                MotionLogger_LogEvent(mt);
+                LOCKSERVICE_SendMotionAlert(mt);
+            }
         }
     }
 

@@ -36,6 +36,7 @@
 #include "lights.h"
 #include "battery.h"
 #include "accelerometer.h"
+#include "lis2dux12_app.h"
 #include "power_management.h"
 
 
@@ -106,24 +107,23 @@ static void LOCKSERVICE_Devicestatus_SendNotification(void);
  * @brief Send motion alert notification to iOS
  * This triggers iOS to auto-sync
  */
-void LOCKSERVICE_SendMotionAlert(void)
+void LOCKSERVICE_SendMotionAlert(uint8_t motionType)
 {
     if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
         return;
     }
 
-    // Send special alert byte: 0xFF
-    a_LOCKSERVICE_UpdateCharData[0] = 0xFF;  // Motion alert marker
-    a_LOCKSERVICE_UpdateCharData[1] = deviceBattery;
+    /* Motion alert: [0xFF, motionType, battery] — 3 bytes */
+    a_LOCKSERVICE_UpdateCharData[0] = 0xFF;          /* motion alert marker */
+    a_LOCKSERVICE_UpdateCharData[1] = motionType;    /* MLC/FSM classification */
+    a_LOCKSERVICE_UpdateCharData[2] = deviceBattery;
 
     LOCKSERVICE_Data_t lockservice_notification_data;
     lockservice_notification_data.p_Payload = (uint8_t*)a_LOCKSERVICE_UpdateCharData;
-    lockservice_notification_data.Length = 2;
+    lockservice_notification_data.Length = 3;
 
     LOCKSERVICE_NotifyValue(LOCKSERVICE_DEVICESTATUS, &lockservice_notification_data,
                            LOCKSERVICE_APP_Context.ConnectionHandle);
-
-    printf("🚨 Motion alert sent to iOS\n");
 }
 
 /**
@@ -438,15 +438,16 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
         CLEAR_BATTERY_CHARGING(deviceBattery);
     }
 
-    /* Pack data into BLE notification */
+    /* Pack data into BLE notification — 7 bytes */
     a_LOCKSERVICE_UpdateCharData[0] = deviceState;
     a_LOCKSERVICE_UpdateCharData[1] = deviceBattery;
     a_LOCKSERVICE_UpdateCharData[2] = (uint8_t)(current_mA & 0xFF);
     a_LOCKSERVICE_UpdateCharData[3] = (uint8_t)((current_mA >> 8) & 0xFF);
     a_LOCKSERVICE_UpdateCharData[4] = (uint8_t)(voltage_mV & 0xFF);
     a_LOCKSERVICE_UpdateCharData[5] = (uint8_t)((voltage_mV >> 8) & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[6] = lis2dux12_app_get_cached_mlc_state();
 
-    lockservice_notification_data.Length = 6;
+    lockservice_notification_data.Length = 7;
   /* USER CODE END Service1Char2_NS_1*/
 
   if (notification_on_off != Devicestatus_NOTIFICATION_OFF && LOCKSERVICE_APP_Context.ConnectionHandle != 0xFFFF)

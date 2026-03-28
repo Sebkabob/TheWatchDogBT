@@ -7,12 +7,14 @@
 /* Maximum number of events to store */
 #define MAX_MOTION_EVENTS 100
 
-/* Motion types */
+/* Motion types — MLC/FSM classifications */
 typedef enum {
-    MOTION_TYPE_NONE = 0,
-    MOTION_TYPE_SMALL = 1,
-    MOTION_TYPE_MEDIUM = 2,
-    MOTION_TYPE_LARGE = 3
+    MOTION_TYPE_NONE      = 0,
+    MOTION_TYPE_IN_MOTION = 1,  /* MLC: general movement detected */
+    MOTION_TYPE_SHAKEN    = 2,  /* MLC: device was shaken */
+    MOTION_TYPE_IMPACT    = 3,  /* FSM: impact event */
+    MOTION_TYPE_FREEFALL  = 4,  /* FSM: free-fall event */
+    MOTION_TYPE_TILTED    = 5,  /* Orientation changed > 15 deg from armed position */
 } MotionType_t;
 
 /* Motion event structure - now uses tick timestamps */

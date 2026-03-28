@@ -89,7 +89,7 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification);
 /* USER CODE BEGIN EF */
 void LOCKSERVICE_SendStatusUpdate(void);
 void LOCKSERVICE_ForceStatusUpdate(void);
-void LOCKSERVICE_SendMotionAlert(void);
+void LOCKSERVICE_SendMotionAlert(uint8_t motionType);
 /* USER CODE END EF */
 
 #ifdef __cplusplus

@@ -28,6 +28,7 @@
 #include "lockservice_app.h"
 #include "accelerometer.h"
 #include "lis2dux12_app.h"
+#include "door_detector.h"
 #include "motion_logger.h"
 #include "power_management.h"
 #include "app_ble.h"
@@ -82,6 +83,8 @@ void StateMachine_Init(void)
     SET_SILENCE_BIT(deviceState, 0);
 
     deviceInfo = 0;
+
+    DoorDetector_Init();
 
     /* Initialise cable state tracking */
     cableWasPlugged = IS_CABLE_PLUGGED() ? 1 : 0;
@@ -213,7 +216,8 @@ void State_Connected_Idle_Loop(void)
     /* State Switch - LOCKED */
     if (GET_ARMED_BIT(deviceState)) {
         LIS2DUX12_ClearMotion();
-        LIS2DUX12_CaptureReference();  /* snapshot gravity vector for tilt detection */
+        DoorDetector_SetSensitivity(GET_SENSITIVITY(deviceState));
+        DoorDetector_CaptureReference();
         StateMachine_ChangeState(STATE_LOCKED);
         HAL_Delay(10);
     }
@@ -261,16 +265,23 @@ void State_Locked_Loop(void)
                 StateMachine_ChangeState(STATE_ALARM_ACTIVE);
             }
         }
+
+        /* MLC returned to stationary → check if the door position changed.
+         * The gravity vector is clean here (no dynamic accel). */
+        if (mlc_out == MLC_STATE_STATIONARY_UPRIGHT ||
+            mlc_out == MLC_STATE_STATIONARY_NOT_UPRIGHT) {
+            uint8_t door_evt = DoorDetector_Check();
+            if (door_evt != DOOR_EVENT_NONE && GET_LOGGING_BIT(deviceState)) {
+                MotionLogger_LogEvent((MotionType_t)door_evt);
+                LOCKSERVICE_SendMotionAlert(door_evt);
+            }
+            lis2dux12_app_set_door_state(
+                DoorDetector_IsOpen() ? CACHED_STATE_DOOR_OPEN : 0);
+        }
     }
 
-    /* Poll FSM + tilt every 500 ms */
+    /* Poll every 500 ms — FSM + door position */
     static uint32_t last_poll = 0;
-    static uint8_t tilt_reported = 0;
-    /* Reset tilt latch when freshly armed (came from connected idle) */
-    if (previousState == STATE_CONNECTED_IDLE && tilt_reported) {
-        tilt_reported = 0;
-        lis2dux12_app_set_tilt_detected(0);
-    }
     if (HAL_GetTick() - last_poll > 500) {
         last_poll = HAL_GetTick();
 
@@ -289,29 +300,29 @@ void State_Locked_Loop(void)
             }
         }
 
-        /* Tilt detection — only check when MLC says stationary
-         * (dynamic accel would corrupt the gravity comparison).
-         * CheckTilt() uses hysteresis (15° on, 10° off) internally
-         * to prevent noise flickering. */
-        uint8_t mlc_now = lis2dux12_app_get_cached_mlc_state();
-        if (mlc_now == 0 || mlc_now == 1) {  /* stationary */
-            uint8_t tilted = LIS2DUX12_CheckTilt();
-            lis2dux12_app_set_tilt_detected(tilted);
-
-            if (tilted && !tilt_reported) {
-                tilt_reported = 1;
+        /* Door position check — only when MLC says stationary.
+         * Catches slow drift the MLC interrupt might miss. */
+        uint8_t cached = lis2dux12_app_get_cached_mlc_state();
+        if (cached == CACHED_STATE_STATIONARY ||
+            cached == CACHED_STATE_DOOR_OPEN) {
+            uint8_t door_evt = DoorDetector_Check();
+            if (door_evt == DOOR_EVENT_OPENED) {
                 stayAwakeFlag = 1;
                 if (GET_LOGGING_BIT(deviceState)) {
-                    MotionLogger_LogEvent(MOTION_TYPE_TILTED);
-                    LOCKSERVICE_SendMotionAlert(MOTION_TYPE_TILTED);
+                    MotionLogger_LogEvent((MotionType_t)door_evt);
+                    LOCKSERVICE_SendMotionAlert(door_evt);
                 }
                 if (!GET_SILENCE_BIT(deviceState)) {
                     StateMachine_ChangeState(STATE_ALARM_ACTIVE);
                 }
+            } else if (door_evt == DOOR_EVENT_CLOSED) {
+                if (GET_LOGGING_BIT(deviceState)) {
+                    MotionLogger_LogEvent((MotionType_t)door_evt);
+                    LOCKSERVICE_SendMotionAlert(door_evt);
+                }
             }
-            if (!tilted) {
-                tilt_reported = 0;  /* allow re-trigger if tilted again */
-            }
+            lis2dux12_app_set_door_state(
+                DoorDetector_IsOpen() ? CACHED_STATE_DOOR_OPEN : 0);
         }
     }
 
@@ -421,9 +432,11 @@ void State_Alarm_Active_Loop(void)
         }
     }
 
-    /* Poll MLC output to keep alarm alive while device stays in motion.
+    /* Poll MLC + door detector to keep alarm alive during continued motion.
      * The MLC interrupt only fires on STATE CHANGES, so continuous motion
-     * won't re-trigger it. Polling every 500 ms catches this. */
+     * won't re-trigger it. Polling catches this. */
+
+    /* MLC + FSM + door — 500 ms */
     static uint32_t last_mlc_poll = 0;
     if (HAL_GetTick() - last_mlc_poll > 500) {
         last_mlc_poll = HAL_GetTick();
@@ -446,6 +459,11 @@ void State_Alarm_Active_Loop(void)
                 MotionLogger_LogEvent(mt);
                 LOCKSERVICE_SendMotionAlert(mt);
             }
+        }
+
+        /* Door still open? Keep alarm alive. */
+        if (DoorDetector_IsOpen()) {
+            last_motion_time = HAL_GetTick();
         }
     }
 

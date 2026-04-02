@@ -80,7 +80,18 @@ int lis2dux12_app_mlc_status_changed(void);
 
 /***************************************************************************
  * CACHED MLC STATE (avoids I2C reads in the BLE status path)
+ *
+ * Byte values sent over BLE (status update byte 6):
+ *   0 = Stationary (at reference / door closed)
+ *   1 = Door Open  (displaced from reference, not moving)
+ *   2 = In Motion  (MLC)
+ *   3 = Shaken     (MLC)
+ *   0xFF = Unknown
  ***************************************************************************/
+#define CACHED_STATE_STATIONARY     0
+#define CACHED_STATE_DOOR_OPEN      1
+#define CACHED_STATE_IN_MOTION      2
+#define CACHED_STATE_SHAKEN         3
 
 /**
  * @brief  Update the cached MLC state (call after reading MLC output).
@@ -88,17 +99,15 @@ int lis2dux12_app_mlc_status_changed(void);
 void lis2dux12_app_update_cached_state(uint8_t mlc_out);
 
 /**
- * @brief  Get the cached MLC state mapped to a simple 0-3 value for BLE.
- *         0 = Stationary (original position), 1 = Tilted (>15 deg),
- *         2 = In Motion, 3 = Shaken, 0xFF = Unknown
+ * @brief  Get the cached state for BLE status byte.
+ *         Merges MLC classification with door detector state.
  */
 uint8_t lis2dux12_app_get_cached_mlc_state(void);
 
 /**
- * @brief  Set/clear the tilt-detected flag.
- *         When set, stationary MLC states are overridden to "Tilted" (1)
- *         in the BLE status.
+ * @brief  Set the door detector state override.
+ *         Pass one of the CACHED_STATE_DOOR_* values, or 0 to clear.
  */
-void lis2dux12_app_set_tilt_detected(uint8_t tilted);
+void lis2dux12_app_set_door_state(uint8_t door_state);
 
 #endif /* INC_LIS2DUX12_APP_H_ */

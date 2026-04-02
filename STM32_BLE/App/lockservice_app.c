@@ -438,7 +438,11 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
         CLEAR_BATTERY_CHARGING(deviceBattery);
     }
 
-    /* Pack data into BLE notification — 7 bytes */
+    /* Read live accelerometer data */
+    int16_t accel[3];
+    LIS2DUX12_ReadAcceleration(accel);
+
+    /* Pack data into BLE notification — 13 bytes */
     a_LOCKSERVICE_UpdateCharData[0] = deviceState;
     a_LOCKSERVICE_UpdateCharData[1] = deviceBattery;
     a_LOCKSERVICE_UpdateCharData[2] = (uint8_t)(current_mA & 0xFF);
@@ -446,8 +450,14 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
     a_LOCKSERVICE_UpdateCharData[4] = (uint8_t)(voltage_mV & 0xFF);
     a_LOCKSERVICE_UpdateCharData[5] = (uint8_t)((voltage_mV >> 8) & 0xFF);
     a_LOCKSERVICE_UpdateCharData[6] = lis2dux12_app_get_cached_mlc_state();
+    a_LOCKSERVICE_UpdateCharData[7]  = (uint8_t)(accel[0] & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[8]  = (uint8_t)((accel[0] >> 8) & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[9]  = (uint8_t)(accel[1] & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[10] = (uint8_t)((accel[1] >> 8) & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[11] = (uint8_t)(accel[2] & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[12] = (uint8_t)((accel[2] >> 8) & 0xFF);
 
-    lockservice_notification_data.Length = 7;
+    lockservice_notification_data.Length = 13;
   /* USER CODE END Service1Char2_NS_1*/
 
   if (notification_on_off != Devicestatus_NOTIFICATION_OFF && LOCKSERVICE_APP_Context.ConnectionHandle != 0xFFFF)

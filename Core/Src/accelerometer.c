@@ -102,11 +102,15 @@ void LIS2DUX12_ClearAllInterrupts(void) {
 
 void LIS2DUX12_ReadAcceleration(int16_t accel[3]) {
     uint8_t data[6];
-    lis2dux12_read_reg(&dev_ctx, 0x25, data, 6);
 
-    accel[0] = (int16_t)((data[1] << 8) | data[0]);
-    accel[1] = (int16_t)((data[3] << 8) | data[2]);
-    accel[2] = (int16_t)((data[5] << 8) | data[4]);
+    // Read 6 bytes starting from OUT_X_L (0x28)
+    // This fills data[0]=0x28, data[1]=0x29, data[2]=0x2A, etc.
+    lis2dux12_read_reg(&dev_ctx, 0x28, data, 6);
+
+    // Combine (High << 8) | Low
+    accel[0] = (int16_t)((data[1] << 8) | data[0]); // X-axis
+    accel[1] = (int16_t)((data[3] << 8) | data[2]); // Y-axis
+    accel[2] = (int16_t)((data[5] << 8) | data[4]); // Z-axis
 }
 
 /***************************************************************************

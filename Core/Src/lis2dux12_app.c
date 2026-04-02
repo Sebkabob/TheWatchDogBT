@@ -197,15 +197,16 @@ int lis2dux12_app_mlc_status_changed(void)
  * CACHED MLC STATE
  * Avoids I2C reads in the 1-second BLE status notification path.
  * Updated by the state machine after every MLC interrupt read.
+ * Door detector state is merged in via door_state_override.
  ***************************************************************************/
 static uint8_t cached_mlc_state = 0xFF; /* 0xFF = unknown / not yet read */
-static uint8_t tilt_detected = 0;       /* Set by state machine when tilt > 15° */
+static uint8_t door_state_override = 0; /* 0 = none, 1 = open */
 
 void lis2dux12_app_update_cached_state(uint8_t mlc_out)
 {
     switch (mlc_out) {
         case MLC_STATE_STATIONARY_UPRIGHT:     cached_mlc_state = 0; break;
-        case MLC_STATE_STATIONARY_NOT_UPRIGHT: cached_mlc_state = 1; break;
+        case MLC_STATE_STATIONARY_NOT_UPRIGHT: cached_mlc_state = 0; break; /* treat same as upright */
         case MLC_STATE_IN_MOTION:              cached_mlc_state = 2; break;
         case MLC_STATE_SHAKEN:                 cached_mlc_state = 3; break;
         default:                               cached_mlc_state = 0xFF; break;
@@ -214,16 +215,21 @@ void lis2dux12_app_update_cached_state(uint8_t mlc_out)
 
 uint8_t lis2dux12_app_get_cached_mlc_state(void)
 {
-    /* Override stationary states with "Tilted" when tilt is detected */
-    if (tilt_detected && (cached_mlc_state == 0 || cached_mlc_state == 1)) {
-        return 1; /* Tilted (>15 deg from armed position) */
+    /* MLC in-motion / shaken overrides door-open position */
+    if (cached_mlc_state == CACHED_STATE_IN_MOTION ||
+        cached_mlc_state == CACHED_STATE_SHAKEN) {
+        return cached_mlc_state;
+    }
+    /* If MLC says stationary but door is displaced → door open */
+    if (door_state_override == CACHED_STATE_DOOR_OPEN) {
+        return CACHED_STATE_DOOR_OPEN;
     }
     return cached_mlc_state;
 }
 
-void lis2dux12_app_set_tilt_detected(uint8_t tilted)
+void lis2dux12_app_set_door_state(uint8_t door_state)
 {
-    tilt_detected = tilted;
+    door_state_override = door_state;
 }
 
 /***************************************************************************

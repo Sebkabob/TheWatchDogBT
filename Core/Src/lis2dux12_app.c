@@ -215,6 +215,10 @@ void lis2dux12_app_update_cached_state(uint8_t mlc_out)
 
 uint8_t lis2dux12_app_get_cached_mlc_state(void)
 {
+    /* Stabilizing overrides everything */
+    if (door_state_override == CACHED_STATE_STABILIZING) {
+        return CACHED_STATE_STABILIZING;
+    }
     /* MLC in-motion / shaken overrides door-open position */
     if (cached_mlc_state == CACHED_STATE_IN_MOTION ||
         cached_mlc_state == CACHED_STATE_SHAKEN) {

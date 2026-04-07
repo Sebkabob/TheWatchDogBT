@@ -8,6 +8,7 @@ typedef enum {
     STATE_SLEEP,
     STATE_ALARM_ACTIVE,
     STATE_LOCKED,
+    STATE_STABILIZING,
     STATE_DISCONNECTED_IDLE,
     STATE_CONNECTED_IDLE
 } SystemState_t;
@@ -35,6 +36,10 @@ typedef enum {
 #define SET_LIGHTS_BIT(byte, val)      do { if(val) (byte) |= 0x20; else (byte) &= ~0x20; } while(0)
 #define SET_LOGGING_BIT(byte, val)     do { if(val) (byte) |= 0x40; else (byte) &= ~0x40; } while(0)
 #define SET_SILENCE_BIT(byte, val)     do { if(val) (byte) |= 0x80; else (byte) &= ~0x80; } while(0)
+
+// DeviceInfo bit field (byte 2 of settings write)
+#define GET_HIGHPERF_BIT(byte)    ((byte) & 0x01)
+#define SET_HIGHPERF_BIT(byte, val) do { if(val) (byte) |= 0x01; else (byte) &= ~0x01; } while(0)
 
 // Alarm type constants
 #define ALARM_NONE        0x00

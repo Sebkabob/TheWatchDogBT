@@ -301,8 +301,11 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
     	                break;
 
     	            default:
-    	                // Regular device state update (should have timestamp)
+    	                // Regular device state update
     	                deviceState = received_data[0];
+    	                if (data_length >= 2) {
+    	                    deviceInfo = received_data[1];
+    	                }
     	                HAL_Delay(5);
     	                LOCKSERVICE_ForceStatusUpdate();
     	                break;
@@ -442,22 +445,23 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
     int16_t accel[3];
     LIS2DUX12_ReadAcceleration(accel);
 
-    /* Pack data into BLE notification — 13 bytes */
-    a_LOCKSERVICE_UpdateCharData[0] = deviceState;
-    a_LOCKSERVICE_UpdateCharData[1] = deviceBattery;
-    a_LOCKSERVICE_UpdateCharData[2] = (uint8_t)(current_mA & 0xFF);
-    a_LOCKSERVICE_UpdateCharData[3] = (uint8_t)((current_mA >> 8) & 0xFF);
-    a_LOCKSERVICE_UpdateCharData[4] = (uint8_t)(voltage_mV & 0xFF);
-    a_LOCKSERVICE_UpdateCharData[5] = (uint8_t)((voltage_mV >> 8) & 0xFF);
-    a_LOCKSERVICE_UpdateCharData[6] = lis2dux12_app_get_cached_mlc_state();
+    /* Pack data into BLE notification — 14 bytes */
+    a_LOCKSERVICE_UpdateCharData[0]  = deviceState;
+    a_LOCKSERVICE_UpdateCharData[1]  = deviceBattery;
+    a_LOCKSERVICE_UpdateCharData[2]  = (uint8_t)(current_mA & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[3]  = (uint8_t)((current_mA >> 8) & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[4]  = (uint8_t)(voltage_mV & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[5]  = (uint8_t)((voltage_mV >> 8) & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[6]  = lis2dux12_app_get_cached_mlc_state();
     a_LOCKSERVICE_UpdateCharData[7]  = (uint8_t)(accel[0] & 0xFF);
     a_LOCKSERVICE_UpdateCharData[8]  = (uint8_t)((accel[0] >> 8) & 0xFF);
     a_LOCKSERVICE_UpdateCharData[9]  = (uint8_t)(accel[1] & 0xFF);
     a_LOCKSERVICE_UpdateCharData[10] = (uint8_t)((accel[1] >> 8) & 0xFF);
     a_LOCKSERVICE_UpdateCharData[11] = (uint8_t)(accel[2] & 0xFF);
     a_LOCKSERVICE_UpdateCharData[12] = (uint8_t)((accel[2] >> 8) & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[13] = deviceInfo;
 
-    lockservice_notification_data.Length = 13;
+    lockservice_notification_data.Length = 14;
   /* USER CODE END Service1Char2_NS_1*/
 
   if (notification_on_off != Devicestatus_NOTIFICATION_OFF && LOCKSERVICE_APP_Context.ConnectionHandle != 0xFFFF)

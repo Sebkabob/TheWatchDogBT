@@ -86,12 +86,14 @@ int lis2dux12_app_mlc_status_changed(void);
  *   1 = Door Open  (displaced from reference, not moving)
  *   2 = In Motion  (MLC)
  *   3 = Shaken     (MLC)
+ *   0xFE = Stabilizing (waiting for stillness before arming)
  *   0xFF = Unknown
  ***************************************************************************/
 #define CACHED_STATE_STATIONARY     0
 #define CACHED_STATE_DOOR_OPEN      1
 #define CACHED_STATE_IN_MOTION      2
 #define CACHED_STATE_SHAKEN         3
+#define CACHED_STATE_STABILIZING    0xFE
 
 /**
  * @brief  Update the cached MLC state (call after reading MLC output).

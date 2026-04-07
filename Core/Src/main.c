@@ -210,6 +210,15 @@ int main(void)
         last_battery_check = HAL_GetTick();
         if (!PowerMgmt_IsLowPower()) {
             BATTERY_UpdateState();
+        }
+    }
+
+    /* BLE status update: 20ms (~50Hz) in high-perf mode, 1000ms otherwise */
+    static uint32_t last_status_send = 0;
+    uint32_t status_interval = GET_HIGHPERF_BIT(deviceInfo) ? 20 : 1000;
+    if (HAL_GetTick() - last_status_send >= status_interval) {
+        last_status_send = HAL_GetTick();
+        if (!PowerMgmt_IsLowPower()) {
             LOCKSERVICE_SendStatusUpdate();
         }
     }

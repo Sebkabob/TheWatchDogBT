@@ -164,7 +164,7 @@ void State_Disconnected_Idle_Loop(void)
         if (IS_CHARGING_NOW()) {
             LED_Pulse(4000, 255, 100, 0, 255); /* orange pulse - charging */
         } else {
-            LED_Pulse(4000, 0, 255, 0, 255);   /* green pulse - charged */
+            LED_Solid(0, 255, 0, 255);          /* green solid - charged */
         }
     } else {
         /* === No cable, no connection: enter low power === */
@@ -200,7 +200,7 @@ void State_Connected_Idle_Loop(void)
         if (IS_CHARGING_NOW()) {
             LED_Pulse(4000, 255, 100, 0, 255); /* orange pulse - charging */
         } else {
-            LED_Pulse(4000, 0, 255, 0, 255);   /* green pulse - charged */
+            LED_Solid(0, 255, 0, 255);          /* green solid - charged */
         }
     } else if (GET_LIGHTS_BIT(deviceState)) {
         LED_Rainbow(5, 255);  /* rainbow - normal */
@@ -213,13 +213,74 @@ void State_Connected_Idle_Loop(void)
         StateMachine_ChangeState(STATE_DISCONNECTED_IDLE);
     }
 
-    /* State Switch - LOCKED */
+    /* State Switch - STABILIZING (wait for stillness before locking) */
     if (GET_ARMED_BIT(deviceState)) {
         LIS2DUX12_ClearMotion();
         DoorDetector_SetSensitivity(GET_SENSITIVITY(deviceState));
+        lis2dux12_app_set_door_state(CACHED_STATE_STABILIZING);
+        StateMachine_ChangeState(STATE_STABILIZING);
+    }
+}
+
+void State_Stabilizing_Loop(void)
+{
+    /* Disarmed — cancel stabilizing */
+    if (!GET_ARMED_BIT(deviceState)) {
+        lis2dux12_app_set_door_state(0);
+        StateMachine_ChangeState(STATE_CONNECTED_IDLE);
+        LED_Off();
+        return;
+    }
+
+    /* Disconnected while stabilizing — keep going, we're still armed */
+    if (!connectionStatus) {
+        /* but don't sleep yet, we need the sensor */
+    }
+
+    /* Pulsing blue LED = stabilizing */
+    if (GET_LIGHTS_BIT(deviceState)) {
+        LED_Pulse(1000, 0, 0, 255, 255);
+    } else {
+        LED_Off();
+    }
+
+    static uint32_t last_still_time = 0;
+    static uint8_t  stabilize_started = 0;
+
+    /* First call after entering this state — reset timer */
+    if (!stabilize_started) {
+        last_still_time = HAL_GetTick();
+        stabilize_started = 1;
+        LIS2DUX12_ClearMotion();
+    }
+
+    /* Check MLC interrupt for motion */
+    if (LIS2DUX12_IsMotionDetected()) {
+        uint8_t mlc_out;
+        lis2dux12_app_get_mlc_output(&mlc_out);
+        if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN) {
+            last_still_time = HAL_GetTick();  /* reset timer */
+        }
+    }
+
+    /* Poll MLC at 10 Hz to catch motion the interrupt might miss */
+    static uint32_t last_poll = 0;
+    if (HAL_GetTick() - last_poll >= 100) {
+        last_poll = HAL_GetTick();
+        uint8_t mlc_out;
+        if (lis2dux12_app_get_mlc_output(&mlc_out) == 0) {
+            if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN) {
+                last_still_time = HAL_GetTick();
+            }
+        }
+    }
+
+    /* 3 seconds of no motion — capture reference and lock */
+    if (HAL_GetTick() - last_still_time >= 3000) {
         DoorDetector_CaptureReference();
+        lis2dux12_app_set_door_state(0);
+        stabilize_started = 0;
         StateMachine_ChangeState(STATE_LOCKED);
-        HAL_Delay(10);
     }
 }
 
@@ -238,51 +299,100 @@ void State_Locked_Loop(void)
         LED_Off();
     }
 
-    /* MLC interrupt fired — read what the sensor classified */
+    /*--------------------------------------------------------------
+     * Deferred motion alert.
+     * When MLC says "in motion" we trigger the alarm immediately
+     * but DEFER the log/alert.  When it settles we check the door:
+     *   - door moved  → log DOOR_OPENED  (suppress in-motion)
+     *   - door same   → log the pending motion type
+     * Impact/freefall are always sent immediately (discrete events).
+     *--------------------------------------------------------------*/
+    static uint8_t      motion_pending = 0;
+    static MotionType_t pending_type   = MOTION_TYPE_NONE;
+    static uint32_t     motion_pending_tick = 0;
+
+    /* MLC interrupt fired — read classification */
     if (LIS2DUX12_IsMotionDetected()) {
         uint8_t mlc_out;
         lis2dux12_app_get_mlc_output(&mlc_out);
         lis2dux12_app_update_cached_state(mlc_out);
 
-        MotionType_t motionType = MOTION_TYPE_NONE;
-        if (mlc_out == MLC_STATE_IN_MOTION)  motionType = MOTION_TYPE_IN_MOTION;
-        if (mlc_out == MLC_STATE_SHAKEN)     motionType = MOTION_TYPE_SHAKEN;
-
-        /* Also check FSM (impact/freefall) opportunistically */
+        /* Impact / freefall — always send immediately */
         uint8_t impact, freefall;
         lis2dux12_app_check_fsm_events(&impact, &freefall);
-        if (impact)   motionType = MOTION_TYPE_IMPACT;
-        if (freefall) motionType = MOTION_TYPE_FREEFALL;
-
-        if (motionType != MOTION_TYPE_NONE) {
+        if (impact || freefall) {
+            MotionType_t mt = impact ? MOTION_TYPE_IMPACT : MOTION_TYPE_FREEFALL;
             stayAwakeFlag = 1;
             if (GET_LOGGING_BIT(deviceState)) {
-                MotionLogger_LogEvent(motionType);
-                LOCKSERVICE_SendMotionAlert(motionType);
+                MotionLogger_LogEvent(mt);
+                LOCKSERVICE_SendMotionAlert(mt);
             }
-
             if (!GET_SILENCE_BIT(deviceState)) {
                 StateMachine_ChangeState(STATE_ALARM_ACTIVE);
             }
         }
 
-        /* MLC returned to stationary → check if the door position changed.
-         * The gravity vector is clean here (no dynamic accel). */
+        /* Motion started — defer the alert, but trigger alarm now */
+        if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN) {
+            if (!motion_pending) {
+                motion_pending = 1;
+                pending_type = (mlc_out == MLC_STATE_SHAKEN)
+                    ? MOTION_TYPE_SHAKEN : MOTION_TYPE_IN_MOTION;
+                motion_pending_tick = HAL_GetTick();
+            }
+            stayAwakeFlag = 1;
+            if (!GET_SILENCE_BIT(deviceState)) {
+                StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+            }
+        }
+
+        /* MLC returned to stationary — resolve the pending motion */
         if (mlc_out == MLC_STATE_STATIONARY_UPRIGHT ||
             mlc_out == MLC_STATE_STATIONARY_NOT_UPRIGHT) {
             uint8_t door_evt = DoorDetector_Check();
-            if (door_evt != DOOR_EVENT_NONE && GET_LOGGING_BIT(deviceState)) {
-                MotionLogger_LogEvent((MotionType_t)door_evt);
-                LOCKSERVICE_SendMotionAlert(door_evt);
+            if (door_evt == DOOR_EVENT_OPENED) {
+                /* Door moved — this IS the event, suppress in-motion */
+                motion_pending = 0;
+                stayAwakeFlag = 1;
+                if (GET_LOGGING_BIT(deviceState)) {
+                    MotionLogger_LogEvent((MotionType_t)door_evt);
+                    LOCKSERVICE_SendMotionAlert(door_evt);
+                }
+                if (!GET_SILENCE_BIT(deviceState)) {
+                    StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+                }
+            } else if (door_evt == DOOR_EVENT_CLOSED) {
+                motion_pending = 0;
+                if (GET_LOGGING_BIT(deviceState)) {
+                    MotionLogger_LogEvent((MotionType_t)door_evt);
+                    LOCKSERVICE_SendMotionAlert(door_evt);
+                }
+            } else if (motion_pending) {
+                /* Door didn't move — send the deferred motion alert */
+                if (GET_LOGGING_BIT(deviceState)) {
+                    MotionLogger_LogEvent(pending_type);
+                    LOCKSERVICE_SendMotionAlert(pending_type);
+                }
+                motion_pending = 0;
             }
             lis2dux12_app_set_door_state(
                 DoorDetector_IsOpen() ? CACHED_STATE_DOOR_OPEN : 0);
         }
     }
 
-    /* Poll every 500 ms — FSM + door position */
+    /* Timeout: if motion pending >3s without settling, send it anyway
+     * (e.g. device picked up and carried away — never goes stationary) */
+    if (motion_pending && (HAL_GetTick() - motion_pending_tick > 3000)) {
+        if (GET_LOGGING_BIT(deviceState)) {
+            MotionLogger_LogEvent(pending_type);
+            LOCKSERVICE_SendMotionAlert(pending_type);
+        }
+        motion_pending = 0;
+    }
+
+    /* 100 ms poll (~10 Hz) — FSM + door position */
     static uint32_t last_poll = 0;
-    if (HAL_GetTick() - last_poll > 500) {
+    if (HAL_GetTick() - last_poll >= 100) {
         last_poll = HAL_GetTick();
 
         /* FSM poll — INT2 (impact/freefall) is not connected */
@@ -300,13 +410,13 @@ void State_Locked_Loop(void)
             }
         }
 
-        /* Door position check — only when MLC says stationary.
-         * Catches slow drift the MLC interrupt might miss. */
+        /* Door position check — only when MLC says stationary */
         uint8_t cached = lis2dux12_app_get_cached_mlc_state();
         if (cached == CACHED_STATE_STATIONARY ||
             cached == CACHED_STATE_DOOR_OPEN) {
             uint8_t door_evt = DoorDetector_Check();
             if (door_evt == DOOR_EVENT_OPENED) {
+                motion_pending = 0;
                 stayAwakeFlag = 1;
                 if (GET_LOGGING_BIT(deviceState)) {
                     MotionLogger_LogEvent((MotionType_t)door_evt);
@@ -316,6 +426,7 @@ void State_Locked_Loop(void)
                     StateMachine_ChangeState(STATE_ALARM_ACTIVE);
                 }
             } else if (door_evt == DOOR_EVENT_CLOSED) {
+                motion_pending = 0;
                 if (GET_LOGGING_BIT(deviceState)) {
                     MotionLogger_LogEvent((MotionType_t)door_evt);
                     LOCKSERVICE_SendMotionAlert(door_evt);
@@ -484,7 +595,7 @@ void StateMachine_ChangeState(SystemState_t newState)
         currentState = newState;
         stateEntryTime = HAL_GetTick();
 
-        if (newState == STATE_LOCKED || newState == STATE_ALARM_ACTIVE) {
+        if (newState == STATE_STABILIZING || newState == STATE_LOCKED || newState == STATE_ALARM_ACTIVE) {
             SET_ARMED_BIT(deviceState, 1);
         } else {
             SET_ARMED_BIT(deviceState, 0);
@@ -554,6 +665,9 @@ void StateMachine_Run(void)
             break;
         case STATE_CONNECTED_IDLE:
             State_Connected_Idle_Loop();
+            break;
+        case STATE_STABILIZING:
+            State_Stabilizing_Loop();
             break;
         case STATE_LOCKED:
             State_Locked_Loop();

@@ -91,6 +91,99 @@ void LIS2DUX12_ConfigureWakeup(void) {
     __HAL_GPIO_EXTI_CLEAR_IT(ACCEL_INT_GPIO_Port, ACCEL_INT_Pin);
 }
 
+/**
+ * @brief  Power down the LIS2DUX12 completely (ODR=0, ~0.4 µA).
+ *         No interrupts will fire. Call BEFORE gating I2C.
+ * @return 0 on success, non-zero on I2C error
+ */
+int32_t LIS2DUX12_PowerDown(void)
+{
+    lis2dux12_md_t mode = {
+        .odr = LIS2DUX12_OFF,
+        .fs  = LIS2DUX12_4g,
+        .bw  = LIS2DUX12_ODR_div_2,
+    };
+    return lis2dux12_mode_set(&dev_ctx, &mode);
+}
+
+/**
+ * @brief  Reconfigure LIS2DUX12 into ultra-low-power wake-up-only mode.
+ *
+ * Replaces the full MLC/FSM configuration with a minimal setup:
+ *   - 1.6 Hz ultra-low-power ODR (~1.5 µA)
+ *   - Hardware wake-up interrupt on INT1 (any significant motion)
+ *   - No MLC, no FSM
+ *
+ * Call BEFORE gating I2C. After waking, call LIS2DUX12_Init() to
+ * reload the full MLC asset-tracking configuration.
+ *
+ * @return 0 on success, non-zero on I2C error
+ */
+int32_t LIS2DUX12_EnterUltraLowPowerWakeup(void)
+{
+    int32_t ret;
+
+    /* 1. Software reset to clear MLC/FSM configuration */
+    ret = lis2dux12_init_set(&dev_ctx, LIS2DUX12_RESET);
+    if (ret != 0) return ret;
+
+    lis2dux12_status_t status;
+    uint32_t timeout = HAL_GetTick() + 100;
+    do {
+        lis2dux12_status_get(&dev_ctx, &status);
+        if (HAL_GetTick() > timeout) return -1;
+    } while (status.sw_reset);
+
+    HAL_Delay(5);
+
+    /* 2. Set sensor mode: 1.6 Hz ULP, +/-4g (ample for wake detection) */
+    lis2dux12_md_t mode = {
+        .odr = LIS2DUX12_1Hz6_ULP,
+        .fs  = LIS2DUX12_4g,
+        .bw  = LIS2DUX12_ODR_div_2,
+    };
+    ret = lis2dux12_mode_set(&dev_ctx, &mode);
+    if (ret != 0) return ret;
+
+    /* 3. Configure wake-up detection:
+     *    - threshold ~250 mg (wake_ths=4, weight=0 → 1 LSB = FS/64 = 62.5mg)
+     *    - wake duration = 1 ODR sample
+     *    - sleep enabled so sensor stays in low-current idle until motion */
+    lis2dux12_wakeup_config_t wkup_cfg = {0};
+    wkup_cfg.wake_ths        = 4;                     /* ~250 mg threshold */
+    wkup_cfg.wake_ths_weight = 0;                     /* coarse: FS/64 per LSB */
+    wkup_cfg.wake_dur        = LIS2DUX12_1_ODR;
+    wkup_cfg.sleep_dur       = 1;                     /* 512 ODR cycles to re-enter sleep */
+    wkup_cfg.wake_enable     = LIS2DUX12_SLEEP_ON;
+    wkup_cfg.inact_odr       = LIS2DUX12_ODR_1_6_HZ; /* 1.6 Hz during inactivity */
+    ret = lis2dux12_wakeup_config_set(&dev_ctx, wkup_cfg);
+    if (ret != 0) return ret;
+
+    /* 4. Route wake-up interrupt to INT1 (PB15) */
+    lis2dux12_pin_int_route_t int1_route = {0};
+    int1_route.wake_up = 1;
+    ret = lis2dux12_pin_int1_route_set(&dev_ctx, &int1_route);
+    if (ret != 0) return ret;
+
+    /* 5. Enable interrupts, pulsed mode */
+    lis2dux12_int_config_t int_cfg = {0};
+    int_cfg.int_cfg = LIS2DUX12_INT_LEVEL;
+    int_cfg.sleep_status_on_int = 0;
+    int_cfg.dis_rst_lir_all_int = 0;
+    ret = lis2dux12_int_config_set(&dev_ctx, &int_cfg);
+    if (ret != 0) return ret;
+
+    /* 6. Configure PB15 as DEEPSTOP wakeup source */
+    LIS2DUX12_ConfigureWakeup();
+
+    /* Clear any pending interrupt */
+    lis2dux12_all_sources_t all_src;
+    lis2dux12_all_sources_get(&dev_ctx, &all_src);
+    motion_detected_flag = 0;
+
+    return 0;
+}
+
 /***************************************************************************
  * UTILITY FUNCTIONS
  ***************************************************************************/

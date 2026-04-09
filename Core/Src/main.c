@@ -213,9 +213,9 @@ int main(void)
         }
     }
 
-    /* BLE status update: 20ms (~50Hz) in high-perf mode, 1000ms otherwise */
+    /* BLE status update: 20ms (~50Hz) in high-perf mode, 500ms otherwise */
     static uint32_t last_status_send = 0;
-    uint32_t status_interval = GET_HIGHPERF_BIT(deviceInfo) ? 20 : 1000;
+    uint32_t status_interval = GET_HIGHPERF_BIT(deviceInfo) ? 20 : 500;
     if (HAL_GetTick() - last_status_send >= status_interval) {
         last_status_send = HAL_GetTick();
         if (!PowerMgmt_IsLowPower()) {

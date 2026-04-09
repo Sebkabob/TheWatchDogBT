@@ -47,22 +47,37 @@ static void Gate_I2C(void)
     HAL_I2C_DeInit(&hi2c1);
     __HAL_RCC_I2C1_CLK_DISABLE();
 
+    /* Power off the I2C bus, then set the control pin to analog */
     HAL_GPIO_WritePin(I2C_POWER_GPIO_Port, I2C_POWER_Pin, GPIO_PIN_RESET);
 
     GPIO_InitTypeDef gpio = {0};
-    gpio.Pin  = GPIO_PIN_0 | GPIO_PIN_1;
     gpio.Mode = GPIO_MODE_ANALOG;
     gpio.Pull = GPIO_NOPULL;
+
+    /* I2C data lines to analog */
+    gpio.Pin  = GPIO_PIN_0 | GPIO_PIN_1;
     HAL_GPIO_Init(GPIOA, &gpio);
+
+    /* I2C power control pin (PA10) to analog */
+    gpio.Pin = I2C_POWER_Pin;
+    HAL_GPIO_Init(I2C_POWER_GPIO_Port, &gpio);
 }
 
 static void Gate_EEPROM(void)
 {
     HAL_GPIO_WritePin(EEPROM_POWER_GPIO_Port, EEPROM_POWER_Pin, GPIO_PIN_RESET);
+
+    /* Set EEPROM power pin (PB0) to analog */
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin  = EEPROM_POWER_Pin;
+    gpio.Mode = GPIO_MODE_ANALOG;
+    gpio.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(EEPROM_POWER_GPIO_Port, &gpio);
 }
 
 /**
  * @brief Stop LED PWM (TIM2) and buzzer (TIM16), de-init both.
+ *        Set all LED and buzzer pins to analog to prevent leakage.
  */
 static void Gate_Timers(void)
 {
@@ -82,8 +97,17 @@ static void Gate_Timers(void)
     HAL_TIM_Base_DeInit(&htim16);
     __HAL_RCC_TIM16_CLK_DISABLE();
 
-    /* Ensure PB6 is LOW (MOSFET off) */
+    /* Ensure PB6 is LOW (MOSFET off) before going analog */
     HAL_GPIO_WritePin(BUZZ_1_GPIO_Port, BUZZ_1_Pin, GPIO_PIN_RESET);
+
+    /* Set LED and buzzer pins to analog to prevent leakage.
+     * PB2/PB3 were AF push-pull for TIM2 — with the timer clock off,
+     * they default LOW which turns on the active-low LEDs. */
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Mode = GPIO_MODE_ANALOG;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Pin  = LED1_Pin | LED2_Pin | LED3_Pin | BUZZ_1_Pin;
+    HAL_GPIO_Init(GPIOB, &gpio);
 }
 
 /**
@@ -263,9 +287,20 @@ void PowerMgmt_RestoreAll(void)
 {
     if (!peripherals_gated) return;
 
-    /* --- Power up I2C bus FIRST (PA10 HIGH) --- */
+    /* --- Restore I2C power pin (PA10) as output FIRST, then drive HIGH --- */
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+    gpio.Pull  = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    gpio.Pin   = I2C_POWER_Pin;
+    HAL_GPIO_Init(I2C_POWER_GPIO_Port, &gpio);
     HAL_GPIO_WritePin(I2C_POWER_GPIO_Port, I2C_POWER_Pin, GPIO_PIN_SET);
     HAL_Delay(5);
+
+    /* --- Restore EEPROM power pin (PB0) as output, keep OFF --- */
+    gpio.Pin = EEPROM_POWER_Pin;
+    HAL_GPIO_Init(EEPROM_POWER_GPIO_Port, &gpio);
+    HAL_GPIO_WritePin(EEPROM_POWER_GPIO_Port, EEPROM_POWER_Pin, GPIO_PIN_RESET);
 
     /* --- Re-enable clocks --- */
     __HAL_RCC_TIM2_CLK_ENABLE();
@@ -276,11 +311,14 @@ void PowerMgmt_RestoreAll(void)
 
     /* --- Reinitialise peripherals --- */
     MX_I2C1_Reinit();
-    MX_TIM2_Reinit();
+    MX_TIM2_Reinit();   /* also calls HAL_TIM_MspPostInit -> restores PB2/PB3 AF */
     MX_TIM16_Reinit();
 
-    /* --- Re-init buzzer safe state --- */
+    /* --- Re-init buzzer safe state (restores PB6) --- */
     BUZZER_Init();
+
+    /* --- Re-init blue LED soft PWM (restores PB1) --- */
+    LED_SoftPWM_Init();
 
     /* --- Restore GPIO --- */
     Restore_GPIO_Outputs();

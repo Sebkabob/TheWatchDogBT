@@ -38,6 +38,22 @@ void HAL_GPIO_EXTI_Callback(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin) {
 }
 
 /***************************************************************************
+ * DEEPSTOP WAKEUP CALLBACK
+ * On STM32WB0x, DEEPSTOP wakeup goes through the PWR controller —
+ * NOT through EXTI.  So HAL_GPIO_EXTI_Callback never fires.
+ * The HAL calls this weak-override after context restore to let us
+ * set the flags that the main loop checks.
+ ***************************************************************************/
+void HAL_PWR_WKUPx_Callback(uint32_t WakeupIOs) {
+    if (WakeupIOs & PWR_WAKEUP_PB15) {
+        motion_detected_flag = 1;
+    }
+    if (WakeupIOs & PWR_WAKEUP_PB4) {
+        CablePlug_IRQCallback();
+    }
+}
+
+/***************************************************************************
  * PUBLIC API — Motion Detection
  ***************************************************************************/
 
@@ -87,7 +103,7 @@ void LIS2DUX12_ConfigureWakeup(void) {
     LL_PWR_EnableWakeUpPin(LL_PWR_WAKEUP_PB15);
     LL_PWR_SetWakeUpPinPolarityHigh(LL_PWR_WAKEUP_PB15);
 
-    __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF0);
+    __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF19);   /* WUF19 = PB15 (was WUF0 = PB0) */
     __HAL_GPIO_EXTI_CLEAR_IT(ACCEL_INT_GPIO_Port, ACCEL_INT_Pin);
 }
 
@@ -146,11 +162,11 @@ int32_t LIS2DUX12_EnterUltraLowPowerWakeup(void)
     if (ret != 0) return ret;
 
     /* 3. Configure wake-up detection:
-     *    - threshold ~250 mg (wake_ths=4, weight=0 → 1 LSB = FS/64 = 62.5mg)
+     *    - threshold ~62.5 mg (wake_ths=1, weight=0 → 1 LSB = FS/64 = 62.5mg)
      *    - wake duration = 1 ODR sample
      *    - sleep enabled so sensor stays in low-current idle until motion */
     lis2dux12_wakeup_config_t wkup_cfg = {0};
-    wkup_cfg.wake_ths        = 4;                     /* ~250 mg threshold */
+    wkup_cfg.wake_ths        = 1;                     /* ~62.5 mg — detect slightest motion */
     wkup_cfg.wake_ths_weight = 0;                     /* coarse: FS/64 per LSB */
     wkup_cfg.wake_dur        = LIS2DUX12_1_ODR;
     wkup_cfg.sleep_dur       = 1;                     /* 512 ODR cycles to re-enter sleep */
@@ -165,9 +181,13 @@ int32_t LIS2DUX12_EnterUltraLowPowerWakeup(void)
     ret = lis2dux12_pin_int1_route_set(&dev_ctx, &int1_route);
     if (ret != 0) return ret;
 
-    /* 5. Enable interrupts, pulsed mode */
+    /* 5. Enable interrupts, latched mode.
+     *    Latched keeps INT1 HIGH until status is read via I2C,
+     *    ensuring the MCU reliably wakes from DEEPSTOP even for
+     *    brief motion events.  The interrupt is cleared by
+     *    lis2dux12_all_sources_get() before we gate I2C. */
     lis2dux12_int_config_t int_cfg = {0};
-    int_cfg.int_cfg = LIS2DUX12_INT_LEVEL;
+    int_cfg.int_cfg = LIS2DUX12_INT_LATCHED;
     int_cfg.sleep_status_on_int = 0;
     int_cfg.dis_rst_lir_all_int = 0;
     ret = lis2dux12_int_config_set(&dev_ctx, &int_cfg);

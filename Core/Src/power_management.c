@@ -63,6 +63,27 @@ static void Gate_I2C(void)
     HAL_GPIO_Init(I2C_POWER_GPIO_Port, &gpio);
 }
 
+/**
+ * @brief Gate I2C peripheral but keep the I2C bus powered.
+ *        Used in armed mode so the accelerometer retains its
+ *        ULP wake-up configuration and can still fire INT1.
+ */
+static void Gate_I2C_KeepPower(void)
+{
+    HAL_I2C_DeInit(&hi2c1);
+    __HAL_RCC_I2C1_CLK_DISABLE();
+
+    /* I2C data lines to analog — external pull-ups hold them HIGH,
+     * no current flows since nothing is driving the bus. */
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Mode = GPIO_MODE_ANALOG;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Pin  = GPIO_PIN_0 | GPIO_PIN_1;
+    HAL_GPIO_Init(GPIOA, &gpio);
+
+    /* Keep I2C_POWER_Pin (PA10) HIGH so the accelerometer stays powered */
+}
+
 static void Gate_EEPROM(void)
 {
     HAL_GPIO_WritePin(EEPROM_POWER_GPIO_Port, EEPROM_POWER_Pin, GPIO_PIN_RESET);
@@ -279,10 +300,15 @@ void PowerMgmt_EnterLowPower_Armed(void)
 
     /* Put accel into 1.6 Hz ULP wake-up mode BEFORE gating I2C.
      * This drops accel current from ~20 µA to ~1.5 µA while still
-     * allowing motion to fire INT1 and wake the MCU for assessment. */
+     * allowing motion to fire INT1 and wake the MCU for assessment.
+     *
+     * IMPORTANT: Use Gate_I2C_KeepPower() here — NOT Gate_I2C().
+     * Gate_I2C() kills VDD to the accelerometer via I2C_POWER_Pin,
+     * which destroys the ULP wake-up configuration we just loaded.
+     * The sensor must stay powered to detect motion and fire INT1. */
     LIS2DUX12_EnterUltraLowPowerWakeup();
 
-    Gate_I2C();
+    Gate_I2C_KeepPower();
     Gate_EEPROM();
     Gate_UART();
     Keep_AccelInterrupt();   /* keep PB15 active for wake-on-motion */

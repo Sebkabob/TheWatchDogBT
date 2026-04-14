@@ -276,17 +276,15 @@ void PowerMgmt_EnterLowPower_Idle(void)
 
     Gate_Timers();
 
-    /* Power down accel completely (ODR=0, ~0.4 µA).
-     * No motion wake needed in idle — only cable or BLE wakes us. */
-    LIS2DUX12_PowerDown();
+    /* Reset + power down the accel (~0.4 µA).  No motion detection needed
+     * in idle — we only need the cable-plug interrupt to wake us. */
+    //LIS2DUX12_ResetAndPowerDown();
 
-    Gate_I2C();
+    Gate_I2C();              /* kill I2C bus power — accel is off */
     Gate_EEPROM();
     Gate_UART();
-    Gate_AccelInterrupt();   /* PB15 to analog — no wake-on-motion in idle */
+    Gate_AccelInterrupt();   /* no motion detection in idle */
     Gate_GPIO_Outputs();
-
-    /* Keep PB4 (cable detect) active so plugging in wakes us */
     Keep_CablePlugInterrupt();
 
     peripherals_gated = 1;

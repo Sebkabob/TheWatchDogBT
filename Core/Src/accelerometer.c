@@ -123,6 +123,49 @@ int32_t LIS2DUX12_PowerDown(void)
 }
 
 /**
+ * @brief  Software-reset the LIS2DUX12 then power down (ODR=0, ~0.4 µA).
+ *
+ * Unlike plain LIS2DUX12_PowerDown(), this first performs a software
+ * reset to clear all MLC/FSM configuration.  With MLC/FSM still loaded,
+ * internal DSP blocks can draw >100 µA even at ODR=0.  The reset
+ * guarantees the sensor is in a clean, minimal-current state.
+ *
+ * No wake-up interrupts are configured — use this for idle (no motion
+ * detection needed).  Call BEFORE gating I2C.
+ *
+ * @return 0 on success, non-zero on I2C error
+ */
+int32_t LIS2DUX12_ResetAndPowerDown(void)
+{
+    int32_t ret;
+
+    /* 1. Software reset — clears MLC/FSM and all register config */
+    ret = lis2dux12_init_set(&dev_ctx, LIS2DUX12_RESET);
+    if (ret != 0) return ret;
+
+    lis2dux12_status_t status;
+    uint32_t timeout = HAL_GetTick() + 100;
+    do {
+        lis2dux12_status_get(&dev_ctx, &status);
+        if (HAL_GetTick() > timeout) return -1;
+    } while (status.sw_reset);
+
+    HAL_Delay(5);
+
+    /* 2. Set ODR=0 (power-down) — sensor draws ~0.4 µA */
+    lis2dux12_md_t mode = {
+        .odr = LIS2DUX12_OFF,
+        .fs  = LIS2DUX12_4g,
+        .bw  = LIS2DUX12_ODR_div_2,
+    };
+    ret = lis2dux12_mode_set(&dev_ctx, &mode);
+    if (ret != 0) return ret;
+
+    motion_detected_flag = 0;
+    return 0;
+}
+
+/**
  * @brief  Reconfigure LIS2DUX12 into ultra-low-power wake-up-only mode.
  *
  * Replaces the full MLC/FSM configuration with a minimal setup:

@@ -63,6 +63,12 @@ void LIS2DUX12_ConfigureWakeup(void);
 int32_t LIS2DUX12_PowerDown(void);
 
 /**
+ * @brief Software-reset then power down (~0.4 µA). Clears MLC/FSM residual config.
+ * @return 0 on success, non-zero on I2C error
+ */
+int32_t LIS2DUX12_ResetAndPowerDown(void);
+
+/**
  * @brief Reconfigure accel into ultra-low-power wake-up-only mode (~1.5 µA).
  * @details Replaces MLC/FSM with a minimal 1.6 Hz wake-up-on-motion config.
  *          Call BEFORE gating I2C. Use LIS2DUX12_Init() to restore full config.

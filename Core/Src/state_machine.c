@@ -310,6 +310,14 @@ void State_Locked_Loop(void)
         stayAwakeFlag = 1;
         motion_assessing = 1;
         motion_assess_start = HAL_GetTick();
+
+        /* Log the ULP wake event immediately.  The MLC isn't loaded
+         * until PowerMgmt_RestoreAll() finishes, so brief motions that
+         * triggered the ULP threshold but stopped before MLC can
+         * classify them would otherwise go unrecorded. */
+        if (GET_LOGGING_BIT(deviceState)) {
+            MotionLogger_LogEvent(MOTION_TYPE_IN_MOTION);
+        }
     }
 
     if (GET_LIGHTS_BIT(deviceState) && !PowerMgmt_IsLowPower()) {

@@ -195,21 +195,21 @@ int32_t LIS2DUX12_EnterUltraLowPowerWakeup(void)
 
     HAL_Delay(5);
 
-    /* 2. Set sensor mode: 1.6 Hz ULP, +/-4g (ample for wake detection) */
+    /* 2. Set sensor mode: 1.6 Hz ULP, +/-2g for maximum wake sensitivity */
     lis2dux12_md_t mode = {
         .odr = LIS2DUX12_1Hz6_ULP,
-        .fs  = LIS2DUX12_4g,
+        .fs  = LIS2DUX12_2g,
         .bw  = LIS2DUX12_ODR_div_2,
     };
     ret = lis2dux12_mode_set(&dev_ctx, &mode);
     if (ret != 0) return ret;
 
     /* 3. Configure wake-up detection:
-     *    - threshold ~62.5 mg (wake_ths=1, weight=0 → 1 LSB = FS/64 = 62.5mg)
+     *    - threshold ~31.25 mg (wake_ths=1, weight=0 → 1 LSB = FS/64 = 2000/64)
      *    - wake duration = 1 ODR sample
      *    - sleep enabled so sensor stays in low-current idle until motion */
     lis2dux12_wakeup_config_t wkup_cfg = {0};
-    wkup_cfg.wake_ths        = 1;                     /* ~62.5 mg — detect slightest motion */
+    wkup_cfg.wake_ths        = 1;                     /* ~31.25 mg — maximum sensitivity */
     wkup_cfg.wake_ths_weight = 0;                     /* coarse: FS/64 per LSB */
     wkup_cfg.wake_dur        = LIS2DUX12_1_ODR;
     wkup_cfg.sleep_dur       = 1;                     /* 512 ODR cycles to re-enter sleep */

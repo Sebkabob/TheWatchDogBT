@@ -357,6 +357,12 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification)
       StateMachine_UpdateBLEActivity();
       connectionStatus = 1;
       LOCKSERVICE_ForceStatusUpdate();  // Force send on connection
+
+      /* If events were logged while disconnected, notify the app
+       * so it can pull them via the existing request/response protocol. */
+      if (MotionLogger_GetEventCount() > 0) {
+          LOCKSERVICE_SendEventCount();
+      }
       /* USER CODE END Service1_APP_CENTR_CONN_HANDLE_EVT */
       break;
     case LOCKSERVICE_DISCON_HANDLE_EVT :

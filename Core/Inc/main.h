@@ -68,28 +68,29 @@ void MX_USART1_UART_Init(void);
 #define LED1_GPIO_Port GPIOB
 #define LED2_Pin GPIO_PIN_2
 #define LED2_GPIO_Port GPIOB
-#define LED3_Pin GPIO_PIN_1
-#define LED3_GPIO_Port GPIOB
-#define EEPROM_POWER_Pin GPIO_PIN_0
-#define EEPROM_POWER_GPIO_Port GPIOB
+#define BUZZ_Pin GPIO_PIN_0
+#define BUZZ_GPIO_Port GPIOB
 #define GPOUT_Pin GPIO_PIN_8
 #define GPOUT_GPIO_Port GPIOA
 #define I2C_POWER_Pin GPIO_PIN_10
 #define I2C_POWER_GPIO_Port GPIOA
+#define STAT_Pin GPIO_PIN_11
+#define STAT_GPIO_Port GPIOA
 #define ACCEL_INT_Pin GPIO_PIN_15
 #define ACCEL_INT_GPIO_Port GPIOB
-#define BUZZ_1_Pin GPIO_PIN_6
-#define BUZZ_1_GPIO_Port GPIOB
+#define LED3_Pin GPIO_PIN_7
+#define LED3_GPIO_Port GPIOB
+#define EEPROM_POW_Pin GPIO_PIN_6
+#define EEPROM_POW_GPIO_Port GPIOB
+#define DEBUG_GPIO_Pin GPIO_PIN_5
+#define DEBUG_GPIO_GPIO_Port GPIOB
 #define BQ251_PG_Pin GPIO_PIN_4
 #define BQ251_PG_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
-#define BQ251_STAT_Pin GPIO_PIN_9
-#define BQ251_STAT_GPIO_Port GPIOA
-
 #define IS_CABLE_PLUGGED()  (HAL_GPIO_ReadPin(BQ251_PG_GPIO_Port, BQ251_PG_Pin) == GPIO_PIN_RESET)
-#define IS_CHARGING_NOW()   (HAL_GPIO_ReadPin(BQ251_STAT_GPIO_Port, BQ251_STAT_Pin) == GPIO_PIN_RESET)
+#define IS_CHARGING_NOW()   (HAL_GPIO_ReadPin(STAT_GPIO_Port, STAT_Pin) == GPIO_PIN_RESET)
 
 /* USER CODE END Private defines */
 

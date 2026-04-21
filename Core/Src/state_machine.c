@@ -4,10 +4,11 @@
  *
  * Main code loop with melody-duration-based alarm timeout
  *
- * NEW PCB changes:
- *   - Charging detect: BQ251_STAT (PA9) LOW = charging
- *   - Cable detect:    BQ251_PG   (PB4) LOW = cable plugged in
+ * V2 PCB:
+ *   - Charging detect: STAT       (PA11) LOW = charging
+ *   - Cable detect:    BQ251_PG   (PB4)  LOW = cable plugged in
  *   - Accel interrupt: ACCEL_INT  (PB15)
+ *   - Debug hold:      DEBUG_GPIO (PB5)  HIGH = stay awake
  *
  * LOW POWER FIX:
  *   - Enter PowerMgmt_EnterLowPower_Idle when disconnected + no cable

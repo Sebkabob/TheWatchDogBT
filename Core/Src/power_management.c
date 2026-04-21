@@ -4,17 +4,20 @@
  *
  * Peripheral gating for low-power advertising states.
  *
- * BUZZER FIX: TIM2 is LED-only. TIM16 is buzzer-only.
- *             Both are gated/restored independently.
- *
- * LOW POWER FIX:
- *   - Also gates USART1 clock if it was left enabled
- *   - Sets PA9 (BQ251_STAT) and PB14 (USART1_RX) to analog during LP
- *   - Restores PA9 as input on wake
+ * V2 PCB pin changes:
+ *   - Buzzer: PB0, TIM16_CH1 HW PWM (was PB6 GPIO toggle)
+ *   - LED3:   PB7, TIM2_CH2 HW PWM (was PB1 SW PWM)
+ *   - EEPROM: PB6, GPIO output (was PB0)
+ *   - STAT:   PA11, GPIO input (was PA9)
+ *   - DEBUG:  PB5, EXTI rising, pulldown — holds device awake while HIGH
  *
  * CABLE PLUG WAKEUP:
  *   - PB4 (BQ251_PG) is kept as EXTI falling-edge in ALL low-power modes
  *   - Configured as PWR wakeup pin so it can wake from DEEPSTOP
+ *
+ * DEBUG GPIO WAKEUP:
+ *   - PB5 (DEBUG_GPIO) is kept as EXTI rising-edge in ALL low-power modes
+ *   - While PB5 is HIGH, device stays awake (for debugger attachment)
  ***************************************************************************/
 
 #include "main.h"
@@ -86,14 +89,14 @@ static void Gate_I2C_KeepPower(void)
 
 static void Gate_EEPROM(void)
 {
-    HAL_GPIO_WritePin(EEPROM_POWER_GPIO_Port, EEPROM_POWER_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(EEPROM_POW_GPIO_Port, EEPROM_POW_Pin, GPIO_PIN_RESET);
 
-    /* Set EEPROM power pin (PB0) to analog */
+    /* Set EEPROM power pin (PB6) to analog */
     GPIO_InitTypeDef gpio = {0};
-    gpio.Pin  = EEPROM_POWER_Pin;
+    gpio.Pin  = EEPROM_POW_Pin;
     gpio.Mode = GPIO_MODE_ANALOG;
     gpio.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(EEPROM_POWER_GPIO_Port, &gpio);
+    HAL_GPIO_Init(EEPROM_POW_GPIO_Port, &gpio);
 }
 
 /**
@@ -114,26 +117,24 @@ static void Gate_Timers(void)
     __HAL_RCC_TIM2_CLK_DISABLE();
 
     /* De-init TIM16 (buzzer) */
-    HAL_TIM_Base_Stop_IT(&htim16);
+    HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
     HAL_TIM_Base_DeInit(&htim16);
     __HAL_RCC_TIM16_CLK_DISABLE();
 
-    /* Ensure PB6 is LOW (MOSFET off) before going analog */
-    HAL_GPIO_WritePin(BUZZ_1_GPIO_Port, BUZZ_1_Pin, GPIO_PIN_RESET);
-
-    /* Set LED and buzzer pins to analog to prevent leakage.
-     * PB2/PB3 were AF push-pull for TIM2 — with the timer clock off,
-     * they default LOW which turns on the active-low LEDs. */
+    /* Set LED pins (PB2, PB3, PB7) and buzzer pin (PB0) to analog.
+     * With timer clocks off, AF pins would default LOW which turns on
+     * the active-low LEDs — analog mode prevents this. */
     GPIO_InitTypeDef gpio = {0};
     gpio.Mode = GPIO_MODE_ANALOG;
     gpio.Pull = GPIO_NOPULL;
-    gpio.Pin  = LED1_Pin | LED2_Pin | LED3_Pin | BUZZ_1_Pin;
+    gpio.Pin  = LED1_Pin | LED2_Pin | LED3_Pin | BUZZ_Pin;
     HAL_GPIO_Init(GPIOB, &gpio);
 }
 
 /**
- * @brief Gate USART1 if its clock is still enabled.
- *        Set PA9 and PB14 to analog to prevent leakage.
+ * @brief Gate USART1 and charger status pin for low power.
+ *        PA9/PB14 to analog (UART disabled in production).
+ *        PA11 (STAT) to analog — not needed during sleep.
  */
 static void Gate_UART(void)
 {
@@ -142,14 +143,19 @@ static void Gate_UART(void)
         __HAL_RCC_USART1_CLK_DISABLE();
     }
 
-    /* PA9 (was USART1_TX or BQ251_STAT) -> analog in deep LP */
     GPIO_InitTypeDef gpio = {0};
-    gpio.Pin  = GPIO_PIN_9;
     gpio.Mode = GPIO_MODE_ANALOG;
     gpio.Pull = GPIO_NOPULL;
+
+    /* PA9 (USART1_TX) -> analog */
+    gpio.Pin  = GPIO_PIN_9;
     HAL_GPIO_Init(GPIOA, &gpio);
 
-    /* PB14 (was USART1_RX) -> analog */
+    /* PA11 (STAT / charge status) -> analog during sleep */
+    gpio.Pin  = STAT_Pin;
+    HAL_GPIO_Init(STAT_GPIO_Port, &gpio);
+
+    /* PB14 (USART1_RX) -> analog */
     gpio.Pin  = GPIO_PIN_14;
     HAL_GPIO_Init(GPIOB, &gpio);
 }
@@ -186,13 +192,33 @@ static void Keep_CablePlugInterrupt(void)
     __HAL_GPIO_EXTI_CLEAR_IT(BQ251_PG_GPIO_Port, BQ251_PG_Pin);
 
     /* Enable PB4 as a wakeup source from DEEPSTOP.
-     * Polarity LOW = wake when pin goes LOW (cable plugged in).
-     * Note: The exact LL_PWR_WAKEUP_PBx define depends on your HAL version.
-     * On STM32WB05, PB4 maps to IO9 in the wakeup pin table. */
+     * Polarity LOW = wake when pin goes LOW (cable plugged in). */
     LL_PWR_EnableWakeUpPin(LL_PWR_WAKEUP_PB4);
     LL_PWR_SetWakeUpPinPolarityLow(LL_PWR_WAKEUP_PB4);
 
-    /* Make sure GPIOB NVIC is still enabled (shared with PB15) */
+    /* Make sure GPIOB NVIC is still enabled (shared with PB15, PB5) */
+    HAL_NVIC_EnableIRQ(GPIOB_IRQn);
+}
+
+/**
+ * @brief Keep PB5 (DEBUG_GPIO) as EXTI rising-edge so debugger can wake device.
+ *        Also configure as PWR wakeup pin for DEEPSTOP wakeup.
+ */
+static void Keep_DebugGPIOInterrupt(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin  = DEBUG_GPIO_Pin;
+    gpio.Mode = GPIO_MODE_IT_RISING;
+    gpio.Pull = GPIO_PULLDOWN;
+    HAL_GPIO_Init(DEBUG_GPIO_GPIO_Port, &gpio);
+
+    __HAL_GPIO_EXTI_CLEAR_IT(DEBUG_GPIO_GPIO_Port, DEBUG_GPIO_Pin);
+
+    /* Enable PB5 as a wakeup source from DEEPSTOP.
+     * Polarity HIGH = wake when pin goes HIGH (debugger attached). */
+    LL_PWR_EnableWakeUpPin(LL_PWR_WAKEUP_PB5);
+    LL_PWR_SetWakeUpPinPolarityHigh(LL_PWR_WAKEUP_PB5);
+
     HAL_NVIC_EnableIRQ(GPIOB_IRQn);
 }
 
@@ -248,22 +274,33 @@ static void Restore_CablePlugInterrupt(void)
 }
 
 /**
- * @brief Restore PA9 as BQ251_STAT input after low power
+ * @brief Restore PA11 (STAT) as input and UART pins after low power
  */
 static void Restore_UART_Pins(void)
 {
-    /* PA9 -> input with pull-up for BQ251_STAT (open-drain from BQ25186) */
+    /* PA11 -> input for STAT (BQ25186 charge status, open-drain) */
     GPIO_InitTypeDef gpio = {0};
-    gpio.Pin  = BQ251_STAT_Pin;
+    gpio.Pin  = STAT_Pin;
     gpio.Mode = GPIO_MODE_INPUT;
-    gpio.Pull = GPIO_PULLUP;
-    HAL_GPIO_Init(BQ251_STAT_GPIO_Port, &gpio);
-
-    /* PB14 -> analog (not used unless UART is explicitly enabled) */
-    gpio.Pin  = GPIO_PIN_14;
-    gpio.Mode = GPIO_MODE_ANALOG;
     gpio.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(GPIOB, &gpio);
+    HAL_GPIO_Init(STAT_GPIO_Port, &gpio);
+
+    /* PA9 and PB14 stay analog (UART not used unless explicitly enabled) */
+}
+
+/**
+ * @brief Restore PB5 (DEBUG_GPIO) as EXTI rising-edge with pulldown after wake
+ */
+static void Restore_DebugGPIO(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin  = DEBUG_GPIO_Pin;
+    gpio.Mode = GPIO_MODE_IT_RISING;
+    gpio.Pull = GPIO_PULLDOWN;
+    HAL_GPIO_Init(DEBUG_GPIO_GPIO_Port, &gpio);
+
+    __HAL_GPIO_EXTI_CLEAR_IT(DEBUG_GPIO_GPIO_Port, DEBUG_GPIO_Pin);
+    HAL_NVIC_EnableIRQ(GPIOB_IRQn);
 }
 
 /***************************************************************************
@@ -274,18 +311,18 @@ void PowerMgmt_EnterLowPower_Idle(void)
 {
     if (peripherals_gated) return;
 
+    /* If debug pin is held HIGH, don't enter low power */
+    if (HAL_GPIO_ReadPin(DEBUG_GPIO_GPIO_Port, DEBUG_GPIO_Pin) == GPIO_PIN_SET)
+        return;
+
     Gate_Timers();
-
-    /* Reset + power down the accel (~0.4 µA).  No motion detection needed
-     * in idle — we only need the cable-plug interrupt to wake us. */
-    //LIS2DUX12_ResetAndPowerDown();
-
     Gate_I2C();              /* kill I2C bus power — accel is off */
     Gate_EEPROM();
     Gate_UART();
     Gate_AccelInterrupt();   /* no motion detection in idle */
     Gate_GPIO_Outputs();
     Keep_CablePlugInterrupt();
+    Keep_DebugGPIOInterrupt();
 
     peripherals_gated = 1;
 }
@@ -294,16 +331,15 @@ void PowerMgmt_EnterLowPower_Armed(void)
 {
     if (peripherals_gated) return;
 
+    /* If debug pin is held HIGH, don't enter low power */
+    if (HAL_GPIO_ReadPin(DEBUG_GPIO_GPIO_Port, DEBUG_GPIO_Pin) == GPIO_PIN_SET)
+        return;
+
     Gate_Timers();
 
     /* Put accel into 1.6 Hz ULP wake-up mode BEFORE gating I2C.
-     * This drops accel current from ~20 µA to ~1.5 µA while still
-     * allowing motion to fire INT1 and wake the MCU for assessment.
-     *
-     * IMPORTANT: Use Gate_I2C_KeepPower() here — NOT Gate_I2C().
-     * Gate_I2C() kills VDD to the accelerometer via I2C_POWER_Pin,
-     * which destroys the ULP wake-up configuration we just loaded.
-     * The sensor must stay powered to detect motion and fire INT1. */
+     * IMPORTANT: Use Gate_I2C_KeepPower() — NOT Gate_I2C().
+     * Gate_I2C() kills VDD to the accelerometer, destroying the ULP config. */
     LIS2DUX12_EnterUltraLowPowerWakeup();
 
     Gate_I2C_KeepPower();
@@ -312,8 +348,9 @@ void PowerMgmt_EnterLowPower_Armed(void)
     Keep_AccelInterrupt();   /* keep PB15 active for wake-on-motion */
     Gate_GPIO_Outputs();
 
-    /* Keep PB4 (cable detect) active so plugging in wakes us */
+    /* Keep PB4 (cable detect) and PB5 (debug) active */
     Keep_CablePlugInterrupt();
+    Keep_DebugGPIOInterrupt();
 
     peripherals_gated = 1;
 }
@@ -332,34 +369,30 @@ void PowerMgmt_RestoreAll(void)
     HAL_GPIO_WritePin(I2C_POWER_GPIO_Port, I2C_POWER_Pin, GPIO_PIN_SET);
     HAL_Delay(5);
 
-    /* --- Restore EEPROM power pin (PB0) as output, keep OFF --- */
-    gpio.Pin = EEPROM_POWER_Pin;
-    HAL_GPIO_Init(EEPROM_POWER_GPIO_Port, &gpio);
-    HAL_GPIO_WritePin(EEPROM_POWER_GPIO_Port, EEPROM_POWER_Pin, GPIO_PIN_RESET);
+    /* --- Restore EEPROM power pin (PB6) as output, keep OFF --- */
+    gpio.Pin = EEPROM_POW_Pin;
+    HAL_GPIO_Init(EEPROM_POW_GPIO_Port, &gpio);
+    HAL_GPIO_WritePin(EEPROM_POW_GPIO_Port, EEPROM_POW_Pin, GPIO_PIN_RESET);
 
     /* --- Re-enable clocks --- */
     __HAL_RCC_TIM2_CLK_ENABLE();
     __HAL_RCC_TIM16_CLK_ENABLE();
     __HAL_RCC_I2C1_CLK_ENABLE();
-    /* Note: USART1 clock is NOT re-enabled here.
-     * UART is debug-only. Call MX_USART1_UART_Init() explicitly if needed. */
 
     /* --- Reinitialise peripherals --- */
     MX_I2C1_Reinit();
-    MX_TIM2_Reinit();   /* also calls HAL_TIM_MspPostInit -> restores PB2/PB3 AF */
-    MX_TIM16_Reinit();
+    MX_TIM2_Reinit();    /* also calls HAL_TIM_MspPostInit -> restores PB2/PB3/PB7 AF */
+    MX_TIM16_Reinit();   /* also calls HAL_TIM_MspPostInit -> restores PB0 AF */
 
-    /* --- Re-init buzzer safe state (restores PB6) --- */
+    /* --- Re-init buzzer safe state --- */
     BUZZER_Init();
-
-    /* --- Re-init blue LED soft PWM (restores PB1) --- */
-    LED_SoftPWM_Init();
 
     /* --- Restore GPIO --- */
     Restore_GPIO_Outputs();
     Restore_AccelInterrupt();
     Restore_CablePlugInterrupt();
     Restore_UART_Pins();
+    Restore_DebugGPIO();
 
     /* --- Re-init drivers that depend on I2C --- */
     HAL_Delay(10);
@@ -381,11 +414,11 @@ uint8_t PowerMgmt_IsLowPower(void)
 
 void PowerMgmt_EEPROM_PowerOn(void)
 {
-    HAL_GPIO_WritePin(EEPROM_POWER_GPIO_Port, EEPROM_POWER_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(EEPROM_POW_GPIO_Port, EEPROM_POW_Pin, GPIO_PIN_SET);
     HAL_Delay(2);
 }
 
 void PowerMgmt_EEPROM_PowerOff(void)
 {
-    HAL_GPIO_WritePin(EEPROM_POWER_GPIO_Port, EEPROM_POWER_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(EEPROM_POW_GPIO_Port, EEPROM_POW_Pin, GPIO_PIN_RESET);
 }

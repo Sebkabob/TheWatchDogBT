@@ -26,7 +26,6 @@
 #include "stm32wb0x_ll_usart.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "lights.h"
 #include "state_machine.h"
 /* USER CODE END Includes */
 
@@ -137,9 +136,6 @@ void SysTick_Handler(void)
   HAL_IncTick();
   /* USER CODE BEGIN SysTick_IRQn 1 */
 
-  /* Drive software PWM for LED3 (Blue, PB1) at 1 kHz */
-  LED_SoftPWM_Tick();
-
   /* USER CODE END SysTick_IRQn 1 */
 }
 
@@ -197,6 +193,7 @@ void GPIOB_IRQHandler(void)
 	  }
 
   /* USER CODE END GPIOB_IRQn 0 */
+  HAL_GPIO_EXTI_IRQHandler(GPIOB,GPIO_PIN_5);
   HAL_GPIO_EXTI_IRQHandler(GPIOB,GPIO_PIN_15);
   HAL_GPIO_EXTI_IRQHandler(GPIOB,GPIO_PIN_4);
   /* USER CODE BEGIN GPIOB_IRQn 1 */

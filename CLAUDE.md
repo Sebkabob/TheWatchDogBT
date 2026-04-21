@@ -57,10 +57,10 @@ In armed low-power mode the accel is put into 1.6 Hz ULP wakeup mode (`LIS2DUX12
 
 ### Power Management (`Core/Src/power_management.c`)
 
-Two low-power modes, both entered when disconnected (no `stayAwakeFlag`):
+Two low-power modes, both entered when disconnected (no `stayAwakeFlag`) and PB5 (DEBUG_GPIO) is LOW:
 
-- **`PowerMgmt_EnterLowPower_Idle()`** — used in `DISCONNECTED_IDLE`. Kills I2C bus power entirely. No motion wakeup; only cable-plug (PB4) can wake.
-- **`PowerMgmt_EnterLowPower_Armed()`** — used in `LOCKED`. Uses `Gate_I2C_KeepPower()` (NOT `Gate_I2C()`) to keep the accelerometer powered and in ULP wakeup mode. Both PB15 (accel INT) and PB4 (cable) remain as wakeup sources.
+- **`PowerMgmt_EnterLowPower_Idle()`** — used in `DISCONNECTED_IDLE`. Kills I2C bus power entirely. No motion wakeup; PB4 (cable) and PB5 (debug) can wake.
+- **`PowerMgmt_EnterLowPower_Armed()`** — used in `LOCKED`. Uses `Gate_I2C_KeepPower()` (NOT `Gate_I2C()`) to keep the accelerometer powered and in ULP wakeup mode. PB15 (accel INT), PB4 (cable), and PB5 (debug) remain as wakeup sources.
 
 `PowerMgmt_RestoreAll()` reinitialises all peripherals on wake. `PowerMgmt_IsLowPower()` gates sensor polling throughout the state machine.
 
@@ -74,25 +74,28 @@ Compares current accelerometer orientation against a reference captured at lock 
 
 ## Critical Hardware Constraints
 
-**UART / PA9 conflict:** `MX_USART1_UART_Init()` must NOT be called in production. PA9 is `BQ251_STAT` (open-drain charge status from BQ25186, needs pull-up). Calling UART init reconfigures PA9 as AF push-pull and wastes ~100 µA. Only enable UART explicitly for debug sessions with a cable.
+**UART / PA9:** `MX_USART1_UART_Init()` must NOT be called in production. Calling UART init reconfigures PA9 as AF push-pull and wastes ~100 µA. Only enable UART explicitly for debug sessions with a cable.
 
 **I2C bus power:** The I2C bus VDD is switched via `I2C_POWER_Pin` (PA10). Always drive PA10 HIGH before initialising `hi2c1`. In armed LP, use `Gate_I2C_KeepPower()` — cutting power destroys the ULP wakeup configuration loaded into the accelerometer.
 
-**Buzzer pin polarity:** `BUZZ_1_Pin` (PB6) drives an N-channel MOSFET. The pin must be initialised LOW (and pulled down), not HIGH. TIM16 drives the buzzer; TIM2 drives the RGB LEDs — they are independent and must be gated/restored separately.
+**Buzzer:** `BUZZ_Pin` (PB0) drives TIM16_CH1 hardware PWM into an N-channel MOSFET. Frequency set via ARR, 50% duty via CCR. TIM16 is buzzer-only; TIM2 is LED-only (CH2/CH3/CH4).
 
-**EEPROM power:** Controlled separately by `EEPROM_POWER_Pin` (PB0). Off by default; use `PowerMgmt_EEPROM_PowerOn/Off()` to bracket access.
+**EEPROM power:** Controlled separately by `EEPROM_POW_Pin` (PB6). Off by default; use `PowerMgmt_EEPROM_PowerOn/Off()` to bracket access.
+
+**Debug GPIO:** `DEBUG_GPIO_Pin` (PB5) is EXTI rising-edge with pulldown. While HIGH, device stays awake and won't enter low power — allows debugger attachment after DEEPSTOP wake.
 
 ## Key Pin Assignments
 
 | Signal | Pin | Notes |
 |--------|-----|-------|
-| LED1 | PB3 | TIM2 CH4 |
-| LED2 | PB2 | TIM2 CH3 |
-| LED3 (blue) | PB1 | Software PWM (TIM16 ISR) |
-| Buzzer | PB6 | TIM16, N-ch MOSFET, active HIGH |
+| LED1 (red) | PB3 | TIM2 CH4, HW PWM |
+| LED2 (green) | PB2 | TIM2 CH3, HW PWM |
+| LED3 (blue) | PB7 | TIM2 CH2, HW PWM |
+| Buzzer | PB0 | TIM16 CH1, HW PWM, N-ch MOSFET |
+| DEBUG_GPIO | PB5 | EXTI rising, pulldown, hold-awake |
 | ACCEL_INT | PB15 | EXTI rising, MLC state change |
 | BQ251_PG (cable) | PB4 | EXTI falling + PWR wakeup, LOW = cable in |
-| BQ251_STAT (charging) | PA9 | Input pull-up, LOW = charging |
+| STAT (charging) | PA11 | GPIO input, LOW = charging |
 | I2C_POWER | PA10 | HIGH = I2C bus on |
-| EEPROM_POWER | PB0 | HIGH = EEPROM on |
+| EEPROM_POW | PB6 | HIGH = EEPROM on |
 | GPOUT | PA8 | General-purpose output |

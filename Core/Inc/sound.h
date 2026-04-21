@@ -4,9 +4,9 @@
  *  Created on: Oct 29, 2025
  *      Author: sebkabob
  *
- *  REWORKED: Buzzer now uses TIM16 interrupt to toggle PB6 as GPIO.
- *            TIM2 is left exclusively for LED PWM (CH3, CH4) with a
- *            fixed ARR of 999.  No more ARR conflicts.
+ *  Buzzer uses TIM16_CH1 hardware PWM on PB0.
+ *  Frequency set via ARR, 50% duty via CCR = ARR/2.
+ *  TIM2 is left exclusively for LED PWM (CH2, CH3, CH4).
  */
 
 #ifndef INC_SOUND_H_
@@ -23,8 +23,6 @@ typedef struct {
 
 /**
  * @brief  Initialise the buzzer subsystem.
- *         - Configures PB6 as push-pull GPIO output (LOW = MOSFET off).
- *         - Initialises TIM16 but does NOT start it yet.
  *         Call once after MX_GPIO_Init() and MX_TIM16_Init() in main().
  */
 void BUZZER_Init(void);
@@ -56,11 +54,5 @@ uint32_t BUZZER_GetLaCucarachaDuration(void);
 
 /* Find My Device ping */
 void BUZZER_StartFindMe(void);
-
-/**
- * @brief  TIM16 period-elapsed callback — called from TIM16_IRQHandler.
- *         Toggles PB6 to produce the square wave.
- */
-void BUZZER_TIM16_IRQCallback(void);
 
 #endif /* INC_SOUND_H_ */

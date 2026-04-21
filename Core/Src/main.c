@@ -94,19 +94,14 @@ static void MX_GPIO_LowPower_Unused(void)
     gpio.Pull = GPIO_NOPULL;
 
     /*
-     * PA9 — BQ251_STAT: configure as input with pull-up.
-     * This was previously USART1_TX (AF push-pull) which wasted current
-     * and conflicted with reading the charge status.
+     * PA9 — USART1_TX. Set to analog since UART is disabled in production.
+     * STAT (charge status) is now on PA11, configured by MX_GPIO_Init.
      */
-    GPIO_InitTypeDef stat_gpio = {0};
-    stat_gpio.Pin  = BQ251_STAT_Pin;
-    stat_gpio.Mode = GPIO_MODE_INPUT;
-    stat_gpio.Pull = GPIO_PULLUP;  /* BQ25186 STAT is open-drain, needs pull-up */
-    HAL_GPIO_Init(BQ251_STAT_GPIO_Port, &stat_gpio);
+    gpio.Pin = GPIO_PIN_9;
+    HAL_GPIO_Init(GPIOA, &gpio);
 
     /*
-     * PB14 — was USART1_RX. Set to analog since UART is disabled.
-     * This eliminates the AF-mode leakage on this pin.
+     * PB14 — USART1_RX. Set to analog since UART is disabled.
      */
     gpio.Pin = GPIO_PIN_14;
     HAL_GPIO_Init(GPIOB, &gpio);
@@ -156,8 +151,7 @@ int main(void)
 
   /*
    * DO NOT call MX_USART1_UART_Init() here in production!
-   * PA9 is used for BQ251_STAT (charge status input).
-   * UART conflicts with this pin and wastes ~100+µA.
+   * UART init reconfigures PA9 as AF push-pull, wasting ~100+µA.
    * If you need debug UART, call MX_USART1_UART_Init() manually
    * only while cable is plugged in.
    */
@@ -169,12 +163,12 @@ int main(void)
   HAL_Delay(5); /* let power rail stabilize */
 
   /* === Keep EEPROM off by default === */
-  HAL_GPIO_WritePin(EEPROM_POWER_GPIO_Port, EEPROM_POWER_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(EEPROM_POW_GPIO_Port, EEPROM_POW_Pin, GPIO_PIN_RESET);
 
   /* === Fix unused pins for low power === */
   MX_GPIO_LowPower_Unused();
 
-  LED_SoftPWM_Init();   /* Init software PWM for LED3 (blue, PB1) */
+  /* All 3 LEDs are now TIM2 HW PWM — no software init needed */
   MotionLogger_Init();
   HAL_Delay(100);
   LIS2DUX12_Init();
@@ -494,6 +488,10 @@ static void MX_TIM2_Init(void)
   sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
   if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
   {
     Error_Handler();
@@ -521,6 +519,9 @@ static void MX_TIM16_Init(void)
 
   /* USER CODE END TIM16_Init 0 */
 
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+
   /* USER CODE BEGIN TIM16_Init 1 */
 
   /* USER CODE END TIM16_Init 1 */
@@ -535,9 +536,37 @@ static void MX_TIM16_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_TIM_PWM_Init(&htim16) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim16, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.BreakAFMode = TIM_BREAK_AFMODE_INPUT;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim16, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN TIM16_Init 2 */
 
   /* USER CODE END TIM16_Init 2 */
+  HAL_TIM_MspPostInit(&htim16);
 
 }
 
@@ -599,14 +628,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
-  // Make sure buzzer pin is LOW (N-ch MOSFET OFF) until timer PWM starts
-  GPIO_InitTypeDef buzzer_safe = {0};
-  buzzer_safe.Pin = BUZZ_1_Pin;
-  buzzer_safe.Mode = GPIO_MODE_OUTPUT_PP;
-  buzzer_safe.Pull = GPIO_PULLDOWN;          // was GPIO_PULLUP — WRONG for N-ch
-  buzzer_safe.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(BUZZ_1_GPIO_Port, &buzzer_safe);
-  HAL_GPIO_WritePin(BUZZ_1_GPIO_Port, BUZZ_1_Pin, GPIO_PIN_RESET);  // was GPIO_PIN_SET — WRONG for N-ch
+  /* Buzzer pin (PB0) is now TIM16_CH1 AF — configured by HAL_TIM_MspPostInit.
+   * No manual GPIO setup needed here. BUZZER_Init() ensures PWM is stopped. */
 
   /* USER CODE END MX_GPIO_Init_1 */
 
@@ -615,20 +638,13 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LED3_Pin|EEPROM_POWER_Pin|BUZZ_1_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPOUT_GPIO_Port, GPOUT_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(I2C_POWER_GPIO_Port, I2C_POWER_Pin, GPIO_PIN_SET);
 
-  /*Configure GPIO pins : LED3_Pin EEPROM_POWER_Pin BUZZ_1_Pin */
-  GPIO_InitStruct.Pin = LED3_Pin|EEPROM_POWER_Pin|BUZZ_1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(EEPROM_POW_GPIO_Port, EEPROM_POW_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : PA2 */
   GPIO_InitStruct.Pin = GPIO_PIN_2;
@@ -645,11 +661,24 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : ACCEL_INT_Pin */
-  GPIO_InitStruct.Pin = ACCEL_INT_Pin;
+  /*Configure GPIO pin : STAT_Pin */
+  GPIO_InitStruct.Pin = STAT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(STAT_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : ACCEL_INT_Pin DEBUG_GPIO_Pin */
+  GPIO_InitStruct.Pin = ACCEL_INT_Pin|DEBUG_GPIO_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(ACCEL_INT_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : EEPROM_POW_Pin */
+  GPIO_InitStruct.Pin = EEPROM_POW_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(EEPROM_POW_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : BQ251_PG_Pin */
   GPIO_InitStruct.Pin = BQ251_PG_Pin;
@@ -658,19 +687,19 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(BQ251_PG_GPIO_Port, &GPIO_InitStruct);
 
   /**/
-  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_1|PWR_GPIO_BIT_0|PWR_GPIO_BIT_6);
-
-  /**/
-  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_10);
-
-  /**/
-  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_1|PWR_GPIO_BIT_0|PWR_GPIO_BIT_6);
-
-  /**/
-  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_10);
-
-  /**/
   HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_2);
+
+  /**/
+  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_10|PWR_GPIO_BIT_11);
+
+  /**/
+  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_6);
+
+  /**/
+  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_10|PWR_GPIO_BIT_11);
+
+  /**/
+  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_6);
 
   /*RT DEBUG GPIO_Init */
   RT_DEBUG_GPIO_Init();

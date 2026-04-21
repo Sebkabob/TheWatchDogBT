@@ -6,7 +6,7 @@
  *
  * LED1 (Red)  = PB3  -> TIM2_CH4 (hardware PWM)
  * LED2 (Green)= PB2  -> TIM2_CH3 (hardware PWM)
- * LED3 (Blue) = PB1  -> GPIO soft-PWM via SysTick
+ * LED3 (Blue) = PB7  -> TIM2_CH2 (hardware PWM)
  ***************************************************************************/
 
 #ifndef __LIGHTS_H
@@ -18,31 +18,7 @@ extern "C" {
 
 #include <stdint.h>
 
-/* ---- Software PWM for LED3 (Blue, PB1) ---- */
-
-/**
- * @brief  Must be called once before using any LED function.
- *         Sets up internal soft-PWM state for LED3.
- */
-void LED_SoftPWM_Init(void);
-
-/**
- * @brief  Call this from SysTick_Handler() every 1 ms.
- *         Drives the software PWM on PB1 (LED3 / blue).
- */
-void LED_SoftPWM_Tick(void);
-
-/**
- * @brief  Clamp the blue LED to a static ON or OFF before entering sleep.
- *
- *         Call right before entering any low-power mode that stops SysTick
- *         (STOP, DEEPSTOP).  This prevents the LED freezing at a random
- *         mid-PWM brightness.  No restore call is needed on wake — the
- *         SysTick-driven PWM resumes automatically.
- */
-void LED_SoftPWM_ClampForSleep(void);
-
-/* ---- Public LED API (unchanged interface) ---- */
+/* ---- Public LED API ---- */
 
 /**
  * @brief Display rainbow color cycle on RGB LED

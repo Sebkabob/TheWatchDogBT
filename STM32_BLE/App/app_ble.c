@@ -1064,19 +1064,6 @@ void APP_BLE_Procedure_Gap_Peripheral(ProcGapPeripheralId_t ProcGapPeripheralId)
 
       Advertising_Set_Parameters_t Advertising_Set_Parameters = {0};
 
-      /* If a device is bonded, refresh the filter accept list and
-       * restrict connections to bonded devices only.  If no bonds
-       * exist, allow any device to connect for first-time pairing. */
-      uint8_t adv_filter = HCI_ADV_FILTER_NONE;
-      uint8_t num_bonded = 0;
-      Bonded_Device_Entry_t bonded_entry;
-      if (aci_gap_get_bonded_devices(0, 1, &num_bonded, &bonded_entry) == BLE_STATUS_SUCCESS
-          && num_bonded > 0)
-      {
-        aci_gap_configure_filter_accept_and_resolving_list(0x01);
-        adv_filter = ADV_FILTER;
-      }
-
       /* Start Fast or Low Power Advertising */
 
       /* Set advertising configuration for legacy advertising */
@@ -1088,7 +1075,7 @@ void APP_BLE_Procedure_Gap_Peripheral(ProcGapPeripheralId_t ProcGapPeripheralId)
                                                      HCI_ADV_CH_ALL,
                                                      0,
                                                      NULL, /* No peer address */
-                                                     adv_filter,
+                                                     HCI_ADV_FILTER_NONE,
                                                      0, /* 0 dBm */
                                                      HCI_PHY_LE_1M, /* Primary advertising PHY */
                                                      0, /* 0 skips */

@@ -4,18 +4,15 @@
  *
  * Functions in charge of interfacing with the onboard magnetic transducers
  *
- * REWORKED BUZZER HARDWARE:
- *   PB6 is now a plain GPIO output (push-pull, no AF).
- *   TIM16 runs as an interrupt-driven timebase.  Its period-elapsed ISR
- *   toggles PB6, producing a 50 % duty square wave at the desired
- *   frequency.  Gate HIGH = N-channel MOSFET ON (current through buzzer).
+ * V2 PCB BUZZER HARDWARE:
+ *   PB0 = TIM16_CH1 alternate-function output (hardware PWM).
+ *   Frequency is set by changing TIM16 ARR.
+ *   50% duty cycle via CCR = (ARR+1)/2.
+ *   Gate HIGH = N-channel MOSFET ON (current through buzzer).
  *
- *   TIM2 is NO LONGER TOUCHED by this module — its ARR stays at 999
- *   permanently, so LED PWM on CH3/CH4 is unaffected.
- *
- *   TIM16 clock = 64 MHz HSI (APB = 64 MHz on STM32WB05 after PLL).
- *   With a prescaler of 63 the TIM16 tick is 1 MHz (1 µs).
- *   For a frequency F the half-period in ticks = 1 000 000 / (2*F) − 1.
+ *   TIM16 clock = 32 MHz HSE.
+ *   With prescaler 31 the TIM16 tick is 1 MHz (1 µs).
+ *   For frequency F: period = 1 000 000 / F, ARR = period - 1.
  ***************************************************************************/
 
 #include "main.h"
@@ -26,7 +23,7 @@
 /***************************************************************************
  * PRIVATE DEFINES
  ***************************************************************************/
-/* TIM16 input clock after PSC = 63 → 1 MHz */
+/* TIM16 input clock after PSC = 31 → 1 MHz */
 #define BUZZER_TIMER_CLK  (1000000UL)
 
 /***************************************************************************
@@ -117,53 +114,35 @@ static BuzzerState_t buzzer_state = {0};
 static volatile uint8_t buzzer_tone_active = 0;
 
 /***************************************************************************
- * PRIVATE: Start / stop the square wave on PB6 via TIM16
+ * PRIVATE: Start / stop the hardware PWM on PB0 via TIM16_CH1
  ***************************************************************************/
 
 /**
  * @brief  Set buzzer frequency (0 = silence).
- *         Reconfigures TIM16 ARR and starts/stops it.
+ *         Reconfigures TIM16 ARR and CCR for 50% duty HW PWM.
  */
 static void BUZZER_SetFrequency(uint32_t frequency_hz)
 {
     if (frequency_hz == 0) {
-        /* Stop TIM16, drive PB6 LOW (MOSFET off) */
-        HAL_TIM_Base_Stop_IT(&htim16);
-        HAL_GPIO_WritePin(BUZZ_1_GPIO_Port, BUZZ_1_Pin, GPIO_PIN_RESET);
+        /* Force output LOW (CCR=0 → always low in PWM1 mode), then stop */
+        __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 0);
+        HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
         buzzer_tone_active = 0;
         return;
     }
 
-    /* half-period in 1 µs ticks */
-    uint32_t half_period = BUZZER_TIMER_CLK / (2U * frequency_hz);
-    if (half_period < 2)  half_period = 2;
-    if (half_period > 65535) half_period = 65535;
+    /* Full period in 1 µs ticks */
+    uint32_t period = BUZZER_TIMER_CLK / frequency_hz;
+    if (period < 2)  period = 2;
+    if (period > 65535) period = 65535;
 
-    /* If already running, just update the period on-the-fly */
-    __HAL_TIM_SET_AUTORELOAD(&htim16, half_period - 1);
+    __HAL_TIM_SET_AUTORELOAD(&htim16, period - 1);
+    __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, period / 2);
     __HAL_TIM_SET_COUNTER(&htim16, 0);
 
     if (!buzzer_tone_active) {
-        HAL_GPIO_WritePin(BUZZ_1_GPIO_Port, BUZZ_1_Pin, GPIO_PIN_RESET);
-        HAL_TIM_Base_Start_IT(&htim16);
+        HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1);
         buzzer_tone_active = 1;
-    }
-}
-
-/***************************************************************************
- * TIM16 ISR CALLBACK — called from TIM16_IRQHandler via HAL
- ***************************************************************************/
-
-/**
- * @brief  Toggle PB6 on every TIM16 update event → 50 % square wave.
- */
-void BUZZER_TIM16_IRQCallback(void)
-{
-    /* Fast toggle using BSRR / BRR (much faster than HAL_GPIO_TogglePin) */
-    if (BUZZ_1_GPIO_Port->ODR & BUZZ_1_Pin) {
-        BUZZ_1_GPIO_Port->BRR = BUZZ_1_Pin;   /* LOW  */
-    } else {
-        BUZZ_1_GPIO_Port->BSRR = BUZZ_1_Pin;  /* HIGH */
     }
 }
 
@@ -172,8 +151,9 @@ void BUZZER_TIM16_IRQCallback(void)
  ***************************************************************************/
 void BUZZER_Init(void)
 {
-    /* Ensure PB6 is LOW (MOSFET off) */
-    HAL_GPIO_WritePin(BUZZ_1_GPIO_Port, BUZZ_1_Pin, GPIO_PIN_RESET);
+    /* Ensure PWM is stopped (pin goes to idle state = LOW) */
+    __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 0);
+    HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
     buzzer_tone_active = 0;
 }
 
@@ -344,12 +324,4 @@ void SOUND_Disconnected(void)
     BUZZER_Tone(280, 12);
     HAL_Delay(10);
     BUZZER_Tone(100, 15);
-}
-
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  if (htim->Instance == TIM16)
-  {
-    BUZZER_TIM16_IRQCallback();
-  }
 }

@@ -16,7 +16,7 @@ void PowerMgmt_EnterLowPower_Armed(void);
 void PowerMgmt_RestoreAll(void);
 uint8_t PowerMgmt_IsLowPower(void);
 
-/* ---- EEPROM power control (PB0) --------------------------------------- */
+/* ---- EEPROM power control (PB6) --------------------------------------- */
 
 void PowerMgmt_EEPROM_PowerOn(void);
 void PowerMgmt_EEPROM_PowerOff(void);

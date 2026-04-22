@@ -61,17 +61,10 @@ static const Note_t LOUD_ALARM_PATTERN[] = {
 /* 3-tone ascending chirp × 3 repetitions — Apple "Find My" style ping */
 static const Note_t FIND_MY_PATTERN[] = {
     /* Rep 1 */
-    {1000, 120, 50},
-    {1200, 120, 50},
-    {1400, 120, 300},
-    /* Rep 2 */
-    {1000, 120, 50},
-    {1200, 120, 50},
-    {1400, 120, 300},
-    /* Rep 3 */
-    {1000, 120, 50},
-    {1200, 120, 50},
-    {1400, 120, 50},
+    {987, 120, 50},
+    {987, 120, 300},
+    {987, 240, 50},
+    {987, 120, 50},
 };
 
 static const Note_t LA_CUCARACHA_PATTERN[] = {

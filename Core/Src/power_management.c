@@ -282,7 +282,7 @@ static void Restore_UART_Pins(void)
     GPIO_InitTypeDef gpio = {0};
     gpio.Pin  = STAT_Pin;
     gpio.Mode = GPIO_MODE_INPUT;
-    gpio.Pull = GPIO_NOPULL;
+    gpio.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(STAT_GPIO_Port, &gpio);
 
     /* PA9 and PB14 stay analog (UART not used unless explicitly enabled) */

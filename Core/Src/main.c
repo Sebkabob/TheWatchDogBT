@@ -664,7 +664,7 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin : STAT_Pin */
   GPIO_InitStruct.Pin = STAT_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(STAT_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : ACCEL_INT_Pin DEBUG_GPIO_Pin */
@@ -687,16 +687,16 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(BQ251_PG_GPIO_Port, &GPIO_InitStruct);
 
   /**/
-  HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_2);
+  HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_2|PWR_GPIO_BIT_11);
 
   /**/
-  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_10|PWR_GPIO_BIT_11);
+  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_10);
 
   /**/
   HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_6);
 
   /**/
-  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_10|PWR_GPIO_BIT_11);
+  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_10);
 
   /**/
   HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_6);

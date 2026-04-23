@@ -359,7 +359,7 @@ void State_Locked_Loop(void)
                     MotionLogger_LogEvent(mt);
                     LOCKSERVICE_SendMotionAlert(mt);
                 }
-                if (!GET_SILENCE_BIT(deviceState)) {
+                if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
                     StateMachine_ChangeState(STATE_ALARM_ACTIVE);
                 }
             }
@@ -374,7 +374,7 @@ void State_Locked_Loop(void)
                 }
                 stayAwakeFlag = 1;
                 motion_assessing = 0;
-                if (!GET_SILENCE_BIT(deviceState)) {
+                if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
                     StateMachine_ChangeState(STATE_ALARM_ACTIVE);
                 }
             }
@@ -436,7 +436,7 @@ void State_Locked_Loop(void)
                     MotionLogger_LogEvent(mt);
                     LOCKSERVICE_SendMotionAlert(mt);
                 }
-                if (!GET_SILENCE_BIT(deviceState)) {
+                if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
                     StateMachine_ChangeState(STATE_ALARM_ACTIVE);
                 }
             }

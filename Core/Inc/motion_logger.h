@@ -5,7 +5,24 @@
 #include "stm32wb0x_hal.h"
 
 /* Maximum number of events to store */
-#define MAX_MOTION_EVENTS 100
+#define MAX_MOTION_EVENTS 169
+
+/* ---- EEPROM Memory Map (M24C08 = 1024 bytes) ----
+ * 0x000 - 0x03F : Reserved for device info (64 bytes)
+ * 0x040 - 0x047 : Motion log header (8 bytes)
+ * 0x048 - 0x3FF : Motion event data (952 bytes)
+ */
+#define EEPROM_DEVICE_INFO_ADDR      0x000
+#define EEPROM_DEVICE_INFO_SIZE      64
+
+#define EEPROM_MOTION_HEADER_ADDR    0x040
+#define EEPROM_MOTION_HEADER_SIZE    8
+
+#define EEPROM_MOTION_DATA_ADDR      0x048
+#define EEPROM_MOTION_EVENT_SIZE     5      /* 4 timestamp + 1 type */
+
+#define EEPROM_MAGIC_BYTE            0xA5
+#define EEPROM_I2C_ADDRESS           0x50   /* M24C08 with A2=0 */
 
 /* Motion types — MLC/FSM/door classifications */
 typedef enum {

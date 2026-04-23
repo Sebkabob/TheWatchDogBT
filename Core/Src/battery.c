@@ -112,6 +112,18 @@ bool BATTERY_UpdateState(void)
 //        battery_state.soc_percent = BATTERY_EstimateSOC_FromVoltage(battery_state.voltage_mV);
     }
 
+    // Reset if fuel gauge returns invalid SOC (0xFFFF / -1) for >2 seconds
+    static uint32_t invalid_soc_start = 0;
+    if (battery_state.soc_percent == 0xFFFF) {
+        if (invalid_soc_start == 0) {
+            invalid_soc_start = now;
+        } else if ((now - invalid_soc_start) >= 2000) {
+            NVIC_SystemReset();
+        }
+    } else {
+        invalid_soc_start = 0;
+    }
+
     battery_state.last_update = now;
     return true;
 }

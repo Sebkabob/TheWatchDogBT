@@ -53,6 +53,7 @@ volatile uint8_t cablePlugFlag = 0;
 static uint32_t cableUnplugTime = 0;      /* tick when cable was last seen removed */
 static uint8_t  cableWasPlugged = 0;       /* tracks previous cable state for edge detect */
 
+static volatile uint8_t findMyActive = 0;
 static uint32_t lastBLEActivityTime = 0;
 #define BLE_INACTIVITY_TIMEOUT_MS  10000  /* 10 seconds */
 
@@ -196,17 +197,19 @@ void State_Connected_Idle_Loop(void)
 {
     stayAwakeFlag = 1;
 
-    /* Lights — charging status always visible, others respect lights bit */
-    if (IS_CABLE_PLUGGED()) {
-        if (IS_CHARGING_NOW()) {
-            LED_Pulse(4000, 255, 100, 0, 255); /* orange pulse - charging */
+    /* Lights — skip while find-my is active so it gets clean LED control */
+    if (!findMyActive) {
+        if (IS_CABLE_PLUGGED()) {
+            if (IS_CHARGING_NOW()) {
+                LED_Pulse(4000, 255, 100, 0, 255); /* orange pulse - charging */
+            } else {
+                LED_Solid(0, 255, 0, 255);          /* green solid - charged */
+            }
+        } else if (GET_LIGHTS_BIT(deviceState)) {
+            LED_Rainbow(5, 255);  /* rainbow - normal */
         } else {
-            LED_Solid(0, 255, 0, 255);          /* green solid - charged */
+            LED_Off();
         }
-    } else if (GET_LIGHTS_BIT(deviceState)) {
-        LED_Rainbow(5, 255);  /* rainbow - normal */
-    } else {
-        LED_Off();
     }
 
     /* State Switch - DISCONNECTED */
@@ -238,11 +241,13 @@ void State_Stabilizing_Loop(void)
         /* but don't sleep yet, we need the sensor */
     }
 
-    /* Pulsing blue LED = stabilizing */
-    if (GET_LIGHTS_BIT(deviceState)) {
-        LED_Pulse(1000, 0, 0, 255, 255);
-    } else {
-        LED_Off();
+    /* Pulsing blue LED = stabilizing (skip during find-my) */
+    if (!findMyActive) {
+        if (GET_LIGHTS_BIT(deviceState)) {
+            LED_Pulse(1000, 0, 0, 255, 255);
+        } else {
+            LED_Off();
+        }
     }
 
     static uint32_t last_still_time = 0;
@@ -321,10 +326,12 @@ void State_Locked_Loop(void)
         }
     }
 
-    if (GET_LIGHTS_BIT(deviceState) && !PowerMgmt_IsLowPower()) {
-        LED_Armed(10, 255);
-    } else {
-        LED_Off();
+    if (!findMyActive) {
+        if (GET_LIGHTS_BIT(deviceState) && !PowerMgmt_IsLowPower()) {
+            LED_Armed(10, 255);
+        } else {
+            LED_Off();
+        }
     }
 
     /*--------------------------------------------------------------
@@ -665,7 +672,6 @@ void ChargingCheck(void)
 /***************************************************************************
  * FIND MY DEVICE — non-blocking ping with synced green LED
  ***************************************************************************/
-static volatile uint8_t findMyActive = 0;
 
 void FindMyDevice_Start(void)
 {

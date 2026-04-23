@@ -264,7 +264,8 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
     	        // (typically sent with the first connection or settings update)
     	        if (data_length >= 7 && command != CMD_REQUEST_EVENT &&
     	            command != CMD_REQUEST_LOG_COUNT && command != CMD_CLEAR_LOG &&
-    	            command != CMD_ACK_EVENT && command != CMD_FIND_MY_DEVICE) {
+    	            command != CMD_ACK_EVENT && command != CMD_FIND_MY_DEVICE &&
+    	            command != CMD_RESET_DEVICE) {
     	            // This is a settings update with timestamp
     	            UpdateBootTimeFromiOS(&received_data[data_length - 6]);
     	        }
@@ -298,6 +299,10 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
     	                if (data_length >= 2 && (received_data[1] & 0x01)) {
     	                    FindMyDevice_Start();
     	                }
+    	                break;
+
+    	            case CMD_RESET_DEVICE:
+    	                NVIC_SystemReset();
     	                break;
 
     	            default:

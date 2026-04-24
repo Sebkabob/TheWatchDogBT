@@ -57,6 +57,28 @@ static volatile uint8_t findMyActive = 0;
 static uint32_t lastBLEActivityTime = 0;
 #define BLE_INACTIVITY_TIMEOUT_MS  10000  /* 10 seconds */
 
+/***************************************************************************
+ * CHARGING LED COLOR — smooth red→yellow→green gradient based on SOC
+ *   0%  = pure red    (255, 0,   0)
+ *  50%  = yellow      (255, 255, 0)
+ * 100%  = pure green  (0,   255, 0)
+ ***************************************************************************/
+static void LED_ChargingPulse(void)
+{
+    uint16_t soc = BATTERY_GetSOC();
+    if (soc > 100) soc = 100;
+
+    uint8_t r, g;
+    if (soc <= 50) {
+        r = 255;
+        g = (uint8_t)((soc * 255) / 50);
+    } else {
+        r = (uint8_t)(((100 - soc) * 255) / 50);
+        g = 255;
+    }
+    LED_Pulse(4000, r, g, 0, 255);
+}
+
 void StateMachine_UpdateBLEActivity(void) {
     lastBLEActivityTime = HAL_GetTick();
 }
@@ -163,8 +185,8 @@ void State_Disconnected_Idle_Loop(void)
         }
         stayAwakeFlag = 1;
 
-        if (IS_CHARGING_NOW()) {
-            LED_Pulse(4000, 255, 100, 0, 255); /* orange pulse - charging */
+        if (IS_CHARGING_NOW() && !BATTERY_IsFullCached()) {
+            LED_ChargingPulse();                /* SOC gradient: red→green */
         } else {
             LED_Solid(0, 255, 0, 255);          /* green solid - charged */
         }
@@ -200,8 +222,8 @@ void State_Connected_Idle_Loop(void)
     /* Lights — skip while find-my is active so it gets clean LED control */
     if (!findMyActive) {
         if (IS_CABLE_PLUGGED()) {
-            if (IS_CHARGING_NOW()) {
-                LED_Pulse(4000, 255, 100, 0, 255); /* orange pulse - charging */
+            if (IS_CHARGING_NOW() && !BATTERY_IsFullCached()) {
+                LED_ChargingPulse();                /* SOC gradient: red→green */
             } else {
                 LED_Solid(0, 255, 0, 255);          /* green solid - charged */
             }
@@ -661,7 +683,7 @@ void ChargingCheck(void)
     last_check = HAL_GetTick();
 
     if (IS_CABLE_PLUGGED()) {
-        if (IS_CHARGING_NOW()) {
+        if (IS_CHARGING_NOW() && !BATTERY_IsFullCached()) {
             SET_BATTERY_CHARGING(deviceBattery);
         } else {
             CLEAR_BATTERY_CHARGING(deviceBattery);

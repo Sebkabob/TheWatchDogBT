@@ -382,9 +382,12 @@ void PowerMgmt_RestoreAll(void)
     /* --- Reinitialise peripherals --- */
     MX_I2C1_Reinit();
     MX_TIM2_Reinit();    /* also calls HAL_TIM_MspPostInit -> restores PB2/PB3/PB7 AF */
-    MX_TIM16_Reinit();   /* also calls HAL_TIM_MspPostInit -> restores PB0 AF */
 
-    /* --- Re-init buzzer safe state --- */
+    MX_TIM16_Reinit();
+
+    /* --- Re-init buzzer: stops PWM and clamps PB0 LOW as GPIO output.
+     *     Overrides the AF config from MX_TIM16_Reinit so the MOSFET gate
+     *     is held hard-off until a tone is actually played. --- */
     BUZZER_Init();
 
     /* --- Restore GPIO --- */

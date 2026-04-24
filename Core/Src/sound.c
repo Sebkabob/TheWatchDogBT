@@ -107,6 +107,40 @@ static BuzzerState_t buzzer_state = {0};
 static volatile uint8_t buzzer_tone_active = 0;
 
 /***************************************************************************
+ * PRIVATE: Pin mode helpers — clamp PB0 LOW as GPIO when idle,
+ *          switch to AF only while actively producing a tone.
+ *          Prevents grid noise from coupling through the MOSFET gate.
+ ***************************************************************************/
+
+/**
+ * @brief  Drive PB0 LOW as a regular GPIO output (MOSFET hard-off).
+ */
+static void BUZZER_PinClampLow(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin   = BUZZ_Pin;
+    gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+    gpio.Pull  = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &gpio);
+    HAL_GPIO_WritePin(GPIOB, BUZZ_Pin, GPIO_PIN_RESET);
+}
+
+/**
+ * @brief  Switch PB0 back to TIM16_CH1 alternate-function for PWM output.
+ */
+static void BUZZER_PinEnableAF(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin       = BUZZ_Pin;
+    gpio.Mode      = GPIO_MODE_AF_PP;
+    gpio.Pull      = GPIO_NOPULL;
+    gpio.Speed     = GPIO_SPEED_FREQ_LOW;
+    gpio.Alternate = GPIO_AF2_TIM16;
+    HAL_GPIO_Init(GPIOB, &gpio);
+}
+
+/***************************************************************************
  * PRIVATE: Start / stop the hardware PWM on PB0 via TIM16_CH1
  ***************************************************************************/
 
@@ -117,9 +151,10 @@ static volatile uint8_t buzzer_tone_active = 0;
 static void BUZZER_SetFrequency(uint32_t frequency_hz)
 {
     if (frequency_hz == 0) {
-        /* Force output LOW (CCR=0 → always low in PWM1 mode), then stop */
+        /* Stop PWM and clamp the MOSFET gate LOW via GPIO */
         __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 0);
         HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
+        BUZZER_PinClampLow();
         buzzer_tone_active = 0;
         return;
     }
@@ -134,6 +169,8 @@ static void BUZZER_SetFrequency(uint32_t frequency_hz)
     __HAL_TIM_SET_COUNTER(&htim16, 0);
 
     if (!buzzer_tone_active) {
+        /* Switch PB0 to AF before starting PWM */
+        BUZZER_PinEnableAF();
         HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1);
         buzzer_tone_active = 1;
     }
@@ -144,9 +181,10 @@ static void BUZZER_SetFrequency(uint32_t frequency_hz)
  ***************************************************************************/
 void BUZZER_Init(void)
 {
-    /* Ensure PWM is stopped (pin goes to idle state = LOW) */
+    /* Ensure PWM is stopped and MOSFET gate is clamped LOW */
     __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 0);
     HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
+    BUZZER_PinClampLow();
     buzzer_tone_active = 0;
 }
 

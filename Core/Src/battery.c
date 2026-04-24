@@ -112,6 +112,11 @@ bool BATTERY_UpdateState(void)
 //        battery_state.soc_percent = BATTERY_EstimateSOC_FromVoltage(battery_state.voltage_mV);
     }
 
+    // If fuel gauge reports Full Charge (FC flag), ensure SOC shows 100%
+    if (battery_state.is_full && battery_state.soc_percent < 100) {
+        battery_state.soc_percent = 100;
+    }
+
     // Reset if fuel gauge returns invalid SOC (0xFFFF / -1) for >2 seconds
     static uint32_t invalid_soc_start = 0;
     if (battery_state.soc_percent == 0xFFFF) {

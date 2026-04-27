@@ -20,7 +20,6 @@
 /* USER CODE BEGIN Includes */
 #include "state_machine.h"
 #include "lis2dux12_reg.h"
-#include "bq25186_reg.h"
 #include "battery.h"
 #include "app_ble.h"
 #include "accelerometer.h"

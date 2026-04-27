@@ -8,6 +8,7 @@ typedef enum {
     STATE_SLEEP,
     STATE_ALARM_ACTIVE,
     STATE_LOCKED,
+    STATE_STABILIZING,
     STATE_DISCONNECTED_IDLE,
     STATE_CONNECTED_IDLE
 } SystemState_t;
@@ -36,6 +37,10 @@ typedef enum {
 #define SET_LOGGING_BIT(byte, val)     do { if(val) (byte) |= 0x40; else (byte) &= ~0x40; } while(0)
 #define SET_SILENCE_BIT(byte, val)     do { if(val) (byte) |= 0x80; else (byte) &= ~0x80; } while(0)
 
+// DeviceInfo bit field (byte 2 of settings write)
+#define GET_HIGHPERF_BIT(byte)    ((byte) & 0x01)
+#define SET_HIGHPERF_BIT(byte, val) do { if(val) (byte) |= 0x01; else (byte) &= ~0x01; } while(0)
+
 // Alarm type constants
 #define ALARM_NONE        0x00
 #define ALARM_CALM        0x01
@@ -47,6 +52,9 @@ typedef enum {
 #define SENSITIVITY_MEDIUM 0x01
 #define SENSITIVITY_HIGH   0x02
 
+/* How long to stay awake after cable is unplugged (ms) */
+#define CABLE_UNPLUG_AWAKE_MS   5000
+
 // Global state variables
 extern volatile SystemState_t currentState;
 extern volatile SystemState_t previousState;
@@ -54,11 +62,28 @@ extern volatile uint8_t deviceState;
 extern volatile uint8_t deviceInfo;
 extern volatile uint8_t deviceBattery;
 
+extern volatile uint8_t stayAwakeFlag;
+extern volatile uint8_t cablePlugFlag;
+
+void StateMachine_UpdateBLEActivity(void);
+
 // Function prototypes
 void StateMachine_Init(void);
 void StateMachine_Run(void);
 void StateMachine_ChangeState(SystemState_t newState);
 void StateMachine_UpdateActivity(void);
 void StateMachine_CheckInactivityTimeout(void);
+
+/**
+ * @brief  Called from GPIOB ISR when PB4 (BQ251_PG) fires.
+ *         Sets the cablePlugFlag and stayAwakeFlag so the main
+ *         loop can restore peripherals and show charge status.
+ *         Safe to call from interrupt context.
+ */
+void CablePlug_IRQCallback(void);
+
+/* Find My Device — non-blocking ping routine */
+void FindMyDevice_Start(void);
+void FindMyDevice_Update(void);
 
 #endif

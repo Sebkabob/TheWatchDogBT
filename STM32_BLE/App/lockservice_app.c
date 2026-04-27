@@ -31,6 +31,15 @@
 /* USER CODE BEGIN Includes */
 #include "sound.h"
 #include "motion_logger.h"
+#include "battery.h"
+#include "state_machine.h"
+#include "lights.h"
+#include "battery.h"
+#include "accelerometer.h"
+#include "lis2dux12_app.h"
+#include "power_management.h"
+
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -83,6 +92,8 @@ extern volatile uint8_t deviceState;
 extern volatile uint8_t deviceInfo;
 extern volatile uint8_t deviceBattery;
 
+extern volatile uint8_t connectionStatus;
+
 // Track current transfer state
 static uint16_t currentEventIndex = 0;
 static uint8_t transferInProgress = 0;
@@ -96,24 +107,23 @@ static void LOCKSERVICE_Devicestatus_SendNotification(void);
  * @brief Send motion alert notification to iOS
  * This triggers iOS to auto-sync
  */
-void LOCKSERVICE_SendMotionAlert(void)
+void LOCKSERVICE_SendMotionAlert(uint8_t motionType)
 {
     if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
         return;
     }
 
-    // Send special alert byte: 0xFF
-    a_LOCKSERVICE_UpdateCharData[0] = 0xFF;  // Motion alert marker
-    a_LOCKSERVICE_UpdateCharData[1] = deviceBattery;
+    /* Motion alert: [0xFF, motionType, battery] — 3 bytes */
+    a_LOCKSERVICE_UpdateCharData[0] = 0xFF;          /* motion alert marker */
+    a_LOCKSERVICE_UpdateCharData[1] = motionType;    /* MLC/FSM classification */
+    a_LOCKSERVICE_UpdateCharData[2] = deviceBattery;
 
     LOCKSERVICE_Data_t lockservice_notification_data;
     lockservice_notification_data.p_Payload = (uint8_t*)a_LOCKSERVICE_UpdateCharData;
-    lockservice_notification_data.Length = 2;
+    lockservice_notification_data.Length = 3;
 
     LOCKSERVICE_NotifyValue(LOCKSERVICE_DEVICESTATUS, &lockservice_notification_data,
                            LOCKSERVICE_APP_Context.ConnectionHandle);
-
-    printf("🚨 Motion alert sent to iOS\n");
 }
 
 /**
@@ -242,6 +252,7 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
 
     case LOCKSERVICE_APPTOWD_WRITE_EVT:
       /* USER CODE BEGIN Service1Char1_WRITE_EVT */
+    	StateMachine_UpdateBLEActivity();
     	uint8_t *received_data = p_Notification->DataTransfered.p_Payload;
     	    uint8_t data_length = p_Notification->DataTransfered.Length;
 
@@ -253,7 +264,8 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
     	        // (typically sent with the first connection or settings update)
     	        if (data_length >= 7 && command != CMD_REQUEST_EVENT &&
     	            command != CMD_REQUEST_LOG_COUNT && command != CMD_CLEAR_LOG &&
-    	            command != CMD_ACK_EVENT) {
+    	            command != CMD_ACK_EVENT && command != CMD_FIND_MY_DEVICE &&
+    	            command != CMD_RESET_DEVICE) {
     	            // This is a settings update with timestamp
     	            UpdateBootTimeFromiOS(&received_data[data_length - 6]);
     	        }
@@ -283,9 +295,22 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
     	                LOCKSERVICE_SendLogCleared();
     	                break;
 
+    	            case CMD_FIND_MY_DEVICE:
+    	                if (data_length >= 2 && (received_data[1] & 0x01)) {
+    	                    FindMyDevice_Start();
+    	                }
+    	                break;
+
+    	            case CMD_RESET_DEVICE:
+    	                NVIC_SystemReset();
+    	                break;
+
     	            default:
-    	                // Regular device state update (should have timestamp)
+    	                // Regular device state update
     	                deviceState = received_data[0];
+    	                if (data_length >= 2) {
+    	                    deviceInfo = received_data[1];
+    	                }
     	                HAL_Delay(5);
     	                LOCKSERVICE_ForceStatusUpdate();
     	                break;
@@ -333,17 +358,23 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification)
     case LOCKSERVICE_CONN_HANDLE_EVT :
       LOCKSERVICE_APP_Context.ConnectionHandle = p_Notification->ConnectionHandle;
       /* USER CODE BEGIN Service1_APP_CENTR_CONN_HANDLE_EVT */
+      PowerMgmt_RestoreAll();
+      StateMachine_UpdateBLEActivity();
+      connectionStatus = 1;
       LOCKSERVICE_ForceStatusUpdate();  // Force send on connection
+
+      /* If events were logged while disconnected, notify the app
+       * so it can pull them via the existing request/response protocol. */
+      if (MotionLogger_GetEventCount() > 0) {
+          LOCKSERVICE_SendEventCount();
+      }
       /* USER CODE END Service1_APP_CENTR_CONN_HANDLE_EVT */
       break;
     case LOCKSERVICE_DISCON_HANDLE_EVT :
       LOCKSERVICE_APP_Context.ConnectionHandle = 0xFFFF;
       /* USER CODE BEGIN Service1_APP_DISCON_HANDLE_EVT */
-      playTone(380,10);
-      HAL_Delay(10);
-      playTone(280,12);
-      HAL_Delay(10);
-      playTone(100,15);
+      connectionStatus = 0;
+      SOUND_Disconnected();
       /* USER CODE END Service1_APP_DISCON_HANDLE_EVT */
       break;
 
@@ -405,15 +436,43 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
   lockservice_notification_data.Length = 0;
 
   /* USER CODE BEGIN Service1Char2_NS_1*/
-  // Set notification to ON so it actually sends
-  notification_on_off = Devicestatus_NOTIFICATION_ON;
+  	notification_on_off = Devicestatus_NOTIFICATION_ON;
 
-  // Send deviceState (not deviceInfo)
-  a_LOCKSERVICE_UpdateCharData[0] = deviceState;
-  a_LOCKSERVICE_UpdateCharData[1] = deviceBattery;
+    /* Use cached battery values */
+    uint16_t voltage_mV = BATTERY_GetVoltage();
+    int16_t current_mA = BATTERY_GetCurrent();
+    uint16_t soc_percent = BATTERY_GetSOC();
 
-  // Set the actual length of data you're sending
-  lockservice_notification_data.Length = 2;
+    deviceBattery = soc_percent & 0x7F;
+
+    /* Set charging flag: cable plugged AND actually charging AND gauge not full */
+    if (IS_CABLE_PLUGGED() && IS_CHARGING_NOW() && !BATTERY_IsFullCached()) {
+        SET_BATTERY_CHARGING(deviceBattery);
+    } else {
+        CLEAR_BATTERY_CHARGING(deviceBattery);
+    }
+
+    /* Read live accelerometer data */
+    int16_t accel[3];
+    LIS2DUX12_ReadAcceleration(accel);
+
+    /* Pack data into BLE notification — 14 bytes */
+    a_LOCKSERVICE_UpdateCharData[0]  = deviceState;
+    a_LOCKSERVICE_UpdateCharData[1]  = deviceBattery;
+    a_LOCKSERVICE_UpdateCharData[2]  = (uint8_t)(current_mA & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[3]  = (uint8_t)((current_mA >> 8) & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[4]  = (uint8_t)(voltage_mV & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[5]  = (uint8_t)((voltage_mV >> 8) & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[6]  = lis2dux12_app_get_cached_mlc_state();
+    a_LOCKSERVICE_UpdateCharData[7]  = (uint8_t)(accel[0] & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[8]  = (uint8_t)((accel[0] >> 8) & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[9]  = (uint8_t)(accel[1] & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[10] = (uint8_t)((accel[1] >> 8) & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[11] = (uint8_t)(accel[2] & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[12] = (uint8_t)((accel[2] >> 8) & 0xFF);
+    a_LOCKSERVICE_UpdateCharData[13] = deviceInfo;
+
+    lockservice_notification_data.Length = 14;
   /* USER CODE END Service1Char2_NS_1*/
 
   if (notification_on_off != Devicestatus_NOTIFICATION_OFF && LOCKSERVICE_APP_Context.ConnectionHandle != 0xFFFF)

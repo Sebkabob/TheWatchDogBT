@@ -1,127 +1,467 @@
-/***************************************************************************
- * battery.c
- * created by Sebastian Forenza 2026
- *
- * Functions in charge of interfacing with the
- * BQ27427 Fuel Gauge IC and ____ Battery Charger IC
- ***************************************************************************/
-
 #include "battery.h"
-#include <stddef.h>
-#include "stm32wb0x_hal.h"  // Adjust based on your HAL
+#include "bq27427_reg.h"
+#include <stdio.h>
+#include "main.h"
 
-// Global handle for the BQ25186
-static BQ25186_Handle_t bq25186_handle;
+// Debug info structure
+typedef struct {
+    uint16_t device_type;
+    uint16_t flags;
+    uint16_t control_status;
+    uint16_t voltage_mV;
+    int16_t current_mA;
+    uint16_t soc_percent;
+    uint16_t design_capacity_mAh;
+    uint16_t remaining_capacity_mAh;
+} bq27427_debug_info_t;
 
-// External variable for battery percentage
-extern uint8_t deviceBattery;
+// Global battery state
+typedef struct {
+    uint16_t voltage_mV;
+    int16_t current_mA;
+    uint16_t soc_percent;
+    bool is_charging;
+    bool is_full;
+    bool is_low;
+    bool is_critical;
+    uint32_t last_update;
+} BatteryState_t;
 
-// I2C wrapper functions for the driver
-static int BQ25186_I2C_Write(uint8_t dev_addr, uint8_t reg_addr, uint8_t *data, uint16_t len) {
-    // Implement using your I2C peripheral (e.g., hi2c1)
-    extern I2C_HandleTypeDef hi2c1;  // Declare extern or pass as parameter
+static BatteryState_t battery_state = {0};
+static uint16_t cached_design_capacity = 0;
 
-    HAL_StatusTypeDef status = HAL_I2C_Mem_Write(&hi2c1, dev_addr << 1, reg_addr,
-                                                  I2C_MEMADD_SIZE_8BIT, data, len, 100);
-    return (status == HAL_OK) ? 0 : -1;
-}
+// Forward declaration for static function
+static uint8_t BATTERY_EstimateSOC_FromVoltage(uint16_t voltage_mV);
 
-static int BQ25186_I2C_Read(uint8_t dev_addr, uint8_t reg_addr, uint8_t *data, uint16_t len) {
-    // Implement using your I2C peripheral
-    extern I2C_HandleTypeDef hi2c1;
-
-    HAL_StatusTypeDef status = HAL_I2C_Mem_Read(&hi2c1, dev_addr << 1, reg_addr,
-                                                 I2C_MEMADD_SIZE_8BIT, data, len, 100);
-    return (status == HAL_OK) ? 0 : -1;
-}
-
-static void BQ25186_Delay_Ms(uint32_t ms) {
-    HAL_Delay(ms);
-}
-
-void Battery_Init(void) {
-    // Initialize the BQ25186 driver
-    BQ25186_Status_t status = BQ25186_Init(&bq25186_handle,
-                                            BQ25186_I2C_Write,
-                                            BQ25186_I2C_Read,
-                                            BQ25186_Delay_Ms);
-
-    if (status != BQ25186_OK) {
-        // Handle initialization error
-        // You might want to set an error flag or retry
-        return;
-    }
-
-    // Configure default charging parameters
-    BQ25186_SetBatteryVoltage(&bq25186_handle, 4150);  // 4.15V
-    BQ25186_SetChargeCurrent(&bq25186_handle, 300);     // 300mA
-    BQ25186_SetInputCurrentLimit(&bq25186_handle, BQ25186_ILIM_300MA);
-    BQ25186_SetWatchdog(&bq25186_handle, BQ25186_WATCHDOG_DISABLED); // No timeout for charging if no I2C activity
-    BQ25186_SetChargeEnable(&bq25186_handle, true);
-
-    // Set other parameters as needed
-    BQ25186_SetTerminationCurrent(&bq25186_handle, BQ25186_ITERM_10_PERCENT);
-    BQ25186_SetVINDPM(&bq25186_handle, BQ25186_VINDPM_4500MV);
-    BQ25186_SetThermalRegulation(&bq25186_handle, BQ25186_TREG_100C);
-}
-
-void Battery_Update(void) {
-    // Read status periodically
-    BQ25186_Status_Regs_t status;
-    BQ25186_GetStatus(&bq25186_handle, &status);
-
-    // Clear any faults
-    if (status.safety_timer_fault) {
-        BQ25186_ClearFaults(&bq25186_handle);
-    }
-
-    // Reset watchdog timer
-    BQ25186_ResetWatchdog(&bq25186_handle);
-}
-
-float Battery_GetCurrent(void) {
-    uint16_t current_ma;
-    BQ25186_Status_t status = BQ25186_GetChargeCurrent(&bq25186_handle, &current_ma);
-
-    if (status == BQ25186_OK) {
-        return current_ma / 1000.0f;  // Convert to amps
-    }
-    return 0.0f;
+bool BATTERY_TestCapacityRead(uint16_t *design_cap)
+{
+    *design_cap = cached_design_capacity;
+    return (*design_cap != 0);
 }
 
 /**
- * @brief Convert battery voltage to State of Charge percentage
- * @param voltage_v Battery voltage in volts
- * @return SOC percentage (0-100)
+ * @brief Initialize the BQ27427 fuel gauge
+ * @return true if initialization successful, false otherwise
  */
+bool BATTERY_Init(void)
+{
+    if (!bq27427_init()) {
+        return false;
+    }
 
-bool Battery_IsCharging(void) {
-    BQ25186_Status_Regs_t status;
-    BQ25186_GetStatus(&bq25186_handle, &status);
+    uint16_t device_type = bq27427_device_type();
+    if (device_type != 0x0427) {
+        return false;
+    }
 
-    return (status.chg_stat == BQ25186_CHG_STAT_CC_MODE ||
-            status.chg_stat == BQ25186_CHG_STAT_CV_MODE);
+    // Wait for INITCOMP after power-on
+    uint32_t init_start = HAL_GetTick();
+    while (!(bq27427_status() & BQ27427_STATUS_INITCOMP)) {
+        if ((HAL_GetTick() - init_start) >= 1500) {
+            return false;
+        }
+        HAL_Delay(10);
+    }
+
+    // Notify gauge of battery presence if BAT_DET is clear
+    if (!(bq27427_flags() & BQ27427_FLAG_BAT_DET)) {
+        bq27427_execute_control_word(BQ27427_CONTROL_BAT_INSERT);
+        HAL_Delay(100);
+    }
+
+    // Ensure correct chemistry (CHEM_B = 4.2V LiPo).
+    // bq27427_set_chem_id() handles enter/exit_config internally.
+    if (bq27427_chem_id() != BQ27427_CHEM_B) {
+        if (!bq27427_set_chem_id(BQ27427_CHEM_B)) {
+            return false;
+        }
+    }
+
+    // Check if already configured correctly
+    uint16_t current_capacity = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
+    uint16_t current_terminate_voltage = bq27427_terminate_voltage();
+    uint16_t current_taper_rate = bq27427_taper_rate();
+
+    bool needs_config = (current_capacity != 300) ||
+                        (current_terminate_voltage != 3000) ||
+                        (current_taper_rate != 100) ||
+                        bq27427_itpor_flag();
+
+    if (needs_config) {
+
+        if (!bq27427_enter_config(true)) {
+            return false;
+        }
+
+        if (!bq27427_set_current_polarity(0)) { // 0 = Positive current means battery is charging
+            return false;
+        }
+        if (!bq27427_set_capacity(300)) {
+            return false;
+        }
+        if (!bq27427_set_design_energy(1110)) {  // 300mAh * 3.7V
+            return false;
+        }
+        if (!bq27427_set_terminate_voltage(3000)) {
+            return false;
+        }
+        if (!bq27427_set_taper_rate(100)) {  // (300mAh / 30mA) * 10 = 100, CUTS OFF AT 26mA CHARGING
+            return false;
+        }
+
+        if (!bq27427_exit_config(true)) {
+            return false;
+        }
+
+        HAL_Delay(1000);
+    }
+
+    cached_design_capacity = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
+
+    // Initialize battery state
+    battery_state.last_update = 0;
+
+    return true;
 }
 
-bool Battery_IsFault(void) {
-    BQ25186_Status_Regs_t status;
-    BQ25186_GetStatus(&bq25186_handle, &status);
+/**
+ * @brief Update all battery parameters (call once per second max)
+ * @return true if update successful
+ */
+bool BATTERY_UpdateState(void)
+{
+    uint32_t now = HAL_GetTick();
 
-    return (status.vin_ovp || status.buvlo || status.safety_timer_fault);
+    if ((now - battery_state.last_update) < 1000) {
+        return true;
+    }
+
+    uint16_t flags = bq27427_flags();
+
+    // ITPOR set means gauge lost its config — reinitialize.
+    if (flags & BQ27427_FLAG_ITPOR) {
+        BATTERY_Init();
+        battery_state.last_update = 0;
+        return true;
+    }
+
+    battery_state.voltage_mV = bq27427_voltage();
+    battery_state.current_mA = bq27427_current(BQ27427_CURRENT_AVG);
+    battery_state.soc_percent = bq27427_soc(BQ27427_SOC_FILTERED);
+    battery_state.is_charging = (flags & BQ27427_FLAG_CHG) != 0;
+    battery_state.is_full = (flags & BQ27427_FLAG_FC) != 0;
+    battery_state.is_low = (flags & BQ27427_FLAG_SOC1) != 0;
+    battery_state.is_critical = (flags & BQ27427_FLAG_SOCF) != 0;
+
+    // If fuel gauge reports Full Charge (FC flag), ensure SOC shows 100%
+    if (battery_state.is_full && battery_state.soc_percent < 100) {
+        battery_state.soc_percent = 100;
+    }
+
+    battery_state.last_update = now;
+    return true;
 }
 
-void Battery_SetChargeCurrent(uint16_t current_mA) {
-    BQ25186_SetChargeCurrent(&bq25186_handle, current_mA);
+/**
+ * @brief Get cached voltage (call BATTERY_UpdateState first)
+ */
+uint16_t BATTERY_GetVoltage(void)
+{
+    return battery_state.voltage_mV;
 }
 
-void Battery_EnableCharging(bool enable) {
-    BQ25186_SetChargeEnable(&bq25186_handle, enable);
+/**
+ * @brief Get cached current (call BATTERY_UpdateState first)
+ */
+int16_t BATTERY_GetCurrent(void)
+{
+    return battery_state.current_mA;
 }
 
-void Battery_SetBatteryVoltage(uint16_t voltage_mv) {
-    BQ25186_SetBatteryVoltage(&bq25186_handle, voltage_mv);
+/**
+ * @brief Get cached SOC (call BATTERY_UpdateState first)
+ */
+uint16_t BATTERY_GetSOC(void)
+{
+    return battery_state.soc_percent;
 }
 
-BQ25186_Handle_t* Battery_GetHandle(void) {
-    return &bq25186_handle;
+/**
+ * @brief Get cached charging status (call BATTERY_UpdateState first)
+ */
+bool BATTERY_IsCharging(void)
+{
+    return battery_state.is_charging;
+}
+
+/**
+ * @brief Get cached full status (call BATTERY_UpdateState first)
+ */
+bool BATTERY_IsFullCached(void)
+{
+    return battery_state.is_full;
+}
+
+/**
+ * @brief Get cached low battery status (call BATTERY_UpdateState first)
+ */
+bool BATTERY_IsLowCached(void)
+{
+    return battery_state.is_low;
+}
+
+/**
+ * @brief Get cached critical battery status (call BATTERY_UpdateState first)
+ */
+bool BATTERY_IsCriticallyCached(void)
+{
+    return battery_state.is_critical;
+}
+
+/**
+ * @brief Get the current State of Charge (SOC) - LEGACY, use BATTERY_GetSOC instead
+ * @return State of charge in percent (0-100), or 0 if read fails
+ */
+uint16_t BATTERY_SOC(void)
+{
+    return bq27427_soc(BQ27427_SOC_FILTERED);
+}
+
+/**
+ * @brief Get the instantaneous current draw - LEGACY, use BATTERY_GetCurrent instead
+ * @return Current in mA (positive = charging, negative = discharging), or 0 if read fails
+ */
+int16_t BATTERY_Current(void)
+{
+    return bq27427_current(BQ27427_CURRENT_AVG);
+}
+
+/**
+ * @brief Get the battery voltage - LEGACY, use BATTERY_GetVoltage instead
+ * @return Voltage in mV, or 0 if read fails
+ */
+uint16_t BATTERY_Voltage(void)
+{
+    return bq27427_voltage();
+}
+
+/**
+ * @brief Verify BQ27427 operation and read all status
+ * @param info Pointer to debug info structure to populate
+ * @return true if all reads successful, false otherwise
+ */
+bool BATTERY_VerifyOperation(bq27427_debug_info_t *info)
+{
+    // Read device identification
+    info->device_type = bq27427_device_type();
+    if (info->device_type == 0) {
+        return false;
+    }
+
+    // Read status registers
+    info->flags = bq27427_flags();
+    info->control_status = bq27427_status();
+
+    // Read battery measurements
+    info->voltage_mV = bq27427_voltage();
+    info->current_mA = bq27427_current(BQ27427_CURRENT_AVG);
+    info->soc_percent = bq27427_soc(BQ27427_SOC_FILTERED);
+    info->design_capacity_mAh = cached_design_capacity;
+    info->remaining_capacity_mAh = bq27427_capacity(BQ27427_CAPACITY_REMAIN);
+
+    return true;
+}
+
+/**
+ * @brief Print detailed BQ27427 status (for debugging)
+ * @param info Pointer to debug info structure
+ */
+void BATTERY_PrintStatus(bq27427_debug_info_t *info)
+{
+    printf("\n=== BQ27427 Status ===\n");
+    printf("Device Type: 0x%04X (should be 0x0427)\n", info->device_type);
+
+    printf("\nFlags Register: 0x%04X\n", info->flags);
+    printf("  CFGUPMODE: %s\n", (info->flags & BQ27427_FLAG_CFGUPMODE) ? "SET (ERROR!)" : "Clear (OK)");
+    printf("  ITPOR:     %s\n", (info->flags & BQ27427_FLAG_ITPOR) ? "SET" : "Clear");
+    printf("  BAT_DET:   %s\n", (info->flags & BQ27427_FLAG_BAT_DET) ? "Detected" : "Not Detected");
+    printf("  FC:        %s\n", (info->flags & BQ27427_FLAG_FC) ? "Full" : "Not Full");
+    printf("  DSG:       %s\n", (info->flags & BQ27427_FLAG_DSG) ? "Discharging" : "Not Discharging");
+
+    printf("\nControl Status: 0x%04X\n", info->control_status);
+    printf("  INITCOMP:  %s\n", (info->control_status & BQ27427_STATUS_INITCOMP) ? "Complete (OK)" : "NOT Complete (ERROR!)");
+
+    printf("\nBattery Measurements:\n");
+    printf("  Voltage:            %u mV\n", info->voltage_mV);
+    printf("  Current:            %d mA\n", info->current_mA);
+    printf("  State of Charge:    %u %%\n", info->soc_percent);
+    printf("  Design Capacity:    %u mAh\n", info->design_capacity_mAh);
+    printf("  Remaining Capacity: %u mAh\n", info->remaining_capacity_mAh);
+
+    // Overall health check
+    printf("\n=== Health Check ===\n");
+    bool healthy = true;
+
+    if (info->device_type != 0x0427) {
+        printf("ERROR: Wrong device type!\n");
+        healthy = false;
+    }
+
+    if (info->flags & BQ27427_FLAG_CFGUPMODE) {
+        printf("ERROR: Still in CONFIG UPDATE mode!\n");
+        healthy = false;
+    }
+
+    if (!(info->control_status & BQ27427_STATUS_INITCOMP)) {
+        printf("ERROR: Initialization not complete!\n");
+        healthy = false;
+    }
+
+    if (!(info->flags & BQ27427_FLAG_BAT_DET)) {
+        printf("WARNING: Battery not detected\n");
+    }
+
+    if (info->voltage_mV < 2500) {
+        printf("WARNING: Battery voltage very low (< 2.5V)\n");
+    }
+
+    if (healthy) {
+        printf("SUCCESS: BQ27427 operating normally!\n");
+    } else {
+        printf("ERROR: BQ27427 has errors - check above\n");
+    }
+    printf("\n");
+}
+
+/**
+ * @brief Run BQ27427 self-test and print results
+ * @return true if gauge is operating normally, false if errors detected
+ * @note This function uses printf for debugging output
+ */
+bool BATTERY_SelfTest(void)
+{
+    bq27427_debug_info_t info;
+
+    if (!BATTERY_VerifyOperation(&info)) {
+        return false;
+    }
+
+    BATTERY_PrintStatus(&info);
+
+    // Return true only if all critical checks pass
+    bool healthy = true;
+
+    if (info.device_type != 0x0427) {
+        healthy = false;
+    }
+
+    if (info.flags & BQ27427_FLAG_CFGUPMODE) {
+        healthy = false;
+    }
+
+    if (!(info.control_status & BQ27427_STATUS_INITCOMP)) {
+        healthy = false;
+    }
+
+    return healthy;
+}
+
+/**
+ * @brief Estimate SOC percentage from battery voltage (LiPo curve)
+ * @param voltage_mV Battery voltage in millivolts
+ * @return Estimated SOC in percent (0-100)
+ * @note This is an approximation based on typical LiPo discharge curve
+ */
+static uint8_t BATTERY_EstimateSOC_FromVoltage(uint16_t voltage_mV)
+{
+    if (voltage_mV >= 4200) {
+        return 100;
+    } else if (voltage_mV >= 4100) {
+        return 90;
+    } else if (voltage_mV >= 4000) {
+        return 80;
+    } else if (voltage_mV >= 3950) {
+        return 75;
+    } else if (voltage_mV >= 3900) {
+        return 70;
+    } else if (voltage_mV >= 3850) {
+        return 65;
+    } else if (voltage_mV >= 3800) {
+        return 60;
+    } else if (voltage_mV >= 3750) {
+        return 55;
+    } else if (voltage_mV >= 3700) {
+        return 50;
+    } else if (voltage_mV >= 3650) {
+        return 40;
+    } else if (voltage_mV >= 3600) {
+        return 30;
+    } else if (voltage_mV >= 3500) {
+        return 20;
+    } else if (voltage_mV >= 3400) {
+        return 10;
+    } else if (voltage_mV >= 3300) {
+        return 5;
+    } else if (voltage_mV >= 3200) {
+        return 2;
+    } else {
+        return 1;
+    }
+}
+
+/**
+ * @brief Get quick status check (no printf)
+ * @param voltage_mV Output: battery voltage in mV
+ * @param soc_percent Output: state of charge in percent
+ * @param is_charging Output: true if battery is charging
+ * @return true if read successful, false otherwise
+ */
+bool BATTERY_GetStatus(uint16_t *voltage_mV, uint16_t *soc_percent, bool *is_charging)
+{
+    *voltage_mV = bq27427_voltage();
+    *soc_percent = bq27427_soc(BQ27427_SOC_FILTERED);
+    *is_charging = bq27427_chg_flag();
+
+    // If gauge is uncalibrated (SOC = 0), estimate from voltage
+    if (*soc_percent == 0 && *voltage_mV > 0) {
+        *soc_percent = BATTERY_EstimateSOC_FromVoltage(*voltage_mV);
+    }
+
+    return (*voltage_mV > 0);
+}
+
+/**
+ * @brief Check if battery is charging - LEGACY, use BATTERY_IsCharging instead
+ * @return true if charging, false otherwise
+ */
+bool BATTERY_Charging(void)
+{
+    return bq27427_chg_flag();
+}
+
+/**
+ * @brief Check if battery is critically low - LEGACY, use BATTERY_IsCriticallyCached instead
+ * @return true if battery is critically low, false otherwise
+ */
+bool BATTERY_IsCriticallyLow(void)
+{
+    return bq27427_socf_flag();
+}
+
+/**
+ * @brief Check if battery is low - LEGACY, use BATTERY_IsLowCached instead
+ * @return true if battery is low, false otherwise
+ */
+bool BATTERY_IsLow(void)
+{
+    return bq27427_soc_flag();
+}
+
+/**
+ * @brief Check if battery is fully charged - LEGACY, use BATTERY_IsFullCached instead
+ * @return true if battery is full, false otherwise
+ */
+bool BATTERY_IsFull(void)
+{
+    return bq27427_fc_flag();
 }

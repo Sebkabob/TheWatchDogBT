@@ -2,294 +2,330 @@
  * accelerometer.c
  * created by Sebastian Forenza 2026
  *
- * Functions in charge of interfacing with the
- * LIS2DUX accelerometer IC
+ * LIS2DUX12 accelerometer driver — MLC asset tracking mode.
+ * Loads the pre-built UCF configuration via lis2dux12_app module.
+ * INT1 (PB15) fires on MLC state changes; MLC/FSM data is read
+ * from the main loop (no I2C inside the ISR).
  ***************************************************************************/
 
 #include "main.h"
 #include "state_machine.h"
 #include "accelerometer.h"
+#include "lis2dux12_app.h"
 #include "lis2dux12_reg.h"
-#include "sound.h"
-#include "lights.h"
 #include <string.h>
-#include <stdio.h>
-#include <stdlib.h>
-
-/***************************************************************************
- * PRIVATE DEFINES
- ***************************************************************************/
-#define MOTION_THRESHOLD_LOW      2
-#define MOTION_THRESHOLD_MEDIUM   8
-#define MOTION_THRESHOLD_HIGH     20
-
-#define LIS2DUX_ADDRESS 0x19
-#define LIS2DUX12_I2C_ADDRESS_HIGH  0x19   // When SA0/SDO = VDD
 
 /***************************************************************************
  * PRIVATE VARIABLES
  ***************************************************************************/
 static volatile uint8_t motion_detected_flag = 0;
 
-/***************************************************************************
- * PRIVATE FUNCTION PROTOTYPES
- ***************************************************************************/
-static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp, uint16_t len);
-static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t len);
-
-/***************************************************************************
- * PLATFORM INTERFACE FUNCTIONS
- * These functions provide the hardware abstraction layer for the LIS2DUX12
- * driver to communicate over I2C.
- ***************************************************************************/
-static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp, uint16_t len) {
-    HAL_I2C_Mem_Write(handle, LIS2DUX12_I2C_ADD_H, reg, I2C_MEMADD_SIZE_8BIT, (uint8_t*)bufp, len, 1000);
-    return 0;
-}
-
-static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp, uint16_t len) {
-    HAL_I2C_Mem_Read(handle, LIS2DUX12_I2C_ADD_H, reg, I2C_MEMADD_SIZE_8BIT, bufp, len, 1000);
-    return 0;
-}
+/* Reference gravity vector captured when device is armed */
+static int16_t ref_accel[3] = {0, 0, 0};
+static uint8_t ref_valid = 0;
+static uint8_t tilt_state = 0;  /* hysteresis state: 0 = not tilted, 1 = tilted */
 
 /***************************************************************************
  * INTERRUPT HANDLER
- * This callback is triggered by the EXTI interrupt when the accelerometer
- * detects motion above the configured threshold. It sets a flag that can
- * be polled by the application without blocking.
+ * PB15 = ACCEL_INT — fires on MLC state change (pulsed, 40 ms).
+ * We only set a flag here; all I2C reads happen in the main loop.
  ***************************************************************************/
 void HAL_GPIO_EXTI_Callback(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin) {
-    if (GPIOx == GPIOB && GPIO_Pin == GPIO_PIN_0) {
-        // Read wake-up source to clear the latched interrupt
-        lis2dux12_all_sources_t all_sources;
-        lis2dux12_all_sources_get(&dev_ctx, &all_sources);
-
-        if (all_sources.wake_up) {
-            motion_detected_flag = 1;
-        } else {
-        	motion_detected_flag = 1; //TEMP
-        }
-
-        // Clear EXTI after reading sensor
-        __HAL_GPIO_EXTI_CLEAR_IT(GPIOB, GPIO_PIN_0);
+    if (GPIOx == ACCEL_INT_GPIO_Port && GPIO_Pin == ACCEL_INT_Pin) {
+        motion_detected_flag = 1;
+        __HAL_GPIO_EXTI_CLEAR_IT(ACCEL_INT_GPIO_Port, ACCEL_INT_Pin);
+    }
+    /* PB5 (DEBUG_GPIO) rising edge — wake device and hold awake.
+     * stayAwakeFlag keeps the BLE stack from entering DEEPSTOP. */
+    if (GPIOx == DEBUG_GPIO_GPIO_Port && GPIO_Pin == DEBUG_GPIO_Pin) {
+        extern volatile uint8_t stayAwakeFlag;
+        stayAwakeFlag = 1;
     }
 }
 
 /***************************************************************************
- * PUBLIC API - Motion Detection
+ * DEEPSTOP WAKEUP CALLBACK
+ * On STM32WB0x, DEEPSTOP wakeup goes through the PWR controller —
+ * NOT through EXTI.  So HAL_GPIO_EXTI_Callback never fires.
+ * The HAL calls this weak-override after context restore to let us
+ * set the flags that the main loop checks.
+ ***************************************************************************/
+void HAL_PWR_WKUPx_Callback(uint32_t WakeupIOs) {
+    if (WakeupIOs & PWR_WAKEUP_PB15) {
+        motion_detected_flag = 1;
+    }
+    if (WakeupIOs & PWR_WAKEUP_PB4) {
+        CablePlug_IRQCallback();
+    }
+    if (WakeupIOs & PWR_WAKEUP_PB5) {
+        /* Debug GPIO woke us — set stayAwakeFlag so device stays up */
+        extern volatile uint8_t stayAwakeFlag;
+        stayAwakeFlag = 1;
+    }
+}
+
+/***************************************************************************
+ * PUBLIC API — Motion Detection
  ***************************************************************************/
 
 void LIS2DUX12_ClearMotion(void) {
-	motion_detected_flag = 0;  // Clear the flag
+    motion_detected_flag = 0;
 }
 
-/**
- * @brief Non-blocking check for motion detection
- * @return 1 if motion was detected since last check, 0 otherwise
- * @note This function clears the motion flag after reading
- */
 uint8_t LIS2DUX12_IsMotionDetected(void) {
     if (motion_detected_flag) {
-        motion_detected_flag = 0;  // Clear the flag
-        return 1;  // Motion was detected
+        motion_detected_flag = 0;
+        return 1;
     }
-    return 0;  // No motion
+    return 0;
 }
 
-/**
- * @brief Peek at motion status without clearing flag
- * @return Current state of motion detection flag
- */
 uint8_t LIS2DUX12_PeekMotionStatus(void) {
     return motion_detected_flag;
 }
 
-/**
- * @brief Manually clear the motion detection flag
- */
 void LIS2DUX12_ClearMotionFlag(void) {
     motion_detected_flag = 0;
 }
 
 /***************************************************************************
- * INITIALIZATION
- * Configures the LIS2DUX12 accelerometer for low-power motion detection.
- * Sets up wake-up interrupt on INT1 pin with latched interrupt mode.
+ * INITIALIZATION — MLC asset tracking via UCF
  ***************************************************************************/
 int32_t LIS2DUX12_Init(void) {
-    // Initialize device context with I2C platform functions
-    dev_ctx.write_reg = platform_write;
-    dev_ctx.read_reg = platform_read;
-    dev_ctx.handle = &hi2c1;
-
-    HAL_Delay(50);  // Allow sensor to power up
-
-    // Verify WHO_AM_I register
-    uint8_t whoami;
-    int32_t ret = lis2dux12_device_id_get(&dev_ctx, &whoami);
-    if (ret != 0 || whoami != 0x47) {
-        return -1;  // Sensor not detected
-    }
-
-    // Perform software reset to ensure clean state
-    ret = lis2dux12_init_set(&dev_ctx, LIS2DUX12_RESET);
+    int ret = lis2dux12_app_init(&hi2c1);
     if (ret != 0) {
-        return -1;
+        return (int32_t)ret;
     }
 
-    HAL_Delay(50);  // Wait for reset to complete
-
-    // Configure sensor mode: 25Hz low-power for battery efficiency
-    lis2dux12_md_t md = {
-        .odr = LIS2DUX12_25Hz_LP,
-        .fs = LIS2DUX12_2g,
-        .bw = LIS2DUX12_ODR_div_4
-    };
-    ret = lis2dux12_mode_set(&dev_ctx, &md);
-    if (ret != 0) {
-        return -1;
+    /* Do an initial MLC read so the cached state is valid */
+    uint8_t mlc_out;
+    if (lis2dux12_app_get_mlc_output(&mlc_out) == 0) {
+        lis2dux12_app_update_cached_state(mlc_out);
     }
 
-    // Configure wake-up detection with medium sensitivity
-    lis2dux12_wakeup_config_t wake_cfg = {
-        .wake_enable = LIS2DUX12_SLEEP_ON,
-        .wake_ths = MOTION_THRESHOLD_LOW,
-        .wake_ths_weight = 0,
-        .wake_dur = LIS2DUX12_1_ODR,
-        .sleep_dur = 1,
-        .inact_odr = LIS2DUX12_ODR_NO_CHANGE
-    };
-    ret = lis2dux12_wakeup_config_set(&dev_ctx, wake_cfg);
-    if (ret != 0) {
-        return -1;
-    }
-
-    // Route wake-up interrupt to INT1 pin
-    lis2dux12_pin_int_route_t int_route = {0};
-    int_route.wake_up = PROPERTY_ENABLE;
-    ret = lis2dux12_pin_int1_route_set(&dev_ctx, &int_route);
-    if (ret != 0) {
-        return -1;
-    }
-
-    // Configure interrupt as latched (stays high until cleared)
-    lis2dux12_int_config_t int_cfg = {
-        .int_cfg = LIS2DUX12_DRDY_PULSED,
-        .dis_rst_lir_all_int = 0,
-        .sleep_status_on_int = 0
-    };
-    ret = lis2dux12_int_config_set(&dev_ctx, &int_cfg);
-    if (ret != 0) {
-        return -1;
-    }
-
-    return 0;  // Success
-}
-
-void LIS2DUX12_QuickReinit(void) {
-    // Just reinitialize I2C context
-    dev_ctx.write_reg = platform_write;
-    dev_ctx.read_reg = platform_read;
-    dev_ctx.handle = &hi2c1;
-
-    // Verify sensor is responsive (optional, but good for debugging)
-    uint8_t whoami = 0;
-    lis2dux12_device_id_get(&dev_ctx, &whoami);
-
-    // If sensor not responding, might need full reinit
-    if (whoami != 0x47) {
-        LIS2DUX12_Init();  // Fall back to full init
-    } else {
-        // Make sure interrupt is configured as pulsed
-        lis2dux12_int_config_t int_cfg = {
-            .int_cfg = LIS2DUX12_DRDY_PULSED,  // ← ADD THIS
-            .dis_rst_lir_all_int = 0,
-            .sleep_status_on_int = 0
-        };
-        lis2dux12_int_config_set(&dev_ctx, &int_cfg);
-    }
-}
-
-/***************************************************************************
- * CONFIGURATION FUNCTIONS
- * Allow runtime adjustment of motion detection sensitivity
- ***************************************************************************/
-
-/**
- * @brief Set motion detection threshold
- * @param threshold Motion threshold value (2=very sensitive, 20=less sensitive)
- * @return 0 on success, -1 on error
- */
-int32_t LIS2DUX12_SetMotionThreshold(uint8_t threshold) {
-    lis2dux12_wakeup_config_t wake_cfg = {
-        .wake_enable = LIS2DUX12_SLEEP_ON,
-        .wake_ths = threshold,
-        .wake_ths_weight = 0,
-        .wake_dur = LIS2DUX12_1_ODR,
-        .sleep_dur = 1,
-        .inact_odr = LIS2DUX12_ODR_NO_CHANGE
-    };
-
-    return lis2dux12_wakeup_config_set(&dev_ctx, wake_cfg);
+    return 0;
 }
 
 /***************************************************************************
  * POWER MANAGEMENT
- * Configure wake-up pin for entering low-power sleep mode
+ * Configure PB15 as a wake-up source from sleep
  ***************************************************************************/
+void LIS2DUX12_ConfigureWakeup(void) {
+    LL_PWR_EnableWakeUpPin(LL_PWR_WAKEUP_PB15);
+    LL_PWR_SetWakeUpPinPolarityHigh(LL_PWR_WAKEUP_PB15);
+
+    __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF19);   /* WUF19 = PB15 (was WUF0 = PB0) */
+    __HAL_GPIO_EXTI_CLEAR_IT(ACCEL_INT_GPIO_Port, ACCEL_INT_Pin);
+}
 
 /**
- * @brief Configure PB0 as a wake-up source from sleep
- * @note Call this before entering sleep mode
+ * @brief  Power down the LIS2DUX12 completely (ODR=0, ~0.4 µA).
+ *         No interrupts will fire. Call BEFORE gating I2C.
+ * @return 0 on success, non-zero on I2C error
  */
-void LIS2DUX12_ConfigureWakeup(void) {
-    // Enable PB0 as wakeup pin with rising edge polarity
-    LL_PWR_EnableWakeUpPin(LL_PWR_WAKEUP_PB0);
-    LL_PWR_SetWakeUpPinPolarityHigh(LL_PWR_WAKEUP_PB0);
+int32_t LIS2DUX12_PowerDown(void)
+{
+    lis2dux12_md_t mode = {
+        .odr = LIS2DUX12_OFF,
+        .fs  = LIS2DUX12_4g,
+        .bw  = LIS2DUX12_ODR_div_2,
+    };
+    return lis2dux12_mode_set(&dev_ctx, &mode);
+}
 
-    // Clear any pending wakeup flags
-    __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF0);
-    __HAL_GPIO_EXTI_CLEAR_IT(GPIOB, GPIO_PIN_0);
+/**
+ * @brief  Software-reset the LIS2DUX12 then power down (ODR=0, ~0.4 µA).
+ *
+ * Unlike plain LIS2DUX12_PowerDown(), this first performs a software
+ * reset to clear all MLC/FSM configuration.  With MLC/FSM still loaded,
+ * internal DSP blocks can draw >100 µA even at ODR=0.  The reset
+ * guarantees the sensor is in a clean, minimal-current state.
+ *
+ * No wake-up interrupts are configured — use this for idle (no motion
+ * detection needed).  Call BEFORE gating I2C.
+ *
+ * @return 0 on success, non-zero on I2C error
+ */
+int32_t LIS2DUX12_ResetAndPowerDown(void)
+{
+    int32_t ret;
+
+    /* 1. Software reset — clears MLC/FSM and all register config */
+    ret = lis2dux12_init_set(&dev_ctx, LIS2DUX12_RESET);
+    if (ret != 0) return ret;
+
+    lis2dux12_status_t status;
+    uint32_t timeout = HAL_GetTick() + 100;
+    do {
+        lis2dux12_status_get(&dev_ctx, &status);
+        if (HAL_GetTick() > timeout) return -1;
+    } while (status.sw_reset);
+
+    HAL_Delay(5);
+
+    /* 2. Set ODR=0 (power-down) — sensor draws ~0.4 µA */
+    lis2dux12_md_t mode = {
+        .odr = LIS2DUX12_OFF,
+        .fs  = LIS2DUX12_4g,
+        .bw  = LIS2DUX12_ODR_div_2,
+    };
+    ret = lis2dux12_mode_set(&dev_ctx, &mode);
+    if (ret != 0) return ret;
+
+    motion_detected_flag = 0;
+    return 0;
+}
+
+/**
+ * @brief  Reconfigure LIS2DUX12 into ultra-low-power wake-up-only mode.
+ *
+ * Replaces the full MLC/FSM configuration with a minimal setup:
+ *   - 1.6 Hz ultra-low-power ODR (~1.5 µA)
+ *   - Hardware wake-up interrupt on INT1 (any significant motion)
+ *   - No MLC, no FSM
+ *
+ * Call BEFORE gating I2C. After waking, call LIS2DUX12_Init() to
+ * reload the full MLC asset-tracking configuration.
+ *
+ * @return 0 on success, non-zero on I2C error
+ */
+int32_t LIS2DUX12_EnterUltraLowPowerWakeup(void)
+{
+    int32_t ret;
+
+    /* 1. Software reset to clear MLC/FSM configuration */
+    ret = lis2dux12_init_set(&dev_ctx, LIS2DUX12_RESET);
+    if (ret != 0) return ret;
+
+    lis2dux12_status_t status;
+    uint32_t timeout = HAL_GetTick() + 100;
+    do {
+        lis2dux12_status_get(&dev_ctx, &status);
+        if (HAL_GetTick() > timeout) return -1;
+    } while (status.sw_reset);
+
+    HAL_Delay(5);
+
+    /* 2. Set sensor mode: 1.6 Hz ULP, +/-2g for maximum wake sensitivity */
+    lis2dux12_md_t mode = {
+        .odr = LIS2DUX12_1Hz6_ULP,
+        .fs  = LIS2DUX12_2g,
+        .bw  = LIS2DUX12_ODR_div_2,
+    };
+    ret = lis2dux12_mode_set(&dev_ctx, &mode);
+    if (ret != 0) return ret;
+
+    /* 3. Configure wake-up detection:
+     *    - threshold ~31.25 mg (wake_ths=1, weight=0 → 1 LSB = FS/64 = 2000/64)
+     *    - wake duration = 1 ODR sample
+     *    - sleep enabled so sensor stays in low-current idle until motion */
+    lis2dux12_wakeup_config_t wkup_cfg = {0};
+    wkup_cfg.wake_ths        = 1;                     /* ~31.25 mg — maximum sensitivity */
+    wkup_cfg.wake_ths_weight = 0;                     /* coarse: FS/64 per LSB */
+    wkup_cfg.wake_dur        = LIS2DUX12_1_ODR;
+    wkup_cfg.sleep_dur       = 1;                     /* 512 ODR cycles to re-enter sleep */
+    wkup_cfg.wake_enable     = LIS2DUX12_SLEEP_ON;
+    wkup_cfg.inact_odr       = LIS2DUX12_ODR_1_6_HZ; /* 1.6 Hz during inactivity */
+    ret = lis2dux12_wakeup_config_set(&dev_ctx, wkup_cfg);
+    if (ret != 0) return ret;
+
+    /* 4. Route wake-up interrupt to INT1 (PB15) */
+    lis2dux12_pin_int_route_t int1_route = {0};
+    int1_route.wake_up = 1;
+    ret = lis2dux12_pin_int1_route_set(&dev_ctx, &int1_route);
+    if (ret != 0) return ret;
+
+    /* 5. Enable interrupts, latched mode.
+     *    Latched keeps INT1 HIGH until status is read via I2C,
+     *    ensuring the MCU reliably wakes from DEEPSTOP even for
+     *    brief motion events.  The interrupt is cleared by
+     *    lis2dux12_all_sources_get() before we gate I2C. */
+    lis2dux12_int_config_t int_cfg = {0};
+    int_cfg.int_cfg = LIS2DUX12_INT_LATCHED;
+    int_cfg.sleep_status_on_int = 0;
+    int_cfg.dis_rst_lir_all_int = 0;
+    ret = lis2dux12_int_config_set(&dev_ctx, &int_cfg);
+    if (ret != 0) return ret;
+
+    /* 6. Configure PB15 as DEEPSTOP wakeup source */
+    LIS2DUX12_ConfigureWakeup();
+
+    /* Clear any pending interrupt */
+    lis2dux12_all_sources_t all_src;
+    lis2dux12_all_sources_get(&dev_ctx, &all_src);
+    motion_detected_flag = 0;
+
+    return 0;
 }
 
 /***************************************************************************
  * UTILITY FUNCTIONS
- * Additional helper functions for debugging and testing
  ***************************************************************************/
-
-/**
- * @brief Clear all accelerometer interrupt sources
- */
 void LIS2DUX12_ClearAllInterrupts(void) {
-    lis2dux12_wake_up_src_t wake_src;
-    lis2dux12_read_reg(&dev_ctx, LIS2DUX12_WAKE_UP_SRC, (uint8_t*)&wake_src, 1);
-
-    lis2dux12_all_int_src_t all_int_src;
-    lis2dux12_read_reg(&dev_ctx, LIS2DUX12_ALL_INT_SRC, (uint8_t*)&all_int_src, 1);
-
-    lis2dux12_tap_src_t tap_src;
-    lis2dux12_read_reg(&dev_ctx, LIS2DUX12_TAP_SRC, (uint8_t*)&tap_src, 1);
-
-    lis2dux12_sixd_src_t sixd_src;
-    lis2dux12_read_reg(&dev_ctx, LIS2DUX12_SIXD_SRC, (uint8_t*)&sixd_src, 1);
+    /* Read main-page status registers to clear any latched flags */
+    lis2dux12_all_sources_t all_sources;
+    lis2dux12_all_sources_get(&dev_ctx, &all_sources);
 }
 
-/**
- * @brief Read raw acceleration data
- * @param accel Array to store X, Y, Z acceleration values
- */
 void LIS2DUX12_ReadAcceleration(int16_t accel[3]) {
     uint8_t data[6];
-    lis2dux12_read_reg(&dev_ctx, 0x25, data, 6);  // OUTX_L register
 
-    accel[0] = (int16_t)((data[1] << 8) | data[0]);
-    accel[1] = (int16_t)((data[3] << 8) | data[2]);
-    accel[2] = (int16_t)((data[5] << 8) | data[4]);
+    // Read 6 bytes starting from OUT_X_L (0x28)
+    // This fills data[0]=0x28, data[1]=0x29, data[2]=0x2A, etc.
+    lis2dux12_read_reg(&dev_ctx, 0x28, data, 6);
+
+    // Combine (High << 8) | Low
+    accel[0] = (int16_t)((data[1] << 8) | data[0]); // X-axis
+    accel[1] = (int16_t)((data[3] << 8) | data[2]); // Y-axis
+    accel[2] = (int16_t)((data[5] << 8) | data[4]); // Z-axis
 }
 
-/**
- * @brief Scan I2C bus for devices (debugging)
- */
+/***************************************************************************
+ * TILT DETECTION
+ * Compares current gravity vector to the reference captured at arming.
+ * Uses integer math only (no FPU on Cortex-M0+).
+ *
+ * Math: |cur - ref|^2 = 2 * |g|^2 * (1 - cos(theta))
+ *       For theta > 15 deg:  2*(1 - cos(15)) = 0.0681
+ *       So tilt > 15 deg when: diff_sq * 15 > ref_sq
+ *       (because 1/0.0681 ~ 14.68, rounded to 15)
+ ***************************************************************************/
+void LIS2DUX12_CaptureReference(void) {
+    LIS2DUX12_ReadAcceleration(ref_accel);
+    ref_valid = 1;
+    tilt_state = 0;
+}
+
+uint8_t LIS2DUX12_CheckTilt(void) {
+    if (!ref_valid) return 0;
+
+    int16_t cur[3];
+    LIS2DUX12_ReadAcceleration(cur);
+
+    int32_t dx = (int32_t)cur[0] - ref_accel[0];
+    int32_t dy = (int32_t)cur[1] - ref_accel[1];
+    int32_t dz = (int32_t)cur[2] - ref_accel[2];
+
+    int32_t diff_sq = dx * dx + dy * dy + dz * dz;
+    int32_t ref_sq  = (int32_t)ref_accel[0] * ref_accel[0]
+                    + (int32_t)ref_accel[1] * ref_accel[1]
+                    + (int32_t)ref_accel[2] * ref_accel[2];
+
+    /* Avoid div-by-zero if reference is all zeros */
+    if (ref_sq == 0) return 0;
+
+    /* Hysteresis: 15° to enter tilt, 10° to exit.
+     *   15°: 2*(1-cos(15)) = 0.0681 → multiplier 15  (1/0.0681 ≈ 14.68)
+     *   10°: 2*(1-cos(10)) = 0.0304 → multiplier 33  (1/0.0304 ≈ 32.9)  */
+    if (tilt_state == 0) {
+        if (diff_sq * 15 > ref_sq) tilt_state = 1;  /* enter at 15° */
+    } else {
+        if (diff_sq * 33 <= ref_sq) tilt_state = 0;  /* exit at 10° */
+    }
+
+    return tilt_state;
+}
+
 void LIS2DUX12_I2CScan(void) {
     for (uint8_t i = 0; i < 128; i++) {
         uint16_t address = (uint16_t)(i << 1);

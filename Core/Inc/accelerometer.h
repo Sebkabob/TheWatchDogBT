@@ -12,103 +12,95 @@
 #include "lis2dux12_reg.h"
 
 /***************************************************************************
- * PUBLIC DEFINES
- ***************************************************************************/
-#define MOTION_THRESHOLD_LOW      2
-#define MOTION_THRESHOLD_MEDIUM   8
-#define MOTION_THRESHOLD_HIGH     20
-
-/***************************************************************************
- * PUBLIC TYPES
- ***************************************************************************/
-// Add any public types here if needed in the future
-
-/***************************************************************************
  * PUBLIC VARIABLES
  ***************************************************************************/
 extern stmdev_ctx_t dev_ctx;
-extern I2C_HandleTypeDef hi2c1;  // Add this line!
+extern I2C_HandleTypeDef hi2c1;
 
 /***************************************************************************
  * PUBLIC FUNCTION PROTOTYPES
  ***************************************************************************/
 
 /**
- * @brief Initialize the LIS2DUX12 accelerometer
- * @details Configures the sensor for low-power motion detection with
- *          wake-up interrupt on INT1 pin. Sets 25Hz ODR, ±2g range.
- * @return 0 on success, -1 on error
+ * @brief Initialize the LIS2DUX12 with MLC asset tracking configuration.
+ * @details Loads the UCF config that programs the MLC decision tree and
+ *          FSM programs. After init the sensor runs at 25 Hz, +/-16 g,
+ *          low-power mode with on-chip motion classification.
+ * @return 0 on success, negative on error
  */
 int32_t LIS2DUX12_Init(void);
-void LIS2DUX12_QuickReinit(void);
 
 /**
- * @brief Non-blocking check for motion detection
- * @details Checks if motion has been detected since the last call.
- *          This function clears the motion flag after reading.
- * @return 1 if motion was detected, 0 otherwise
- * @note This is the main function to use in your application loop
+ * @brief Non-blocking check for motion detection (interrupt flag).
+ * @details Checks if the ACCEL_INT pin fired since the last call.
+ *          Clears the flag after reading.
+ * @return 1 if interrupt occurred, 0 otherwise
  */
-void LIS2DUX12_ClearMotion(void);
 uint8_t LIS2DUX12_IsMotionDetected(void);
 
 /**
- * @brief Peek at motion status without clearing flag
- * @details Check the current state of the motion detection flag
- *          without clearing it. Useful for checking state without
- *          consuming the event.
+ * @brief Peek at motion status without clearing flag.
  * @return Current state of motion detection flag
  */
 uint8_t LIS2DUX12_PeekMotionStatus(void);
 
 /**
- * @brief Manually clear the motion detection flag
- * @details Resets the motion detection flag without reading it.
- *          Useful when you want to discard pending motion events.
+ * @brief Clear the motion detection flag without reading it.
  */
+void LIS2DUX12_ClearMotion(void);
 void LIS2DUX12_ClearMotionFlag(void);
 
 /**
- * @brief Set motion detection threshold
- * @details Adjust the sensitivity of motion detection at runtime.
- *          Lower values = more sensitive, higher values = less sensitive.
- * @param threshold Motion threshold value (recommended: 2-20)
- *                  - 2  = very sensitive (detects small vibrations)
- *                  - 8  = medium sensitivity (recommended for security)
- *                  - 20 = less sensitive (only larger movements)
- * @return 0 on success, -1 on error
- */
-int32_t LIS2DUX12_SetMotionThreshold(uint8_t threshold);
-
-/**
- * @brief Configure PB0 as a wake-up source from sleep mode
- * @details Sets up the accelerometer interrupt pin to wake the MCU
- *          from low-power sleep mode when motion is detected.
- * @note Call this function before entering sleep mode
+ * @brief Configure PB15 as a wake-up source from sleep mode.
+ * @note Call before entering low-power sleep.
  */
 void LIS2DUX12_ConfigureWakeup(void);
 
 /**
- * @brief Clear all accelerometer interrupt sources
- * @details Reads all interrupt source registers to clear any
- *          pending interrupts (wake-up, tap, 6D, etc.)
+ * @brief Power down accel completely (ODR=0, ~0.4 µA). No interrupts.
+ * @return 0 on success, non-zero on I2C error
+ */
+int32_t LIS2DUX12_PowerDown(void);
+
+/**
+ * @brief Software-reset then power down (~0.4 µA). Clears MLC/FSM residual config.
+ * @return 0 on success, non-zero on I2C error
+ */
+int32_t LIS2DUX12_ResetAndPowerDown(void);
+
+/**
+ * @brief Reconfigure accel into ultra-low-power wake-up-only mode (~1.5 µA).
+ * @details Replaces MLC/FSM with a minimal 1.6 Hz wake-up-on-motion config.
+ *          Call BEFORE gating I2C. Use LIS2DUX12_Init() to restore full config.
+ * @return 0 on success, non-zero on I2C error
+ */
+int32_t LIS2DUX12_EnterUltraLowPowerWakeup(void);
+
+/**
+ * @brief Clear all accelerometer interrupt sources.
  */
 void LIS2DUX12_ClearAllInterrupts(void);
 
 /**
- * @brief Read raw acceleration data
- * @details Reads the current X, Y, Z acceleration values from the sensor
- * @param accel Array of 3 int16_t to store [X, Y, Z] acceleration values
- * @note Raw values are in LSB units. Convert using sensitivity factor:
- *       - ±2g: multiply by 0.061 to get mg
+ * @brief Read raw acceleration data [X, Y, Z].
  */
 void LIS2DUX12_ReadAcceleration(int16_t accel[3]);
 
 /**
- * @brief Scan I2C bus for devices
- * @details Scans all I2C addresses (0-127) and checks for device presence.
- *          Useful for debugging I2C communication issues.
- * @note This is a debugging function and should not be used in production
+ * @brief Capture current gravity vector as the reference orientation.
+ * @note  Call when device is armed/locked and stationary.
+ */
+void LIS2DUX12_CaptureReference(void);
+
+/**
+ * @brief Check if device is tilted > 15 deg from its reference orientation.
+ * @note  Only meaningful when device is stationary (no dynamic accel).
+ * @return 1 if tilted beyond threshold, 0 otherwise
+ */
+uint8_t LIS2DUX12_CheckTilt(void);
+
+/**
+ * @brief Scan I2C bus for devices (debug only).
  */
 void LIS2DUX12_I2CScan(void);
 

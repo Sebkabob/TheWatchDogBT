@@ -20,7 +20,6 @@
 /* USER CODE BEGIN Includes */
 #include "state_machine.h"
 #include "lis2dux12_reg.h"
-#include "bq25186_reg.h"
 #include "battery.h"
 #include "app_ble.h"
 #include "accelerometer.h"
@@ -31,6 +30,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "lockservice_app.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -58,6 +58,7 @@ PKA_HandleTypeDef hpka;
 RNG_HandleTypeDef hrng;
 
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim16;
 
 UART_HandleTypeDef huart1;
 
@@ -74,55 +75,35 @@ static void MX_RNG_Init(void);
 static void MX_PKA_Init(void);
 static void MX_RADIO_Init(void);
 static void MX_RADIO_TIMER_Init(void);
+static void MX_TIM16_Init(void);
 /* USER CODE BEGIN PFP */
-
+static void MX_GPIO_LowPower_Unused(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-void Enter_Sleep_Mode_Optimized(void) {
-    // Stop BLE if active
-    if (APP_BLE_Get_Server_Connection_Status() != APP_BLE_IDLE) {
-        APP_BLE_Procedure_Gap_Peripheral(PROC_GAP_PERIPH_ADVERTISE_STOP);
-        HAL_Delay(100);  // Allow BLE stack to settle
-    }
-
-    // Enter deep stop mode (sensor clearing is handled internally)
-    Enter_DeepStop_Mode();
-
-    // ---- System wakes up here ----
-
-    // Reinitialize after wakeup
-    Wakeup_System_Init();
-}
-
-/* Add this to your main.c in the USER CODE BEGIN 0 section */
-
-// Function to reinitialize after deep stop wakeup
-void Reinitialize_Peripherals_After_Wakeup(void)
+/**
+ * @brief Configure unused pins as analog to minimize leakage current.
+ *        Call after MX_GPIO_Init() and before entering main loop.
+ */
+static void MX_GPIO_LowPower_Unused(void)
 {
-	  HAL_Init();
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Mode = GPIO_MODE_ANALOG;
+    gpio.Pull = GPIO_NOPULL;
 
-	  SystemClock_Config();
+    /*
+     * PA9 — USART1_TX. Set to analog since UART is disabled in production.
+     * STAT (charge status) is now on PA11, configured by MX_GPIO_Init.
+     */
+    gpio.Pin = GPIO_PIN_9;
+    HAL_GPIO_Init(GPIOA, &gpio);
 
-	  PeriphCommonClock_Config();
-
-	  MX_GPIO_Init();
-	  MX_TIM2_Init();
-	  MX_I2C1_Init();
-	  MX_RNG_Init();
-	  MX_PKA_Init();
-	  MX_RADIO_Init();
-	  MX_RADIO_TIMER_Init();
-
-	  MotionLogger_Init();
-	  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-	  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
-	  firstBootTone();
-	  HAL_Delay(100);
-	  LIS2DUX12_Init();
-	  Battery_Init();
+    /*
+     * PB14 — USART1_RX. Set to analog since UART is disabled.
+     */
+    gpio.Pin = GPIO_PIN_14;
+    HAL_GPIO_Init(GPIOB, &gpio);
 }
 /* USER CODE END 0 */
 
@@ -164,22 +145,40 @@ int main(void)
   MX_PKA_Init();
   MX_RADIO_Init();
   MX_RADIO_TIMER_Init();
+  MX_TIM16_Init();
   /* USER CODE BEGIN 2 */
+
+  /*
+   * DO NOT call MX_USART1_UART_Init() here in production!
+   * UART init reconfigures PA9 as AF push-pull, wasting ~100+µA.
+   * If you need debug UART, call MX_USART1_UART_Init() manually
+   * only while cable is plugged in.
+   */
+
+  BUZZER_Init();
+
+  /* === Power up I2C bus BEFORE I2C init === */
+  HAL_GPIO_WritePin(I2C_POWER_GPIO_Port, I2C_POWER_Pin, GPIO_PIN_SET);
+  HAL_Delay(5); /* let power rail stabilize */
+
+  /* === Keep EEPROM off by default === */
+  HAL_GPIO_WritePin(EEPROM_POW_GPIO_Port, EEPROM_POW_Pin, GPIO_PIN_RESET);
+
+  /* === Fix unused pins for low power === */
+  MX_GPIO_LowPower_Unused();
+
+  /* All 3 LEDs are now TIM2 HW PWM — no software init needed */
   MotionLogger_Init();
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   HAL_Delay(100);
   LIS2DUX12_Init();
-  Battery_Init();
+  BATTERY_Init();
 
-  // Safe boot mode in case of sleep loop
-  if (HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0){
-	  playTone(300,50);
-	  playTone(200,30);
-	  playTone(100,20);
-	  while(HAL_GPIO_ReadPin(GPIOB, CHARGE_Pin) == 0);
-  } else {
-	  //Enter_Sleep_Mode_Optimized();
+  /* Safe boot mode: hold while cable plugged in */
+  if (IS_CABLE_PLUGGED()) {
+      BUZZER_Tone(300, 50);
+      BUZZER_Tone(200, 30);
+      BUZZER_Tone(100, 20);
+      while (IS_CABLE_PLUGGED());
   }
   /* USER CODE END 2 */
 
@@ -188,17 +187,35 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+
+
   firstBootTone();
   StateMachine_Init();
 
-  HAL_Delay(5000);  // Wait 5 seconds
-  StateMachine_ChangeState(STATE_SLEEP);  // Force sleep
   while (1)
   {
     /* USER CODE END WHILE */
     MX_APPE_Process();
 
     /* USER CODE BEGIN 3 */
+    static uint32_t last_battery_check = 0;
+    if (HAL_GetTick() - last_battery_check > 1000) {
+        last_battery_check = HAL_GetTick();
+        if (!PowerMgmt_IsLowPower()) {
+            BATTERY_UpdateState();
+        }
+    }
+
+    /* BLE status update: 20ms (~50Hz) in high-perf mode, 500ms otherwise */
+    static uint32_t last_status_send = 0;
+    uint32_t status_interval = GET_HIGHPERF_BIT(deviceInfo) ? 20 : 500;
+    if (HAL_GetTick() - last_status_send >= status_interval) {
+        last_status_send = HAL_GetTick();
+        if (!PowerMgmt_IsLowPower()) {
+            LOCKSERVICE_SendStatusUpdate();
+        }
+    }
+
     StateMachine_Run();
 
   }
@@ -217,9 +234,9 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE|RCC_OSCILLATORTYPE_LSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -393,9 +410,9 @@ static void MX_RADIO_TIMER_Init(void)
   }
   /* Wait to be sure that the Radio Timer is active */
   while(LL_RADIO_TIMER_GetAbsoluteTime(WAKEUP) < 0x10);
-  RADIO_TIMER_InitStruct.XTAL_StartupTime = 1000;
-  RADIO_TIMER_InitStruct.enableInitialCalibration = FALSE;
-  RADIO_TIMER_InitStruct.periodicCalibrationInterval = 0;
+  RADIO_TIMER_InitStruct.XTAL_StartupTime = 320;
+  RADIO_TIMER_InitStruct.enableInitialCalibration = TRUE;
+  RADIO_TIMER_InitStruct.periodicCalibrationInterval = 10000;
   HAL_RADIO_TIMER_Init(&RADIO_TIMER_InitStruct);
   /* USER CODE BEGIN RADIO_TIMER_Init 2 */
 
@@ -470,10 +487,6 @@ static void MX_TIM2_Init(void)
   sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
   if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
   {
     Error_Handler();
@@ -482,10 +495,77 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
   HAL_TIM_MspPostInit(&htim2);
+
+}
+
+/**
+  * @brief TIM16 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM16_Init(void)
+{
+
+  /* USER CODE BEGIN TIM16_Init 0 */
+
+  /* USER CODE END TIM16_Init 0 */
+
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+
+  /* USER CODE BEGIN TIM16_Init 1 */
+
+  /* USER CODE END TIM16_Init 1 */
+  htim16.Instance = TIM16;
+  htim16.Init.Prescaler = 31;
+  htim16.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim16.Init.Period = 999;
+  htim16.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim16.Init.RepetitionCounter = 0;
+  htim16.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim16) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim16) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim16, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.BreakAFMode = TIM_BREAK_AFMODE_INPUT;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim16, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM16_Init 2 */
+
+  /* USER CODE END TIM16_Init 2 */
+  HAL_TIM_MspPostInit(&htim16);
 
 }
 
@@ -547,26 +627,78 @@ static void MX_GPIO_Init(void)
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
+  /* Buzzer pin (PB0) is now TIM16_CH1 AF — configured by HAL_TIM_MspPostInit.
+   * No manual GPIO setup needed here. BUZZER_Init() ensures PWM is stopped. */
+
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
-  /*Configure GPIO pin : CHARGE_Pin */
-  GPIO_InitStruct.Pin = CHARGE_Pin;
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPOUT_GPIO_Port, GPOUT_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(I2C_POWER_GPIO_Port, I2C_POWER_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(EEPROM_POW_GPIO_Port, EEPROM_POW_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : PA2 */
+  GPIO_InitStruct.Pin = GPIO_PIN_2;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Alternate = GPIO_AF7_SWDIO;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : GPOUT_Pin I2C_POWER_Pin */
+  GPIO_InitStruct.Pin = GPOUT_Pin|I2C_POWER_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : STAT_Pin */
+  GPIO_InitStruct.Pin = STAT_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(CHARGE_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(STAT_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PB0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  /*Configure GPIO pins : ACCEL_INT_Pin DEBUG_GPIO_Pin */
+  GPIO_InitStruct.Pin = ACCEL_INT_Pin|DEBUG_GPIO_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : EEPROM_POW_Pin */
+  GPIO_InitStruct.Pin = EEPROM_POW_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(EEPROM_POW_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : BQ251_PG_Pin */
+  GPIO_InitStruct.Pin = BQ251_PG_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(BQ251_PG_GPIO_Port, &GPIO_InitStruct);
+
   /**/
-  HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_3);
+  HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_2|PWR_GPIO_BIT_11);
+
+  /**/
+  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_10);
+
+  /**/
+  HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_B, PWR_GPIO_BIT_6);
+
+  /**/
+  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_8|PWR_GPIO_BIT_10);
+
+  /**/
+  HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B, PWR_GPIO_BIT_6);
 
   /*RT DEBUG GPIO_Init */
   RT_DEBUG_GPIO_Init();
@@ -581,7 +713,9 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+void MX_I2C1_Reinit(void)  { MX_I2C1_Init();  }
+void MX_TIM2_Reinit(void)  { MX_TIM2_Init();   }
+void MX_TIM16_Reinit(void) { MX_TIM16_Init();  }
 /* USER CODE END 4 */
 
 /**

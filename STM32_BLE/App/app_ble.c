@@ -528,7 +528,7 @@ void APP_BLE_Init(void)
   /* USER CODE END APP_BLE_Init_3 */
 
   /* USER CODE BEGIN APP_BLE_Init_2 */
-  APP_BLE_Procedure_Gap_Peripheral(PROC_GAP_PERIPH_ADVERTISE_START_FAST);
+  APP_BLE_Procedure_Gap_Peripheral(PROC_GAP_PERIPH_ADVERTISE_START_LP);
   /* USER CODE END APP_BLE_Init_2 */
 
   return;
@@ -594,7 +594,7 @@ void BLEEVT_App_Notification(const hci_pckt *hci_pckt)
       LOCKSERVICEHandleNotification.ConnectionHandle = p_disconnection_complete_event->Connection_Handle;
       LOCKSERVICE_APP_EvtRx(&LOCKSERVICEHandleNotification);
       /* USER CODE BEGIN EVT_DISCONN_COMPLETE */
-      APP_BLE_Procedure_Gap_Peripheral(PROC_GAP_PERIPH_ADVERTISE_START_FAST);
+      APP_BLE_Procedure_Gap_Peripheral(PROC_GAP_PERIPH_ADVERTISE_START_LP);
       /* USER CODE END EVT_DISCONN_COMPLETE */
     }
     break;

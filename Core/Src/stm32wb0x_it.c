@@ -26,6 +26,7 @@
 #include "stm32wb0x_ll_usart.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "state_machine.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -59,7 +60,7 @@
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
-
+extern TIM_HandleTypeDef htim16;
 /* USER CODE BEGIN EV */
 
 /* USER CODE END EV */
@@ -159,15 +160,42 @@ void RCC_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles TIM16 global interrupt.
+  */
+void TIM16_IRQHandler(void)
+{
+  /* USER CODE BEGIN TIM16_IRQn 0 */
+
+  /* USER CODE END TIM16_IRQn 0 */
+  HAL_TIM_IRQHandler(&htim16);
+  /* USER CODE BEGIN TIM16_IRQn 1 */
+
+  /* USER CODE END TIM16_IRQn 1 */
+}
+
+/**
   * @brief This function handles GPIOB interrupt.
   */
 void GPIOB_IRQHandler(void)
 {
   /* USER CODE BEGIN GPIOB_IRQn 0 */
-	__HAL_GPIO_EXTI_CLEAR_IT(GPIOB, GPIO_PIN_0);
+
+	  /*
+	   * Check PB4 (BQ251_PG) FIRST — cable plug/unplug event.
+	   * PG is active-low: falling edge = cable plugged in.
+	   */
+	  if (__HAL_GPIO_EXTI_GET_IT(GPIOB, BQ251_PG_Pin)) {
+	      __HAL_GPIO_EXTI_CLEAR_IT(GPIOB, BQ251_PG_Pin);
+
+	      /* Wake MCU and keep it awake — the state machine will
+	       * handle restoring peripherals and showing charge status. */
+	      CablePlug_IRQCallback();
+	  }
 
   /* USER CODE END GPIOB_IRQn 0 */
-  HAL_GPIO_EXTI_IRQHandler(GPIOB,GPIO_PIN_0);
+  HAL_GPIO_EXTI_IRQHandler(GPIOB,GPIO_PIN_5);
+  HAL_GPIO_EXTI_IRQHandler(GPIOB,GPIO_PIN_15);
+  HAL_GPIO_EXTI_IRQHandler(GPIOB,GPIO_PIN_4);
   /* USER CODE BEGIN GPIOB_IRQn 1 */
 
   /* USER CODE END GPIOB_IRQn 1 */

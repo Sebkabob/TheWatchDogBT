@@ -572,6 +572,13 @@ uint16_t bq27427_status(void);
  */
 bool bq27427_reset(void);
 
+/**
+ * @brief Execute a control sub-command (write-only, no response read)
+ * @param function Control sub-command word (BQ27427_CONTROL_*)
+ * @return true on I2C success
+ */
+bool bq27427_execute_control_word(uint16_t function);
+
 #ifdef __cplusplus
 }
 #endif

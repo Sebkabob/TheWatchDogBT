@@ -43,7 +43,6 @@ static bool bq27427_soft_reset(void);
 
 static uint16_t bq27427_read_word(uint16_t sub_address);
 static uint16_t bq27427_read_control_word(uint16_t function);
-static bool bq27427_execute_control_word(uint16_t function);
 
 static bool bq27427_block_data_control(void);
 static bool bq27427_block_data_class(uint8_t id);
@@ -422,13 +421,13 @@ bool bq27427_dsg_flag(void)
 
 uint8_t bq27427_soci_delta(void)
 {
-    return bq27427_read_extended_data(BQ27427_ID_STATE, 26);
+    return bq27427_read_extended_data(BQ27427_ID_STATE, 20);
 }
 
 bool bq27427_set_soci_delta(uint8_t delta)
 {
     uint8_t soci = constrain_uint8(delta, 0, 100);
-    return bq27427_write_extended_data(BQ27427_ID_STATE, 26, &soci, 1);
+    return bq27427_write_extended_data(BQ27427_ID_STATE, 20, &soci, 1);
 }
 
 bool bq27427_pulse_gpout(void)
@@ -593,10 +592,9 @@ static bool bq27427_seal(void)
 
 static bool bq27427_unseal(void)
 {
-    if (bq27427_read_control_word(BQ27427_UNSEAL_KEY)) {
-        return bq27427_read_control_word(BQ27427_UNSEAL_KEY) != 0;
-    }
-    return false;
+    bq27427_execute_control_word(BQ27427_UNSEAL_KEY);
+    bq27427_execute_control_word(BQ27427_UNSEAL_KEY);
+    return !bq27427_sealed();
 }
 
 static uint16_t bq27427_op_config(void)
@@ -641,7 +639,7 @@ static uint16_t bq27427_read_control_word(uint16_t function)
     return 0;
 }
 
-static bool bq27427_execute_control_word(uint16_t function)
+bool bq27427_execute_control_word(uint16_t function)
 {
     uint8_t sub_command_msb = (function >> 8);
     uint8_t sub_command_lsb = (function & 0x00FF);
@@ -724,9 +722,6 @@ static uint8_t bq27427_read_extended_data(uint8_t class_id, uint8_t offset)
     }
 
     bq27427_block_data_offset(offset / 32);
-
-    bq27427_compute_block_checksum();
-    bq27427_block_data_checksum();
 
     ret_data = bq27427_read_block_data(offset % 32);
 

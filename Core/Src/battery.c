@@ -28,13 +28,14 @@ typedef struct {
 } BatteryState_t;
 
 static BatteryState_t battery_state = {0};
+static uint16_t cached_design_capacity = 0;
 
 // Forward declaration for static function
 static uint8_t BATTERY_EstimateSOC_FromVoltage(uint16_t voltage_mV);
 
 bool BATTERY_TestCapacityRead(uint16_t *design_cap)
 {
-    *design_cap = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
+    *design_cap = cached_design_capacity;
     return (*design_cap != 0);
 }
 
@@ -53,6 +54,27 @@ bool BATTERY_Init(void)
         return false;
     }
 
+    // Wait for INITCOMP after power-on
+    uint32_t init_start = HAL_GetTick();
+    while (!(bq27427_status() & BQ27427_STATUS_INITCOMP)) {
+        if ((HAL_GetTick() - init_start) >= 1500) {
+            return false;
+        }
+        HAL_Delay(10);
+    }
+
+    // Notify gauge of battery presence if BAT_DET is clear
+    if (!(bq27427_flags() & BQ27427_FLAG_BAT_DET)) {
+        bq27427_execute_control_word(BQ27427_CONTROL_BAT_INSERT);
+        HAL_Delay(100);
+    }
+
+    // Ensure correct chemistry (CHEM_B = 4.2V LiPo).
+    // bq27427_set_chem_id() handles enter/exit_config internally.
+    if (bq27427_chem_id() != BQ27427_CHEM_B) {
+        bq27427_set_chem_id(BQ27427_CHEM_B);
+    }
+
     // Check if already configured correctly
     uint16_t current_capacity = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
     uint16_t current_terminate_voltage = bq27427_terminate_voltage();
@@ -60,7 +82,8 @@ bool BATTERY_Init(void)
 
     bool needs_config = (current_capacity != 300) ||
                         (current_terminate_voltage != 3000) ||
-                        (current_taper_rate != 100);
+                        (current_taper_rate != 100) ||
+                        bq27427_itpor_flag();
 
     if (needs_config) {
 
@@ -71,6 +94,7 @@ bool BATTERY_Init(void)
         bq27427_set_current_polarity(0); // 0 = Positive current means battery is charging
 
         bq27427_set_capacity(300);
+        bq27427_set_design_energy(1110);  // 300mAh * 3.7V
         bq27427_set_terminate_voltage(3000);
         bq27427_set_taper_rate(100);  // (300mAh / 30mA) * 10 = 100, CUTS OFF AT 26mA CHARGING
 
@@ -78,8 +102,10 @@ bool BATTERY_Init(void)
             return false;
         }
 
-        HAL_Delay(500);
+        HAL_Delay(1000);
     }
+
+    cached_design_capacity = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
 
     // Initialize battery state
     battery_state.last_update = 0;
@@ -95,38 +121,29 @@ bool BATTERY_UpdateState(void)
 {
     uint32_t now = HAL_GetTick();
 
-    if ((now - battery_state.last_update) < 500) {
+    if ((now - battery_state.last_update) < 1000) {
+        return true;
+    }
+
+    uint16_t flags = bq27427_flags();
+
+    // ITPOR set means gauge lost its config — reinitialize.
+    if (flags & BQ27427_FLAG_ITPOR) {
+        BATTERY_Init();
         return true;
     }
 
     battery_state.voltage_mV = bq27427_voltage();
     battery_state.current_mA = bq27427_current(BQ27427_CURRENT_AVG);
     battery_state.soc_percent = bq27427_soc(BQ27427_SOC_FILTERED);
-    battery_state.is_charging = bq27427_chg_flag();
-    battery_state.is_full = bq27427_fc_flag();
-    battery_state.is_low = bq27427_soc_flag();
-    battery_state.is_critical = bq27427_socf_flag();
-
-    // If gauge reports 0% but voltage is good, use estimation
-    if (battery_state.soc_percent == 0 && battery_state.voltage_mV > 3200) {
-//        battery_state.soc_percent = BATTERY_EstimateSOC_FromVoltage(battery_state.voltage_mV);
-    }
+    battery_state.is_charging = (flags & BQ27427_FLAG_CHG) != 0;
+    battery_state.is_full = (flags & BQ27427_FLAG_FC) != 0;
+    battery_state.is_low = (flags & BQ27427_FLAG_SOC1) != 0;
+    battery_state.is_critical = (flags & BQ27427_FLAG_SOCF) != 0;
 
     // If fuel gauge reports Full Charge (FC flag), ensure SOC shows 100%
     if (battery_state.is_full && battery_state.soc_percent < 100) {
         battery_state.soc_percent = 100;
-    }
-
-    // Reset if fuel gauge returns invalid SOC (0xFFFF / -1) for >2 seconds
-    static uint32_t invalid_soc_start = 0;
-    if (battery_state.soc_percent == 0xFFFF) {
-        if (invalid_soc_start == 0) {
-            invalid_soc_start = now;
-        } else if ((now - invalid_soc_start) >= 2000) {
-            NVIC_SystemReset();
-        }
-    } else {
-        invalid_soc_start = 0;
     }
 
     battery_state.last_update = now;
@@ -237,7 +254,7 @@ bool BATTERY_VerifyOperation(bq27427_debug_info_t *info)
     info->voltage_mV = bq27427_voltage();
     info->current_mA = bq27427_current(BQ27427_CURRENT_AVG);
     info->soc_percent = bq27427_soc(BQ27427_SOC_FILTERED);
-    info->design_capacity_mAh = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
+    info->design_capacity_mAh = cached_design_capacity;
     info->remaining_capacity_mAh = bq27427_capacity(BQ27427_CAPACITY_REMAIN);
 
     return true;

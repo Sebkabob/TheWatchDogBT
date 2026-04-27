@@ -72,7 +72,9 @@ bool BATTERY_Init(void)
     // Ensure correct chemistry (CHEM_B = 4.2V LiPo).
     // bq27427_set_chem_id() handles enter/exit_config internally.
     if (bq27427_chem_id() != BQ27427_CHEM_B) {
-        bq27427_set_chem_id(BQ27427_CHEM_B);
+        if (!bq27427_set_chem_id(BQ27427_CHEM_B)) {
+            return false;
+        }
     }
 
     // Check if already configured correctly
@@ -91,12 +93,21 @@ bool BATTERY_Init(void)
             return false;
         }
 
-        bq27427_set_current_polarity(0); // 0 = Positive current means battery is charging
-
-        bq27427_set_capacity(300);
-        bq27427_set_design_energy(1110);  // 300mAh * 3.7V
-        bq27427_set_terminate_voltage(3000);
-        bq27427_set_taper_rate(100);  // (300mAh / 30mA) * 10 = 100, CUTS OFF AT 26mA CHARGING
+        if (!bq27427_set_current_polarity(0)) { // 0 = Positive current means battery is charging
+            return false;
+        }
+        if (!bq27427_set_capacity(300)) {
+            return false;
+        }
+        if (!bq27427_set_design_energy(1110)) {  // 300mAh * 3.7V
+            return false;
+        }
+        if (!bq27427_set_terminate_voltage(3000)) {
+            return false;
+        }
+        if (!bq27427_set_taper_rate(100)) {  // (300mAh / 30mA) * 10 = 100, CUTS OFF AT 26mA CHARGING
+            return false;
+        }
 
         if (!bq27427_exit_config(true)) {
             return false;
@@ -130,6 +141,7 @@ bool BATTERY_UpdateState(void)
     // ITPOR set means gauge lost its config — reinitialize.
     if (flags & BQ27427_FLAG_ITPOR) {
         BATTERY_Init();
+        battery_state.last_update = 0;
         return true;
     }
 

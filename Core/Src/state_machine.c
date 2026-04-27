@@ -187,8 +187,10 @@ void State_Disconnected_Idle_Loop(void)
 
         if (IS_CHARGING_NOW() && !BATTERY_IsFullCached()) {
             LED_ChargingPulse();                /* SOC gradient: red→green */
-        } else {
+        } else if (BATTERY_IsFullCached()) {
             LED_Solid(0, 255, 0, 255);          /* green solid - charged */
+        } else {
+            LED_Off();                          /* cable in, charger not started yet */
         }
     } else {
         /* === No cable, no connection: enter low power === */
@@ -224,8 +226,10 @@ void State_Connected_Idle_Loop(void)
         if (IS_CABLE_PLUGGED()) {
             if (IS_CHARGING_NOW() && !BATTERY_IsFullCached()) {
                 LED_ChargingPulse();                /* SOC gradient: red→green */
-            } else {
+            } else if (BATTERY_IsFullCached()) {
                 LED_Solid(0, 255, 0, 255);          /* green solid - charged */
+            } else {
+                LED_Off();                          /* cable in, charger not started yet */
             }
         } else if (GET_LIGHTS_BIT(deviceState)) {
             LED_Rainbow(5, 255);  /* rainbow - normal */

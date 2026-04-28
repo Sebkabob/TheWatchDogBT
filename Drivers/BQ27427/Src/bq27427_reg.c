@@ -29,6 +29,7 @@
 static I2C_HandleTypeDef *_hi2c = NULL;
 static bool _seal_flag = false;
 static bool _user_config_control = false;
+static uint8_t _chem_id_fail_stage = 0;  /* diag — see bq27427_get_chem_id_fail_stage() */
 
 /******************************************************************************
  * Private Function Prototypes
@@ -466,6 +467,8 @@ uint16_t bq27427_device_type(void)
 
 bool bq27427_set_chem_id(bq27427_chemistry_t chem_id)
 {
+    _chem_id_fail_stage = 0;
+
     if (bq27427_sealed()) {
         _seal_flag = true;
         bq27427_unseal();
@@ -493,16 +496,29 @@ bool bq27427_set_chem_id(bq27427_chemistry_t chem_id)
                             if (_seal_flag) bq27427_seal();
                             return true;
                         }
+                        _chem_id_fail_stage = 5;  // chem_id didn't actually change
                         return false;
                     }
+                    _chem_id_fail_stage = 4;  // post-reset CFGUPMODE clear timeout
+                    return false;
                 }
+                _chem_id_fail_stage = 3;  // soft_reset returned false
                 return false;
             } else {
+                _chem_id_fail_stage = 2;  // execute_control_word(chem_id) failed
                 return false;
             }
         }
+        _chem_id_fail_stage = 1;  // SET_CFGUPDATE → CFGUPMODE timeout
+        return false;
     }
+    _chem_id_fail_stage = 1;  // SET_CFGUPDATE control word write failed
     return false;
+}
+
+uint8_t bq27427_get_chem_id_fail_stage(void)
+{
+    return _chem_id_fail_stage;
 }
 
 bq27427_chemistry_t bq27427_chem_id(void)
@@ -511,10 +527,13 @@ bq27427_chemistry_t bq27427_chem_id(void)
     return (bq27427_chemistry_t)chem_id;
 }
 
+bool bq27427_is_user_config_active(void)
+{
+    return _user_config_control;
+}
+
 bool bq27427_enter_config(bool user_control)
 {
-    if (user_control) _user_config_control = true;
-
     if (bq27427_sealed()) {
         _seal_flag = true;
         bq27427_unseal();
@@ -527,6 +546,10 @@ bool bq27427_enter_config(bool user_control)
         }
 
         if (timeout > 0) {
+            // Only claim user_config_control on a confirmed entry; otherwise
+            // a failed entry would leave the flag stuck true and downstream
+            // extended_data reads would skip CFGUPMODE entirely → all zeros.
+            if (user_control) _user_config_control = true;
             return true;
         }
     }
@@ -726,11 +749,14 @@ uint8_t bq27427_read_extended_data(uint8_t class_id, uint8_t offset)
     if (!bq27427_block_data_control()) {
         return 0;
     }
+    HAL_Delay(2);
     if (!bq27427_block_data_class(class_id)) {
         return 0;
     }
+    HAL_Delay(2);
 
     bq27427_block_data_offset(offset / 32);
+    HAL_Delay(2);
 
     ret_data = bq27427_read_block_data(offset % 32);
 
@@ -754,11 +780,14 @@ static bool bq27427_write_extended_data(uint8_t class_id, uint8_t offset, uint8_
     if (!bq27427_block_data_control()) {
         return false;
     }
+    HAL_Delay(2);
     if (!bq27427_block_data_class(class_id)) {
         return false;
     }
+    HAL_Delay(2);
 
     bq27427_block_data_offset(offset / 32);
+    HAL_Delay(2);
     bq27427_compute_block_checksum();
     bq27427_block_data_checksum();
 

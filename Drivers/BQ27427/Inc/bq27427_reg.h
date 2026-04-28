@@ -594,6 +594,23 @@ uint16_t bq27427_op_config(void);
 bool bq27427_disable_sleep(void);
 
 /**
+ * @brief Diagnostic: returns the current state of the internal _user_config_control flag.
+ * @return true if a user-controlled CONFIG UPDATE session is active.
+ */
+bool bq27427_is_user_config_active(void);
+
+/**
+ * @brief Diagnostic: which sub-step of the most recent bq27427_set_chem_id call failed.
+ *        0 = success / not yet called
+ *        1 = SET_CFGUPDATE → CFGUPMODE entry failed (or write rejected)
+ *        2 = execute_control_word(chem_id) failed
+ *        3 = soft_reset returned false
+ *        4 = post-reset CFGUPMODE clear timeout
+ *        5 = chem_id register did not actually change
+ */
+uint8_t bq27427_get_chem_id_fail_stage(void);
+
+/**
  * @brief Read a single byte from a Subclass / offset in extended (data flash) memory.
  *        Enters CONFIG UPDATE internally if no user_config_control session is active,
  *        which suspends gauging — prefer batching reads inside an enter/exit_config window.

@@ -75,7 +75,7 @@ typedef struct
 
 /* External variables --------------------------------------------------------*/
 /* USER CODE BEGIN EV */
-
+extern uint8_t g_bd_address[6]; /* defined in app_ble.c, populated in BLE_Init() */
 /* USER CODE END EV */
 
 /* Private macros ------------------------------------------------------------*/
@@ -647,7 +647,9 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
     int16_t accel[3];
     LIS2DUX12_ReadAcceleration(accel);
 
-    /* Pack data into BLE notification — 14 bytes */
+    /* Pack data into BLE notification — 16 bytes
+     * Bytes 14..15 carry the low 2 bytes of the BD address (LE), used by
+     * the iOS app as the user-visible "WatchDog #" identifier in Settings. */
     a_LOCKSERVICE_UpdateCharData[0]  = deviceState;
     a_LOCKSERVICE_UpdateCharData[1]  = deviceBattery;
     a_LOCKSERVICE_UpdateCharData[2]  = (uint8_t)(current_mA & 0xFF);
@@ -662,8 +664,10 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
     a_LOCKSERVICE_UpdateCharData[11] = (uint8_t)(accel[2] & 0xFF);
     a_LOCKSERVICE_UpdateCharData[12] = (uint8_t)((accel[2] >> 8) & 0xFF);
     a_LOCKSERVICE_UpdateCharData[13] = deviceInfo;
+    a_LOCKSERVICE_UpdateCharData[14] = g_bd_address[0]; /* WatchDog # low byte  (LSB of BD addr) */
+    a_LOCKSERVICE_UpdateCharData[15] = g_bd_address[1]; /* WatchDog # high byte */
 
-    lockservice_notification_data.Length = 14;
+    lockservice_notification_data.Length = 16;
   /* USER CODE END Service1Char2_NS_1*/
 
   if (notification_on_off != Devicestatus_NOTIFICATION_OFF && LOCKSERVICE_APP_Context.ConnectionHandle != 0xFFFF)

@@ -173,7 +173,10 @@ uint8_t a_AdvData[] =
 };
 
 /* USER CODE BEGIN PV */
-
+/* Active BD address after EEPROM/override resolution. Populated in BLE_Init()
+ * once the controller has been configured. Consumed by lockservice_app.c to
+ * append the device's last-2-byte ID to the DEVICESTATUS notification. */
+uint8_t g_bd_address[6] = {0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -396,6 +399,10 @@ void BLE_Init(void)
 #else
 #error "Invalid CFG_BD_ADDRESS_TYPE"
 #endif
+
+  /* Cache the active BD address for app-layer consumers (WatchDog # in BLE notif). */
+  memcpy(g_bd_address, bd_address, 6);
+  APP_DBG_MSG("  WatchDog # bytes (LE 14,15): %02x %02x\n", g_bd_address[0], g_bd_address[1]);
 
   ret = Gap_profile_set_dev_name(0, sizeof(a_GapDeviceName), (uint8_t*)a_GapDeviceName);
 

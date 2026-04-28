@@ -6,7 +6,7 @@ ONLY EDIT CODE WITHIN THE USER EDITABLE SECTIONS!!!
 
 ## Project Overview
 
-WatchDogBT is embedded firmware for a Bluetooth Low Energy asset-tracking/alarm device built on the **STM32WB05KZV6TR** (Cortex-M0+, STM32WB0 family). The device uses a LIS2DUX12 accelerometer with an on-chip Machine Learning Core (MLC) for motion classification, a BQ25186 battery charger, an EEPROM, RGB LEDs, and a buzzer.
+WatchDogBT is embedded firmware for a Bluetooth Low Energy asset-tracking/alarm device built on the **STM32WB05KZV6TR** (Cortex-M0+, STM32WB0 family). The device uses a LIS2DUX12 accelerometer with an on-chip Machine Learning Core (MLC) for motion classification, a BQ25186 battery charger (PG/STAT lines on PB4/PA11), a BQ27427 fuel gauge (I2C, see `Drivers/BQ27427/`), an M24C08 EEPROM (see `Drivers/M24C08/`), RGB LEDs, and a magnetic buzzer.
 
 ## Build System
 
@@ -26,6 +26,8 @@ LOCKED            → (motion)      → ALARM_ACTIVE
 ALARM_ACTIVE      → (melody done + no motion) → LOCKED
 ```
 
+`STATE_SLEEP` exists in the enum but its loop (`State_Sleep_Loop`) is currently a placeholder — no transitions land there in production. `StateMachine_ChangeState()` automatically sets/clears the ARMED bit when entering STABILIZING/LOCKED/ALARM_ACTIVE vs. any other state, then pushes a status notification.
+
 The `deviceState` byte packs all user-configurable settings:
 
 | Bits | Field | Values |
@@ -41,13 +43,30 @@ The `deviceState` byte packs all user-configurable settings:
 
 ### BLE Layer (`STM32_BLE/App/`)
 
-Custom **LockService** GATT service with two characteristics:
-- `APPTOWD` — write-only, used by the iOS app to send commands (arm/disarm, settings, timestamp sync, find-my, log transfer trigger)
-- `DEVICESTATUS` — notify, sends `[deviceState, deviceInfo, deviceBattery]` to the app
+Custom **LockService** (16-bit UUID `0x183E`) GATT service with three characteristics:
+- `APPTOWD` (write) — iOS → device commands. First byte = opcode; remaining bytes are payload. Settings writes (no opcode match) also carry a 6-byte trailing timestamp consumed by `UpdateBootTimeFromiOS()`.
+- `DEVICESTATUS` (notify) — `DEVICESTATUS_SIZE = 11` bytes. Built by `LOCKSERVICE_Devicestatus_SendNotification()` and pushed at 50 Hz when `HIGH_PERF` is set, 2 Hz otherwise (gated by `PowerMgmt_IsLowPower()`).
+- `BATTERYDIAG` (notify) — 51-byte packed gauge telemetry payload (v11), attached dynamically at init in `lockservice.c`. Sent every ~1 s from `main()`'s battery tick.
 
-`app_ble.c` handles GAP/GATT stack init and connection events; `lockservice.c` is the auto-generated GATT server; `lockservice_app.c` contains all application logic for processing writes and sending notifications. `blenvm.c` wraps NVM for bonding persistence.
+iOS opcodes (`lockservice_app.h`):
+
+| Opcode | Name | Payload |
+|--------|------|---------|
+| `0xF0` | `CMD_REQUEST_LOG_COUNT` | none — kicks off log transfer |
+| `0xF1` | `CMD_REQUEST_EVENT` | `uint16_t` BE index of event to fetch |
+| `0xF2` | `CMD_CLEAR_LOG` | none |
+| `0xF3` | `CMD_ACK_EVENT` | none |
+| `0xFA` | `CMD_FIND_MY_DEVICE` | byte[1] bit 0 = start |
+| `0xFB` | `CMD_RESET_DEVICE` | none — calls `NVIC_SystemReset()` |
+| `0xFC` | `CMD_DRAIN_MODE` | byte[1] bit 0: 1=start drain, 0=stop |
+
+Anything not matching an opcode is interpreted as a settings write: `received_data[0] → deviceState`, `received_data[1] → deviceInfo`, then a forced status notification.
+
+`app_ble.c` handles GAP/GATT stack init and connection events; `lockservice.c` is the auto-generated GATT server (with hand-added BATTERYDIAG inside USER CODE blocks); `lockservice_app.c` contains all application logic for processing writes and sending notifications. `blenvm.c` wraps NVM for bonding persistence. `g_bd_address[6]` is published in `app_ble.c` and `bd_address_override` in `main.c` controls whether the code-defined BD address overwrites EEPROM at boot.
 
 Advertising uses `HCI_ADV_FILTER_ACCEPT_LIST_CONNECT` — only bonded devices can connect.
+
+On connect, `PowerMgmt_RestoreAll()` is called and any pending logged events trigger an unsolicited `LOCKSERVICE_SendEventCount()` so iOS knows to drain them.
 
 ### Accelerometer (`Core/Src/accelerometer.c`, `Core/Src/lis2dux12_app.c`)
 
@@ -70,7 +89,21 @@ Ring buffer of up to 100 `MotionEvent_t` records (HAL tick + `MotionType_t`). Bo
 
 ### Door Detector (`Core/Src/door_detector.c`)
 
-Compares current accelerometer orientation against a reference captured at lock time (`DoorDetector_CaptureReference()`). Detects `DOOR_EVENT_OPENED` / `DOOR_EVENT_CLOSED` based on rotation delta.
+Compares current accelerometer orientation against a reference captured at lock time (`DoorDetector_CaptureReference()`). Detects `DOOR_EVENT_OPENED` / `DOOR_EVENT_CLOSED` based on rotation delta. Sensitivity is driven from the `SENSITIVITY` bits in `deviceState` via `DoorDetector_SetSensitivity()` when entering STABILIZING.
+
+While LOCKED, the state machine **defers** ordinary IN_MOTION/SHAKEN alerts until the MLC settles, then either logs a door event (if rotation crossed the threshold) or the originally-pending motion type. The alarm itself fires immediately — the deferral only affects which `MotionType_t` is logged/notified. Impact and freefall (FSM) are always sent immediately. A 3 s safety timeout flushes any pending motion that never settled.
+
+### Battery (`Core/Src/battery.c`, `Drivers/BQ27427/`)
+
+Wraps the BQ27427 fuel gauge. Cached state is updated once a second from `main()` (`BATTERY_UpdateState()`); `BATTERY_GetSOC()` / `BATTERY_IsFullCached()` etc. read from that cache so the state machine never blocks on I2C. A long list of diagnostic getters (flags, control_status, temperature, qmax/RES learned bits, design capacity, taper rate, …) feeds the 51-byte BATTERYDIAG notification. `s_init_fail_stage` is a one-shot diagnostic that pinpoints which BATTERY_Init() step failed after the CC-Gain self-heal RESET.
+
+### Drain Mode (`STM32_BLE/App/lockservice_app.c`)
+
+Diagnostic high-load mode for fuel-gauge characterisation: white LED at full brightness + continuous `DRAIN_TONE_FREQUENCY_HZ` (100 Hz) buzzer tone. Started/stopped via `CMD_DRAIN_MODE`, auto-stops at `DRAIN_AUTO_STOP_SOC` (5 %). `Drain_Tick()` runs every loop iteration in `main()` and re-asserts outputs so other subsystems can't override it while active.
+
+### `wd_system.c`
+
+Currently empty placeholder (Oct 2025) — reserved for future system-level glue.
 
 ## Critical Hardware Constraints
 
@@ -82,7 +115,15 @@ Compares current accelerometer orientation against a reference captured at lock 
 
 **EEPROM power:** Controlled separately by `EEPROM_POW_Pin` (PB6). Off by default; use `PowerMgmt_EEPROM_PowerOn/Off()` to bracket access.
 
-**Debug GPIO:** `DEBUG_GPIO_Pin` (PB5) is EXTI rising-edge with pulldown. While HIGH, device stays awake and won't enter low power — allows debugger attachment after DEEPSTOP wake.
+**Debug GPIO:** `DEBUG_GPIO_Pin` (PB5) is EXTI rising-edge with pulldown. While HIGH, device stays awake and won't enter low power — allows debugger attachment after DEEPSTOP wake. Also registered as a PWR wakeup pin (`LL_PWR_WAKEUP_PB5`, polarity HIGH).
+
+**Cable plug (PB4):** Falling edge = cable plugged in. Triggers `CablePlug_IRQCallback()` which sets `cablePlugFlag` + `stayAwakeFlag`. Also registered as a PWR wakeup pin (`LL_PWR_WAKEUP_PB4`, polarity LOW). After unplug, the device stays awake for `CABLE_UNPLUG_AWAKE_MS` (5 s) before being allowed back to deep sleep.
+
+**DEEPSTOP wakeups bypass EXTI:** On STM32WB0x, wake from DEEPSTOP routes through the PWR controller, NOT EXTI. `HAL_PWR_WKUPx_Callback()` in `accelerometer.c` is the override: it sets `motion_detected_flag` for PB15 wakeups and calls `CablePlug_IRQCallback()` for PB4 wakeups.
+
+**Safe boot:** If the cable is plugged in at boot, `main()` plays a descending tone and busy-waits in a `while (IS_CABLE_PLUGGED())` loop before initialising BLE. This is a recovery hatch for bricked-firmware reflashing.
+
+**Boot stayAwakeFlag clear:** Just before entering the main loop, `main()` runs `NVIC_ClearPendingIRQ(GPIOB_IRQn)` and forces `stayAwakeFlag = 0` so a stray IRQ during init can't pin the device awake forever.
 
 ## Key Pin Assignments
 

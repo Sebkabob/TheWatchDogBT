@@ -248,7 +248,7 @@ void State_Connected_Idle_Loop(void)
         } else if (LED_PlugOut_InProgress()) {
             LED_PlugOut_Tick();                 /* fade-to-black after unplug */
         } else if (GET_LIGHTS_BIT(deviceState)) {
-            LED_Rainbow(5, 255);  /* rainbow - normal */
+            LED_Rainbow(10, 255);  /* rainbow - normal */
         } else {
             LED_Off();
         }

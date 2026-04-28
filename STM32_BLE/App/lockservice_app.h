@@ -95,10 +95,10 @@ void LOCKSERVICE_SendMotionAlert(uint8_t motionType);
 void LOCKSERVICE_SendBatteryDiagnostic(void);
 
 /* Battery drain-mode test feature.
- * While active: white LED at max brightness + continuous 100 Hz buzzer tone.
+ * While active: white LED at max brightness + continuous 60 Hz buzzer tone.
  * Auto-stops when SOC <= DRAIN_AUTO_STOP_SOC. Call Drain_Tick() each main loop. */
 #define DRAIN_AUTO_STOP_SOC      5
-#define DRAIN_TONE_FREQUENCY_HZ  100
+#define DRAIN_TONE_FREQUENCY_HZ  60
 
 void Drain_Start(void);
 void Drain_Stop(void);

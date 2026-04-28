@@ -318,7 +318,7 @@ void BLE_Init(void)
 #endif
 
 /* USER CODE BEGIN Role_Mngt*/
-
+  //check if eeprom has a UUID already, replace bd_address with it and toss out old one. add in a bit that can be set in main that will force the set UUID to go thru and update the EEPROM with that new UUID
 /* USER CODE END Role_Mngt */
 
   ret = aci_gap_init(privacy_type, CFG_BD_ADDRESS_TYPE);

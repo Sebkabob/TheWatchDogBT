@@ -98,15 +98,12 @@ extern volatile uint8_t connectionStatus;
 // Track current transfer state
 static uint16_t currentEventIndex = 0;
 static uint8_t transferInProgress = 0;
+
+static uint8_t drain_mode_active = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 static void LOCKSERVICE_Devicestatus_SendNotification(void);
-
-/* USER CODE BEGIN Service1_APP_PFP */
-static uint8_t batterydiag_notification_enabled = 0;
-static uint8_t drain_mode_active = 0;
-/* USER CODE END Service1_APP_PFP */
 
 /* USER CODE BEGIN PFP */
 /**
@@ -345,16 +342,6 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
 
       /* USER CODE END Service1Char2_NOTIFY_DISABLED_EVT */
       break;
-
-    /* USER CODE BEGIN Service1_Notification_BatteryDiag */
-    case LOCKSERVICE_BATTERYDIAG_NOTIFY_ENABLED_EVT:
-      batterydiag_notification_enabled = 1;
-      LOCKSERVICE_SendBatteryDiagnostic();
-      break;
-    case LOCKSERVICE_BATTERYDIAG_NOTIFY_DISABLED_EVT:
-      batterydiag_notification_enabled = 0;
-      break;
-    /* USER CODE END Service1_Notification_BatteryDiag */
 
     default:
       /* USER CODE BEGIN Service1_Notification_default */

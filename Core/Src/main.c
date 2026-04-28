@@ -192,6 +192,11 @@ int main(void)
   firstBootTone();
   StateMachine_Init();
 
+  /* Belt-and-braces: clear any pending GPIOB IRQs and force stayAwakeFlag
+   * = 0 so nothing pinned during boot blocks DEEPSTOP. */
+  NVIC_ClearPendingIRQ(GPIOB_IRQn);
+  stayAwakeFlag = 0;
+
   while (1)
   {
     /* USER CODE END WHILE */
@@ -203,6 +208,7 @@ int main(void)
         last_battery_check = HAL_GetTick();
         if (!PowerMgmt_IsLowPower()) {
             BATTERY_UpdateState();
+            LOCKSERVICE_SendBatteryDiagnostic();
         }
     }
 
@@ -217,6 +223,12 @@ int main(void)
     }
 
     StateMachine_Run();
+
+    /* Drain-mode test feature: keep LED white + 100 Hz tone asserted while
+     * active; auto-stops when SOC drops to the configured threshold.
+     * StateMachine_Run() already calls BUZZER_Update(), so the tone keeps
+     * looping without an extra call here. */
+    Drain_Tick();
 
   }
   /* USER CODE END 3 */
@@ -708,6 +720,16 @@ static void MX_GPIO_Init(void)
   HAL_NVIC_EnableIRQ(GPIOB_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /* PB5 (DEBUG_GPIO): EXTI removed. Pin is set to ANALOG to eliminate any
+   * leakage and any chance of a spurious wake. */
+  {
+      GPIO_InitTypeDef debug_gpio = {0};
+      debug_gpio.Pin  = DEBUG_GPIO_Pin;
+      debug_gpio.Mode = GPIO_MODE_ANALOG;
+      debug_gpio.Pull = GPIO_NOPULL;
+      HAL_GPIO_Init(DEBUG_GPIO_GPIO_Port, &debug_gpio);
+  }
 
   /* USER CODE END MX_GPIO_Init_2 */
 }

@@ -55,4 +55,8 @@ uint32_t BUZZER_GetLaCucarachaDuration(void);
 /* Find My Device ping */
 void BUZZER_StartFindMe(void);
 
+/* Continuous single-frequency tone (used by drain mode). Loops indefinitely
+ * until BUZZER_Stop() is called. */
+void BUZZER_StartContinuousTone(uint16_t frequency_hz);
+
 #endif /* INC_SOUND_H_ */

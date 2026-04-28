@@ -71,6 +71,7 @@ typedef struct
 #define CMD_ACK_EVENT            0xF3  // iOS: Acknowledge received event
 #define CMD_FIND_MY_DEVICE       0xFA  // iOS: Find my device ping
 #define CMD_RESET_DEVICE         0xFB  // iOS: Reset device
+#define CMD_DRAIN_MODE           0xFC  // iOS: byte[1]=1 start drain, 0 stop drain
 
 /* Response Types */
 #define RESP_LOG_COUNT           0xE0  // WD: Sending log count
@@ -91,6 +92,18 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification);
 void LOCKSERVICE_SendStatusUpdate(void);
 void LOCKSERVICE_ForceStatusUpdate(void);
 void LOCKSERVICE_SendMotionAlert(uint8_t motionType);
+void LOCKSERVICE_SendBatteryDiagnostic(void);
+
+/* Battery drain-mode test feature.
+ * While active: white LED at max brightness + continuous 100 Hz buzzer tone.
+ * Auto-stops when SOC <= DRAIN_AUTO_STOP_SOC. Call Drain_Tick() each main loop. */
+#define DRAIN_AUTO_STOP_SOC      5
+#define DRAIN_TONE_FREQUENCY_HZ  100
+
+void Drain_Start(void);
+void Drain_Stop(void);
+uint8_t Drain_IsActive(void);
+void Drain_Tick(void);
 /* USER CODE END EF */
 
 #ifdef __cplusplus

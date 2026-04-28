@@ -25,6 +25,22 @@ typedef struct {
     bool is_low;
     bool is_critical;
     uint32_t last_update;
+
+    // Diagnostic / learning telemetry
+    uint8_t  soc_unfiltered;
+    uint16_t flags_raw;
+    uint16_t control_status_raw;
+    uint16_t remaining_mAh;
+    uint16_t full_charge_mAh;
+    int16_t  temperature_0_1K;
+    bool qmax_updated;       // CONTROL_STATUS bit 9
+    bool res_updated;        // CONTROL_STATUS bit 8
+    bool voltage_ok;         // CONTROL_STATUS bit 1 (VOK)
+    bool over_temp;          // FLAG bit 15
+    bool under_temp;         // FLAG bit 14
+    bool ocv_taken;          // FLAG bit 7
+    bool bat_detected;       // FLAG bit 3
+    bool itpor;              // FLAG bit 5
 } BatteryState_t;
 
 static BatteryState_t battery_state = {0};
@@ -145,6 +161,8 @@ bool BATTERY_UpdateState(void)
         return true;
     }
 
+    uint16_t cs = bq27427_status();
+
     battery_state.voltage_mV = bq27427_voltage();
     battery_state.current_mA = bq27427_current(BQ27427_CURRENT_AVG);
     battery_state.soc_percent = bq27427_soc(BQ27427_SOC_FILTERED);
@@ -152,6 +170,21 @@ bool BATTERY_UpdateState(void)
     battery_state.is_full = (flags & BQ27427_FLAG_FC) != 0;
     battery_state.is_low = (flags & BQ27427_FLAG_SOC1) != 0;
     battery_state.is_critical = (flags & BQ27427_FLAG_SOCF) != 0;
+
+    battery_state.soc_unfiltered = (uint8_t)(bq27427_soc(BQ27427_SOC_UNFILTERED) & 0xFF);
+    battery_state.flags_raw = flags;
+    battery_state.control_status_raw = cs;
+    battery_state.remaining_mAh = bq27427_capacity(BQ27427_CAPACITY_REMAIN);
+    battery_state.full_charge_mAh = bq27427_capacity(BQ27427_CAPACITY_FULL);
+    battery_state.temperature_0_1K = (int16_t)bq27427_temperature();
+    battery_state.qmax_updated = (cs & BQ27427_STATUS_QMAX_UP) != 0;
+    battery_state.res_updated  = (cs & BQ27427_STATUS_RES_UP) != 0;
+    battery_state.voltage_ok   = (cs & BQ27427_STATUS_VOK) != 0;
+    battery_state.over_temp    = (flags & BQ27427_FLAG_OT) != 0;
+    battery_state.under_temp   = (flags & BQ27427_FLAG_UT) != 0;
+    battery_state.ocv_taken    = (flags & BQ27427_FLAG_OCVTAKEN) != 0;
+    battery_state.bat_detected = (flags & BQ27427_FLAG_BAT_DET) != 0;
+    battery_state.itpor        = (flags & BQ27427_FLAG_ITPOR) != 0;
 
     // If fuel gauge reports Full Charge (FC flag), ensure SOC shows 100%
     if (battery_state.is_full && battery_state.soc_percent < 100) {
@@ -217,6 +250,21 @@ bool BATTERY_IsCriticallyCached(void)
 {
     return battery_state.is_critical;
 }
+
+uint8_t  BATTERY_GetSOC_Unfiltered(void)     { return battery_state.soc_unfiltered; }
+uint16_t BATTERY_GetFlags(void)              { return battery_state.flags_raw; }
+uint16_t BATTERY_GetControlStatus(void)      { return battery_state.control_status_raw; }
+uint16_t BATTERY_GetRemainingCapacity(void)  { return battery_state.remaining_mAh; }
+uint16_t BATTERY_GetFullChargeCapacity(void) { return battery_state.full_charge_mAh; }
+int16_t  BATTERY_GetTemperature_0_1K(void)   { return battery_state.temperature_0_1K; }
+bool     BATTERY_IsQmaxLearned(void)         { return battery_state.qmax_updated; }
+bool     BATTERY_IsResistanceLearned(void)   { return battery_state.res_updated; }
+bool     BATTERY_IsVoltageOK(void)           { return battery_state.voltage_ok; }
+bool     BATTERY_IsBatteryDetected(void)     { return battery_state.bat_detected; }
+bool     BATTERY_IsOverTemp(void)            { return battery_state.over_temp; }
+bool     BATTERY_IsUnderTemp(void)           { return battery_state.under_temp; }
+bool     BATTERY_IsOcvTaken(void)            { return battery_state.ocv_taken; }
+bool     BATTERY_IsItpor(void)               { return battery_state.itpor; }
 
 /**
  * @brief Get the current State of Charge (SOC) - LEGACY, use BATTERY_GetSOC instead

@@ -41,8 +41,7 @@ typedef struct{
   uint16_t  DevicestatusCharHdle;			/**< DEVICESTATUS Characteristic Handle */
   uint16_t  MotiondataCharHdle;			/**< MOTIONDATA Characteristic Handle */
 /* USER CODE BEGIN Context */
-  /* Place holder for Characteristic Descriptors Handle*/
-
+  uint16_t  BatterydiagCharHdle;            /**< BATTERYDIAG Characteristic Handle */
 /* USER CODE END Context */
 }LOCKSERVICE_Context_t;
 
@@ -64,6 +63,7 @@ typedef struct{
 #define APPTOWD_SIZE        30	/* AppToWD Characteristic size */
 #define DEVICESTATUS_SIZE        11	/* DeviceStatus Characteristic size */
 #define MOTIONDATA_SIZE        8	/* MotionData Characteristic size */
+#define BATTERYDIAG_SIZE        18  /* BatteryDiagnostic Characteristic size (versioned struct, see lockservice_app.c) */
 /* USER CODE BEGIN PM */
 
 /* USER CODE END PM */
@@ -97,8 +97,11 @@ static LOCKSERVICE_Context_t LOCKSERVICE_Context;
 #define APPTOWD_UUID			0x20,0x02,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
 #define DEVICESTATUS_UUID			0x00,0x09,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
 #define MOTIONDATA_UUID			0x01,0x33,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+#define BATTERYDIAG_UUID		0x42,0x44,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
 
 BLE_GATT_SRV_CCCD_DECLARE(devicestatus, CFG_BLE_NUM_RADIO_TASKS, BLE_GATT_SRV_CCCD_PERM_DEFAULT,
+                          BLE_GATT_SRV_OP_MODIFIED_EVT_ENABLE_FLAG);
+BLE_GATT_SRV_CCCD_DECLARE(batterydiag, CFG_BLE_NUM_RADIO_TASKS, BLE_GATT_SRV_CCCD_PERM_DEFAULT,
                           BLE_GATT_SRV_OP_MODIFIED_EVT_ENABLE_FLAG);
 
 /* USER CODE BEGIN DESCRIPTORS DECLARATION */
@@ -132,6 +135,15 @@ static ble_gatt_val_buffer_def_t motiondata_val_buffer_def = {
   .buffer_p = motiondata_val_buffer
 };
 
+uint8_t batterydiag_val_buffer[BATTERYDIAG_SIZE];
+
+static ble_gatt_val_buffer_def_t batterydiag_val_buffer_def = {
+  .op_flags = BLE_GATT_SRV_OP_MODIFIED_EVT_ENABLE_FLAG,
+  .val_len = BATTERYDIAG_SIZE,
+  .buffer_len = sizeof(batterydiag_val_buffer),
+  .buffer_p = batterydiag_val_buffer
+};
+
 /* LockService service DEVICESTATUS (notification) characteristics definition */
 static const ble_gatt_chr_def_t lockservice_chars[] = {
 	{
@@ -159,6 +171,17 @@ static const ble_gatt_chr_def_t lockservice_chars[] = {
         .uuid = BLE_UUID_INIT_128(MOTIONDATA_UUID),
         .val_buffer_p = &motiondata_val_buffer_def
     },
+    {
+        .properties = BLE_GATT_SRV_CHAR_PROP_NOTIFY,
+        .permissions = BLE_GATT_SRV_PERM_NONE,
+        .min_key_size = 0x10,
+        .uuid = BLE_UUID_INIT_128(BATTERYDIAG_UUID),
+        .descrs = {
+            .descrs_p = &BLE_GATT_SRV_CCCD_DEF_NAME(batterydiag),
+            .descr_count = 1U,
+        },
+        .val_buffer_p = &batterydiag_val_buffer_def
+    },
 };
 
 /* LockService service definition */
@@ -167,7 +190,7 @@ static const ble_gatt_srv_def_t lockservice_service = {
    .uuid = BLE_UUID_INIT_16(LOCKSERVICE_UUID),
    .chrs = {
        .chrs_p = (ble_gatt_chr_def_t *)lockservice_chars,
-       .chr_count = 3U,
+       .chr_count = 4U,
    },
 };
 
@@ -255,6 +278,23 @@ static BLEEVT_EvtAckStatus_t LOCKSERVICE_EventHandler(aci_blecore_event *p_evt)
         /* USER CODE END Service1_Char_1_ACI_GATT_ATTRIBUTE_MODIFIED_VSEVT_CODE */
         LOCKSERVICE_Notification(&notification);
       } /* if(p_attribute_modified->Attr_Handle == (LOCKSERVICE_Context.ApptowdCharHdle + CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET))*/
+      else if(p_attribute_modified->Attr_Handle == (LOCKSERVICE_Context.BatterydiagCharHdle + CHARACTERISTIC_DESCRIPTOR_ATTRIBUTE_OFFSET))
+      {
+        return_value = BLEEVT_Ack;
+        switch(p_attribute_modified->Attr_Data[0])
+        {
+          case (!BLE_GATT_SRV_CCCD_NOTIFICATION):
+            notification.EvtOpcode = LOCKSERVICE_BATTERYDIAG_NOTIFY_DISABLED_EVT;
+            LOCKSERVICE_Notification(&notification);
+            break;
+          case BLE_GATT_SRV_CCCD_NOTIFICATION:
+            notification.EvtOpcode = LOCKSERVICE_BATTERYDIAG_NOTIFY_ENABLED_EVT;
+            LOCKSERVICE_Notification(&notification);
+            break;
+          default:
+            break;
+        }
+      }
 
       /* USER CODE BEGIN EVT_BLUE_GATT_ATTRIBUTE_MODIFIED_END */
 
@@ -358,6 +398,7 @@ void LOCKSERVICE_Init(void)
   LOCKSERVICE_Context.ApptowdCharHdle = aci_gatt_srv_get_char_decl_handle((ble_gatt_chr_def_t *)&lockservice_chars[0]);
   LOCKSERVICE_Context.DevicestatusCharHdle = aci_gatt_srv_get_char_decl_handle((ble_gatt_chr_def_t *)&lockservice_chars[1]);
   LOCKSERVICE_Context.MotiondataCharHdle = aci_gatt_srv_get_char_decl_handle((ble_gatt_chr_def_t *)&lockservice_chars[2]);
+  LOCKSERVICE_Context.BatterydiagCharHdle = aci_gatt_srv_get_char_decl_handle((ble_gatt_chr_def_t *)&lockservice_chars[3]);
 
   /* USER CODE BEGIN InitService1Svc_2 */
 
@@ -449,6 +490,18 @@ tBleStatus LOCKSERVICE_NotifyValue(LOCKSERVICE_CharOpcode_t CharOpcode, LOCKSERV
 
       /* USER CODE END Service1_Char_Value_2*/
       break;
+
+    /* USER CODE BEGIN Service1_App_Notify_Char_Cases */
+    case LOCKSERVICE_BATTERYDIAG:
+      memcpy(batterydiag_val_buffer, pData->p_Payload, MIN(pData->Length, sizeof(batterydiag_val_buffer)));
+      ret = aci_gatt_srv_notify(ConnectionHandle,
+                                BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                                LOCKSERVICE_Context.BatterydiagCharHdle + 1,
+                                GATT_NOTIFICATION,
+                                pData->Length,
+                                (uint8_t *)pData->p_Payload);
+      break;
+    /* USER CODE END Service1_App_Notify_Char_Cases */
 
     default:
       break;

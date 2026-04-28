@@ -56,6 +56,34 @@ typedef struct {
 static BatteryState_t battery_state = {0};
 static uint16_t cached_design_capacity = 0;
 
+// v9 one-shot diagnostic: 16 raw bytes from Subclass 104 (Calibration).
+static uint8_t s_calib_bytes[16] = {0};
+const uint8_t *BATTERY_GetCalibBytes(void) { return s_calib_bytes; }
+
+// v10 one-shot diagnostic: track exactly where BATTERY_Init() failed (if at all)
+// after the CC-Gain self-heal RESET fires. Stages:
+//   0  = success / not yet
+//   1  = bq27427_init() failed
+//   2  = device_type wrong
+//   3  = initial INITCOMP timeout
+//   4  = post-RESET INITCOMP timeout
+//   5  = enter_config failed
+//   6  = set_current_polarity failed
+//   7  = set_capacity failed
+//   8  = set_design_energy failed
+//   9  = set_terminate_voltage failed
+//   10 = set_taper_rate failed
+//   11 = disable_sleep failed
+//   12 = exit_config failed
+static uint8_t s_init_fail_stage = 0;
+static uint8_t s_init_completed  = 0;
+static uint8_t s_post_reset_fired = 0;
+static uint16_t s_chem_id_read = 0;   // v11: snapshot the chem_id we read
+uint8_t  BATTERY_GetInitFailStage(void)  { return s_init_fail_stage; }
+uint8_t  BATTERY_GetInitCompleted(void)  { return s_init_completed; }
+uint8_t  BATTERY_GetPostResetFired(void) { return s_post_reset_fired; }
+uint16_t BATTERY_GetChemIdRead(void)     { return s_chem_id_read; }
+
 // Forward declaration for static function
 static uint8_t BATTERY_EstimateSOC_FromVoltage(uint16_t voltage_mV);
 
@@ -80,16 +108,19 @@ bool BATTERY_Init(void)
     }
 
     if (!bq27427_init()) {
+        s_init_fail_stage = 1;
         return false;
     }
 
     if (bq27427_device_type() != 0x0427) {
+        s_init_fail_stage = 2;
         return false;
     }
 
     uint32_t init_start = HAL_GetTick();
     while (!(bq27427_status() & BQ27427_STATUS_INITCOMP)) {
         if ((HAL_GetTick() - init_start) >= 1500) {
+            s_init_fail_stage = 3;
             return false;
         }
         HAL_Delay(10);
@@ -99,13 +130,47 @@ bool BATTERY_Init(void)
     // SET_CFGUPDATE is issued too soon after INITCOMP.
     HAL_Delay(250);
 
+    // Self-healing: if CC Gain (Subclass 104, offsets 0..3) is all zero, the
+    // factory current-scaling trim has been clobbered (causes Current() to read
+    // ~10x low). Issue CONTROL_RESET to restore data flash to ROM defaults
+    // (which includes the factory CC Gain), then fall through to the normal
+    // configure path, which will re-write DesignCapacity/TerminateVoltage/
+    // TaperRate/SLEEP-disable. Once CC Gain is non-zero this branch is skipped
+    // on every subsequent boot, so this is self-limiting.
+    {
+        uint8_t g0 = bq27427_read_extended_data(BQ27427_ID_CALIB_DATA, 0);
+        uint8_t g1 = bq27427_read_extended_data(BQ27427_ID_CALIB_DATA, 1);
+        uint8_t g2 = bq27427_read_extended_data(BQ27427_ID_CALIB_DATA, 2);
+        uint8_t g3 = bq27427_read_extended_data(BQ27427_ID_CALIB_DATA, 3);
+        if ((g0 | g1 | g2 | g3) == 0) {
+            s_post_reset_fired = 1;
+            // Issue CONTROL_RESET directly with no CFGUPMODE wrapping — the
+            // bq27427_reset() helper enters/exits CFGUPMODE around the reset,
+            // which appears to leave the chip in a state where INITCOMP never
+            // re-asserts after RESET.
+            bq27427_execute_control_word(BQ27427_CONTROL_RESET);
+            HAL_Delay(500);
+            uint32_t reset_start = HAL_GetTick();
+            while (!(bq27427_status() & BQ27427_STATUS_INITCOMP)) {
+                if ((HAL_GetTick() - reset_start) >= 5000) {
+                    s_init_fail_stage = 4;
+                    return false;
+                }
+                HAL_Delay(10);
+            }
+            HAL_Delay(250);
+        }
+    }
+
     if (!(bq27427_flags() & BQ27427_FLAG_BAT_DET)) {
         bq27427_execute_control_word(BQ27427_CONTROL_BAT_INSERT);
         HAL_Delay(100);
     }
 
-    if (bq27427_chem_id() != BQ27427_CHEM_B) {
+    s_chem_id_read = (uint16_t)bq27427_chem_id();
+    if (s_chem_id_read != BQ27427_CHEM_B) {
         bq27427_set_chem_id(BQ27427_CHEM_B);
+        s_chem_id_read = (uint16_t)bq27427_chem_id();  // re-read after set
     }
 
     uint16_t current_capacity = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
@@ -121,16 +186,14 @@ bool BATTERY_Init(void)
                         bq27427_itpor_flag();
 
     if (needs_config) {
-        if (!bq27427_enter_config(true)) {
-            return false;
-        }
-        if (!bq27427_set_current_polarity(0)) return false;
-        if (!bq27427_set_capacity(300)) return false;
-        if (!bq27427_set_design_energy(1110)) return false;
-        if (!bq27427_set_terminate_voltage(3000)) return false;
-        if (!bq27427_set_taper_rate(100)) return false;
-        if (!bq27427_disable_sleep()) return false;
-        if (!bq27427_exit_config(true)) return false;
+        if (!bq27427_enter_config(true))      { s_init_fail_stage = 5;  return false; }
+        if (!bq27427_set_current_polarity(0)) { s_init_fail_stage = 6;  return false; }
+        if (!bq27427_set_capacity(300))       { s_init_fail_stage = 7;  return false; }
+        if (!bq27427_set_design_energy(1110)) { s_init_fail_stage = 8;  return false; }
+        if (!bq27427_set_terminate_voltage(3000)) { s_init_fail_stage = 9;  return false; }
+        if (!bq27427_set_taper_rate(100))     { s_init_fail_stage = 10; return false; }
+        if (!bq27427_disable_sleep())         { s_init_fail_stage = 11; return false; }
+        if (!bq27427_exit_config(true))       { s_init_fail_stage = 12; return false; }
 
         HAL_Delay(1000);
     }
@@ -144,6 +207,7 @@ bool BATTERY_Init(void)
 
     battery_state.last_update = 0;
     s_initialized = true;
+    s_init_completed = 1;
 
     return true;
 }
@@ -181,8 +245,20 @@ void BATTERY_RefreshConfigCache(void)
     battery_state.terminate_voltage_mV  = bq27427_terminate_voltage();
     battery_state.taper_rate            = bq27427_taper_rate();
     battery_state.op_config_raw         = bq27427_op_config();
-    battery_state.board_offset          = (int8_t)bq27427_read_extended_data(BQ27427_ID_CALIB_DATA, 0);
+    // Board Offset read removed: this previously read Subclass 104 / offset 0,
+    // which is actually CC Gain byte 0 (factory-trimmed current scale). Reading
+    // it was harmless on its own but the BlockData/checksum dance around the
+    // read path appears to have clobbered CC Gain to all-zero on at least one
+    // unit, causing Current() to under-report ~10x. The value was never used.
+    battery_state.board_offset          = 0;
     battery_state.deadband_mA           = bq27427_read_extended_data(BQ27427_ID_CURRENT, 1);
+
+    // v9 diagnostic: dump first 16 bytes of Calibration subclass so we can see
+    // CC Gain / CC Delta / CC Offset / Board Offset and confirm CC Gain is
+    // restored after the factory-reset recovery path.
+    for (uint8_t i = 0; i < 16; i++) {
+        s_calib_bytes[i] = bq27427_read_extended_data(BQ27427_ID_CALIB_DATA, i);
+    }
 
     bq27427_exit_config(true);
 

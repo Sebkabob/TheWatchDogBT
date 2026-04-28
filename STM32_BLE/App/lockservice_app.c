@@ -38,6 +38,7 @@
 #include "accelerometer.h"
 #include "lis2dux12_app.h"
 #include "power_management.h"
+#include <string.h>
 
 
 /* USER CODE END Includes */
@@ -447,7 +448,21 @@ void LOCKSERVICE_ForceStatusUpdate(void)
 /**
  * @brief Build and send the BatteryDiagnostic notification.
  *
- * Wire format (30 bytes, little-endian, version 3):
+ * Wire format (51 bytes, little-endian, version 11):
+ *   bytes  0..29 — same layout as v3 (with version byte = 11)
+ *   bytes 30..45 — uint8_t calib_bytes[16] from Subclass 104 (Calibration)
+ *                  per BQ27427 TRM:
+ *                    0..3  CC Gain    (4-byte TI custom float)
+ *                    4..7  CC Delta   (4-byte TI custom float)
+ *                    8..9  CC Offset  (int16)
+ *                    10..11 candidate Board Offset (silicon-rev dependent)
+ *                    12..15 spare/other
+ *   byte  46    — uint8 init_fail_stage   (0 = ok; codes in battery.c)
+ *   byte  47    — uint8 init_completed    (1 if BATTERY_Init reached the end)
+ *   byte  48    — uint8 post_reset_fired  (1 if CC-Gain self-heal triggered RESET)
+ *   bytes 49..50 — uint16 chem_id_read    (BQ27427 chem_id() snapshot, LE)
+ *
+ * Original v3 layout:
  *   uint8_t  version             = 3
  *   uint8_t  soc_percent         (filtered, 0-100)
  *   uint16_t voltage_mV
@@ -506,13 +521,21 @@ void LOCKSERVICE_SendBatteryDiagnostic(void)
         int16_t  average_power_mW;
         int8_t   board_offset;
         uint8_t  deadband_mA;
+        // --- v9 one-shot Calibration subclass dump (temporary) ---
+        uint8_t  calib_bytes[16];
+        // --- v10 init-failure tracker (temporary) ---
+        uint8_t  init_fail_stage;
+        uint8_t  init_completed;
+        uint8_t  post_reset_fired;
+        // --- v11 chem_id snapshot (temporary) ---
+        uint16_t chem_id_read;
     } battery_diag_payload_t;
 
-    _Static_assert(sizeof(battery_diag_payload_t) == 30,
-                   "BatteryDiagnostic payload must be exactly 30 bytes");
+    _Static_assert(sizeof(battery_diag_payload_t) == 51,
+                   "BatteryDiagnostic payload must be exactly 51 bytes");
 
     battery_diag_payload_t payload;
-    payload.version              = 3;
+    payload.version              = 11;
     payload.soc_percent          = (uint8_t)(BATTERY_GetSOC() & 0xFF);
     payload.voltage_mV           = BATTERY_GetVoltage();
     payload.current_mA           = BATTERY_GetCurrent();
@@ -541,6 +564,11 @@ void LOCKSERVICE_SendBatteryDiagnostic(void)
     payload.average_power_mW     = BATTERY_GetAveragePower();
     payload.board_offset         = BATTERY_GetBoardOffset();
     payload.deadband_mA          = BATTERY_GetDeadband();
+    memcpy(payload.calib_bytes, BATTERY_GetCalibBytes(), 16);
+    payload.init_fail_stage      = BATTERY_GetInitFailStage();
+    payload.init_completed       = BATTERY_GetInitCompleted();
+    payload.post_reset_fired     = BATTERY_GetPostResetFired();
+    payload.chem_id_read         = BATTERY_GetChemIdRead();
 
     LOCKSERVICE_Data_t notification_data;
     notification_data.p_Payload = (uint8_t *)&payload;

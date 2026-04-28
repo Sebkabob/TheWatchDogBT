@@ -63,7 +63,7 @@ typedef struct{
 #define APPTOWD_SIZE        30	/* AppToWD Characteristic size */
 #define DEVICESTATUS_SIZE        11	/* DeviceStatus Characteristic size */
 #define MOTIONDATA_SIZE        8	/* MotionData Characteristic size */
-#define BATTERYDIAG_SIZE        30  /* BatteryDiagnostic Characteristic size (v3 versioned struct, see lockservice_app.c) */
+#define BATTERYDIAG_SIZE        51  /* BatteryDiagnostic Characteristic size (v11 versioned struct, see lockservice_app.c) */
 /* USER CODE BEGIN PM */
 
 /* USER CODE END PM */

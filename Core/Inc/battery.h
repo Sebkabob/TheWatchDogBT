@@ -51,6 +51,22 @@ uint8_t  BATTERY_GetDeadband(void);              // mA       (Subclass 107, off 
  */
 void     BATTERY_RefreshConfigCache(void);
 
+// --- v9 Calibration subclass dump (temporary, one-shot diagnostic) ---------
+// Returns the raw bytes captured from Subclass 104 (BQ27427_ID_CALIB_DATA),
+// offsets 0..15. Filled by BATTERY_RefreshConfigCache. Layout per BQ27427 TRM:
+//   0..3  CC Gain    (4-byte TI custom float)
+//   4..7  CC Delta   (4-byte TI custom float)
+//   8..9  CC Offset  (int16)
+//   10..11 candidate Board Offset (silicon-rev dependent)
+//   12..15 spare/other
+const uint8_t *BATTERY_GetCalibBytes(void);
+
+// v10 init-failure tracker (temporary). See init_fail_stage codes in battery.c.
+uint8_t  BATTERY_GetInitFailStage(void);
+uint8_t  BATTERY_GetInitCompleted(void);
+uint8_t  BATTERY_GetPostResetFired(void);
+uint16_t BATTERY_GetChemIdRead(void);
+
 // LEGACY: Direct I2C read functions (use cached versions above instead)
 uint16_t BATTERY_SOC(void);
 int16_t BATTERY_Current(void);

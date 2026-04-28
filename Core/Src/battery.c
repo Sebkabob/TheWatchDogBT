@@ -41,6 +41,16 @@ typedef struct {
     bool ocv_taken;          // FLAG bit 7
     bool bat_detected;       // FLAG bit 3
     bool itpor;              // FLAG bit 5
+
+    // v3 telemetry — config readback (refreshed only via BATTERY_RefreshConfigCache)
+    uint16_t design_capacity_mAh;
+    uint16_t terminate_voltage_mV;
+    uint16_t taper_rate;
+    uint16_t op_config_raw;
+    int8_t   board_offset;
+    uint8_t  deadband_mA;
+    // dynamic — refreshed every BATTERY_UpdateState
+    int16_t  average_power_mW;
 } BatteryState_t;
 
 static BatteryState_t battery_state = {0};
@@ -97,10 +107,13 @@ bool BATTERY_Init(void)
     uint16_t current_capacity = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
     uint16_t current_terminate_voltage = bq27427_terminate_voltage();
     uint16_t current_taper_rate = bq27427_taper_rate();
+    uint16_t current_opconfig = bq27427_op_config();
+    bool sleep_enabled = (current_opconfig & BQ27427_OPCONFIG_SLEEP) != 0;
 
     bool needs_config = (current_capacity != 300) ||
                         (current_terminate_voltage != 3000) ||
                         (current_taper_rate != 100) ||
+                        sleep_enabled ||
                         bq27427_itpor_flag();
 
     if (needs_config) {
@@ -124,6 +137,11 @@ bool BATTERY_Init(void)
         if (!bq27427_set_taper_rate(100)) {  // (300mAh / 30mA) * 10 = 100, CUTS OFF AT 26mA CHARGING
             return false;
         }
+        // Force gauge to stay in NORMAL mode so AverageCurrent() reflects real load
+        // (SLEEP mode filters readings to ~10 mA when load is below 30 mA wake threshold).
+        if (!bq27427_disable_sleep()) {
+            return false;
+        }
 
         if (!bq27427_exit_config(true)) {
             return false;
@@ -132,12 +150,37 @@ bool BATTERY_Init(void)
         HAL_Delay(1000);
     }
 
-    cached_design_capacity = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
+    // Snapshot all "static" gauge-config values exactly once.
+    // After init, BATTERY_UpdateState reads only dynamic registers — entering
+    // CONFIG UPDATE every second would suspend gauging and itself break current readings.
+    BATTERY_RefreshConfigCache();
 
     // Initialize battery state
     battery_state.last_update = 0;
 
     return true;
+}
+
+/**
+ * @brief Snapshot all "static" gauge-config values into the cache in a single
+ *        user-controlled CONFIG UPDATE session (one enter/exit instead of six).
+ */
+void BATTERY_RefreshConfigCache(void)
+{
+    if (!bq27427_enter_config(true)) {
+        return;
+    }
+
+    battery_state.design_capacity_mAh   = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
+    battery_state.terminate_voltage_mV  = bq27427_terminate_voltage();
+    battery_state.taper_rate            = bq27427_taper_rate();
+    battery_state.op_config_raw         = bq27427_op_config();
+    battery_state.board_offset          = (int8_t)bq27427_read_extended_data(BQ27427_ID_CALIB_DATA, 0);
+    battery_state.deadband_mA           = bq27427_read_extended_data(BQ27427_ID_CURRENT, 1);
+
+    bq27427_exit_config(true);
+
+    cached_design_capacity = battery_state.design_capacity_mAh;
 }
 
 /**
@@ -185,6 +228,9 @@ bool BATTERY_UpdateState(void)
     battery_state.ocv_taken    = (flags & BQ27427_FLAG_OCVTAKEN) != 0;
     battery_state.bat_detected = (flags & BQ27427_FLAG_BAT_DET) != 0;
     battery_state.itpor        = (flags & BQ27427_FLAG_ITPOR) != 0;
+
+    // AveragePower() at 0x18 — standard command, no config-mode penalty.
+    battery_state.average_power_mW = bq27427_power();
 
     // If fuel gauge reports Full Charge (FC flag), ensure SOC shows 100%
     if (battery_state.is_full && battery_state.soc_percent < 100) {
@@ -265,6 +311,14 @@ bool     BATTERY_IsOverTemp(void)            { return battery_state.over_temp; }
 bool     BATTERY_IsUnderTemp(void)           { return battery_state.under_temp; }
 bool     BATTERY_IsOcvTaken(void)            { return battery_state.ocv_taken; }
 bool     BATTERY_IsItpor(void)               { return battery_state.itpor; }
+
+uint16_t BATTERY_GetDesignCapacity(void)     { return battery_state.design_capacity_mAh; }
+uint16_t BATTERY_GetTerminateVoltage(void)   { return battery_state.terminate_voltage_mV; }
+uint16_t BATTERY_GetTaperRate(void)          { return battery_state.taper_rate; }
+uint16_t BATTERY_GetOpConfig(void)           { return battery_state.op_config_raw; }
+int16_t  BATTERY_GetAveragePower(void)       { return battery_state.average_power_mW; }
+int8_t   BATTERY_GetBoardOffset(void)        { return battery_state.board_offset; }
+uint8_t  BATTERY_GetDeadband(void)           { return battery_state.deadband_mA; }
 
 /**
  * @brief Get the current State of Charge (SOC) - LEGACY, use BATTERY_GetSOC instead

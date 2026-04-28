@@ -579,6 +579,30 @@ bool bq27427_reset(void);
  */
 bool bq27427_execute_control_word(uint16_t function);
 
+/**
+ * @brief Read the OpConfig register (Subclass 64, offset 0)
+ * @return 16-bit OpConfig value
+ */
+uint16_t bq27427_op_config(void);
+
+/**
+ * @brief Permanently disable SLEEP mode by clearing OpConfig[SLEEP] (bit 5).
+ *        Skips the write if the bit is already cleared, to avoid flash wear.
+ *        Must be called while in config-update mode.
+ * @return true on success (or no-op when already disabled)
+ */
+bool bq27427_disable_sleep(void);
+
+/**
+ * @brief Read a single byte from a Subclass / offset in extended (data flash) memory.
+ *        Enters CONFIG UPDATE internally if no user_config_control session is active,
+ *        which suspends gauging — prefer batching reads inside an enter/exit_config window.
+ * @param class_id Subclass ID (e.g. BQ27427_ID_CALIB_DATA)
+ * @param offset   Byte offset within the subclass
+ * @return The byte at (class_id, offset), or 0 on I2C failure
+ */
+uint8_t bq27427_read_extended_data(uint8_t class_id, uint8_t offset);
+
 #ifdef __cplusplus
 }
 #endif

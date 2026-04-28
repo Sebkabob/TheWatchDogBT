@@ -37,7 +37,6 @@ static bool _user_config_control = false;
 static bool bq27427_sealed(void);
 static bool bq27427_seal(void);
 static bool bq27427_unseal(void);
-static uint16_t bq27427_op_config(void);
 static bool bq27427_write_op_config(uint16_t value);
 static bool bq27427_soft_reset(void);
 
@@ -52,7 +51,6 @@ static uint8_t bq27427_read_block_data(uint8_t offset);
 static bool bq27427_write_block_data(uint8_t offset, uint8_t data);
 static uint8_t bq27427_compute_block_checksum(void);
 static bool bq27427_write_block_checksum(uint8_t csum);
-static uint8_t bq27427_read_extended_data(uint8_t class_id, uint8_t offset);
 static bool bq27427_write_extended_data(uint8_t class_id, uint8_t offset, uint8_t *data, uint8_t len);
 
 static bool bq27427_i2c_read_bytes(uint8_t sub_address, uint8_t *dest, uint8_t count);
@@ -597,7 +595,7 @@ static bool bq27427_unseal(void)
     return !bq27427_sealed();
 }
 
-static uint16_t bq27427_op_config(void)
+uint16_t bq27427_op_config(void)
 {
     return bq27427_read_extended_data(BQ27427_ID_REGISTERS, 0);
 }
@@ -609,6 +607,17 @@ static bool bq27427_write_op_config(uint16_t value)
     uint8_t op_config_data[2] = {op_config_msb, op_config_lsb};
 
     return bq27427_write_extended_data(BQ27427_ID_REGISTERS, 0, op_config_data, 2);
+}
+
+bool bq27427_disable_sleep(void)
+{
+    uint16_t op_config = bq27427_op_config();
+
+    if (!(op_config & BQ27427_OPCONFIG_SLEEP)) {
+        return true;
+    }
+
+    return bq27427_write_op_config(op_config & ~BQ27427_OPCONFIG_SLEEP);
 }
 
 static bool bq27427_soft_reset(void)
@@ -708,7 +717,7 @@ static bool bq27427_write_block_checksum(uint8_t csum)
     return bq27427_i2c_write_bytes(BQ27427_EXTENDED_CHECKSUM, &csum, 1);
 }
 
-static uint8_t bq27427_read_extended_data(uint8_t class_id, uint8_t offset)
+uint8_t bq27427_read_extended_data(uint8_t class_id, uint8_t offset)
 {
     uint8_t ret_data = 0;
 

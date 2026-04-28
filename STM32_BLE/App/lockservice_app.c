@@ -447,8 +447,8 @@ void LOCKSERVICE_ForceStatusUpdate(void)
 /**
  * @brief Build and send the BatteryDiagnostic notification.
  *
- * Wire format (18 bytes, little-endian, version 2):
- *   uint8_t  version             = 2
+ * Wire format (30 bytes, little-endian, version 3):
+ *   uint8_t  version             = 3
  *   uint8_t  soc_percent         (filtered, 0-100)
  *   uint16_t voltage_mV
  *   int16_t  current_mA          (negative = discharging)
@@ -458,7 +458,15 @@ void LOCKSERVICE_ForceStatusUpdate(void)
  *   uint16_t flags_raw           (BQ27427 Flags() register)
  *   uint16_t control_status_raw  (BQ27427 CONTROL_STATUS register)
  *   uint8_t  status_bits         (packed convenience flags, see below)
- *   uint8_t  soc_unfiltered      (raw IT SOC, 0-100; v1 had reserved=0 here)
+ *   uint8_t  soc_unfiltered      (raw IT SOC, 0-100)
+ *   --- v3 fields (config readback + power + calibration) ---
+ *   uint16_t design_capacity_mAh    (expected: 300)
+ *   uint16_t terminate_voltage_mV   (expected: 3000)
+ *   uint16_t taper_rate             (expected: 100)
+ *   uint16_t op_config_raw          (expected: 0x6458 — SLEEP cleared)
+ *   int16_t  average_power_mW       (signed; negative = discharging)
+ *   int8_t   board_offset           (signed counts; expected: 0)
+ *   uint8_t  deadband_mA            (expected: 5)
  *
  * status_bits layout (LSB first):
  *   bit 0: is_charging   (FLAG_CHG)
@@ -491,21 +499,29 @@ void LOCKSERVICE_SendBatteryDiagnostic(void)
         uint16_t control_status_raw;
         uint8_t  status_bits;
         uint8_t  soc_unfiltered;
+        // --- NEW FIELDS (v3) ---
+        uint16_t design_capacity_mAh;
+        uint16_t terminate_voltage_mV;
+        uint16_t taper_rate;
+        uint16_t op_config_raw;
+        int16_t  average_power_mW;
+        int8_t   board_offset;
+        uint8_t  deadband_mA;
     } battery_diag_payload_t;
 
-    _Static_assert(sizeof(battery_diag_payload_t) == 18,
-                   "BatteryDiagnostic payload must be exactly 18 bytes");
+    _Static_assert(sizeof(battery_diag_payload_t) == 30,
+                   "BatteryDiagnostic payload must be exactly 30 bytes");
 
     battery_diag_payload_t payload;
-    payload.version            = 2;
-    payload.soc_percent        = (uint8_t)(BATTERY_GetSOC() & 0xFF);
-    payload.voltage_mV         = BATTERY_GetVoltage();
-    payload.current_mA         = BATTERY_GetCurrent();
-    payload.remaining_mAh      = BATTERY_GetRemainingCapacity();
-    payload.full_charge_mAh    = BATTERY_GetFullChargeCapacity();
-    payload.temperature_0_1K   = BATTERY_GetTemperature_0_1K();
-    payload.flags_raw          = BATTERY_GetFlags();
-    payload.control_status_raw = BATTERY_GetControlStatus();
+    payload.version              = 3;
+    payload.soc_percent          = (uint8_t)(BATTERY_GetSOC() & 0xFF);
+    payload.voltage_mV           = BATTERY_GetVoltage();
+    payload.current_mA           = BATTERY_GetCurrent();
+    payload.remaining_mAh        = BATTERY_GetRemainingCapacity();
+    payload.full_charge_mAh      = BATTERY_GetFullChargeCapacity();
+    payload.temperature_0_1K     = BATTERY_GetTemperature_0_1K();
+    payload.flags_raw            = BATTERY_GetFlags();
+    payload.control_status_raw   = BATTERY_GetControlStatus();
 
     uint8_t bits = 0;
     if (BATTERY_IsCharging())          bits |= (1u << 0);
@@ -516,8 +532,16 @@ void LOCKSERVICE_SendBatteryDiagnostic(void)
     if (BATTERY_IsQmaxLearned())       bits |= (1u << 5);
     if (BATTERY_IsResistanceLearned()) bits |= (1u << 6);
     if (BATTERY_IsItpor())             bits |= (1u << 7);
-    payload.status_bits    = bits;
-    payload.soc_unfiltered = BATTERY_GetSOC_Unfiltered();
+    payload.status_bits          = bits;
+    payload.soc_unfiltered       = BATTERY_GetSOC_Unfiltered();
+
+    payload.design_capacity_mAh  = BATTERY_GetDesignCapacity();
+    payload.terminate_voltage_mV = BATTERY_GetTerminateVoltage();
+    payload.taper_rate           = BATTERY_GetTaperRate();
+    payload.op_config_raw        = BATTERY_GetOpConfig();
+    payload.average_power_mW     = BATTERY_GetAveragePower();
+    payload.board_offset         = BATTERY_GetBoardOffset();
+    payload.deadband_mA          = BATTERY_GetDeadband();
 
     LOCKSERVICE_Data_t notification_data;
     notification_data.p_Payload = (uint8_t *)&payload;

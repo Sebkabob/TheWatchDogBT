@@ -34,6 +34,23 @@ bool     BATTERY_IsUnderTemp(void);              // FLAG bit 14 (UT)
 bool     BATTERY_IsOcvTaken(void);               // FLAG bit 7
 bool     BATTERY_IsItpor(void);                  // FLAG bit 5
 
+// v3 BatteryDiagnostic — gauge config readback / power / calibration
+uint16_t BATTERY_GetDesignCapacity(void);        // mAh, cached from gauge
+uint16_t BATTERY_GetTerminateVoltage(void);      // mV, cached from gauge
+uint16_t BATTERY_GetTaperRate(void);             // 0.1h units, cached from gauge
+uint16_t BATTERY_GetOpConfig(void);              // raw OpConfig register (Subclass 64, off 0)
+int16_t  BATTERY_GetAveragePower(void);          // mW, signed (refreshed every update)
+int8_t   BATTERY_GetBoardOffset(void);           // counts, signed (Subclass 104, off 0)
+uint8_t  BATTERY_GetDeadband(void);              // mA       (Subclass 107, off 1)
+
+/**
+ * @brief Re-read all "static" gauge-config values into the cache (Design Capacity,
+ *        Terminate Voltage, Taper Rate, OpConfig, Board Offset, Deadband).
+ *        Each call enters/exits CONFIG UPDATE mode several times — only invoke
+ *        from BATTERY_Init() or after an explicit reconfigure window.
+ */
+void     BATTERY_RefreshConfigCache(void);
+
 // LEGACY: Direct I2C read functions (use cached versions above instead)
 uint16_t BATTERY_SOC(void);
 int16_t BATTERY_Current(void);

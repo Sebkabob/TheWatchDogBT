@@ -447,26 +447,7 @@ void LOCKSERVICE_ForceStatusUpdate(void)
 /**
  * @brief Build and send the BatteryDiagnostic notification.
  *
- * Wire format (60 bytes, little-endian, version 7):
- *   bytes  0..29  — same as v3 (with version byte = 7)
- *   byte  30      — uint8  init_call_count        (NEW v7: # of BATTERY_Init() calls)
- *   bytes 31..38  — battery_refresh_diag_t (8 bytes, packed)
- *   bytes 39..40  — uint16 test_design_cap        (standalone read at end of Init)
- *   byte  41      — uint8  reconfig_count         (# of reconfigure paths run)
- *   bytes 42..43  — uint16 pre_init_design_cap    (gauge's design cap BEFORE Init)
- *   bytes 44..57  — battery_init_diag_t (14 bytes, packed) — see battery.h
- *   byte  58      — uint8  test_design_cap_byte6  (raw byte from STATE/6)
- *   byte  59      — uint8  test_design_cap_byte7  (raw byte from STATE/7)
- *
- * NOTE — within first 53 bytes (nRF Connect default MTU window) the iOS
- * receiver will see: full v3 block (0..29), init_call_count (30),
- * refresh_diag (31..38), test_design_cap (39..40), reconfig_count (41),
- * pre_init_design_cap (42..43), init_diag (44..52 partial — only first 9
- * of 14 bytes: init_fail_stage, init_completed, was_sealed,
- * chem_id_fail_stage, init_current_capacity LE, init_current_terminate_v LE,
- * init_current_taper_rate low byte). Negotiate ATT_MTU ≥ 64 to see the rest.
- *
- * The original v3 layout, retained verbatim:
+ * Wire format (30 bytes, little-endian, version 3):
  *   uint8_t  version             = 3
  *   uint8_t  soc_percent         (filtered, 0-100)
  *   uint16_t voltage_mV
@@ -518,7 +499,6 @@ void LOCKSERVICE_SendBatteryDiagnostic(void)
         uint16_t control_status_raw;
         uint8_t  status_bits;
         uint8_t  soc_unfiltered;
-        // --- v3 fields ---
         uint16_t design_capacity_mAh;
         uint16_t terminate_voltage_mV;
         uint16_t taper_rate;
@@ -526,25 +506,13 @@ void LOCKSERVICE_SendBatteryDiagnostic(void)
         int16_t  average_power_mW;
         int8_t   board_offset;
         uint8_t  deadband_mA;
-        // --- v7: prove BATTERY_Init was reached at all (visible inside MTU=53) ---
-        uint8_t  init_call_count;                // NEW: increments at first line of BATTERY_Init
-        // --- v4 diagnostic instrumentation (temporary) ---
-        battery_refresh_diag_t refresh_diag;     // 8 bytes
-        uint16_t test_design_cap;                // standalone end-of-Init read
-        uint8_t  reconfig_count;                 // # times reconfigure path ran
-        uint16_t pre_init_design_cap;            // gauge value BEFORE Init touched it
-        // --- v5 init-failure tracker (temporary) ---
-        battery_init_diag_t init_diag;           // 14 bytes
-        // --- v6 raw extended-data byte capture (temporary) ---
-        uint8_t  test_design_cap_byte6;          // raw byte at STATE subclass, offset 6
-        uint8_t  test_design_cap_byte7;          // raw byte at STATE subclass, offset 7
     } battery_diag_payload_t;
 
-    _Static_assert(sizeof(battery_diag_payload_t) == 60,
-                   "BatteryDiagnostic payload must be exactly 60 bytes");
+    _Static_assert(sizeof(battery_diag_payload_t) == 30,
+                   "BatteryDiagnostic payload must be exactly 30 bytes");
 
     battery_diag_payload_t payload;
-    payload.version              = 7;
+    payload.version              = 3;
     payload.soc_percent          = (uint8_t)(BATTERY_GetSOC() & 0xFF);
     payload.voltage_mV           = BATTERY_GetVoltage();
     payload.current_mA           = BATTERY_GetCurrent();
@@ -573,15 +541,6 @@ void LOCKSERVICE_SendBatteryDiagnostic(void)
     payload.average_power_mW     = BATTERY_GetAveragePower();
     payload.board_offset         = BATTERY_GetBoardOffset();
     payload.deadband_mA          = BATTERY_GetDeadband();
-
-    payload.init_call_count      = BATTERY_GetInitCallCount();
-    payload.refresh_diag         = BATTERY_GetRefreshDiag();
-    payload.test_design_cap      = BATTERY_GetTestDesignCap();
-    payload.reconfig_count       = BATTERY_GetReconfigCount();
-    payload.pre_init_design_cap  = BATTERY_GetPreInitDesignCap();
-    payload.init_diag            = BATTERY_GetInitDiag();
-    payload.test_design_cap_byte6 = BATTERY_GetTestDesignCapByte6();
-    payload.test_design_cap_byte7 = BATTERY_GetTestDesignCapByte7();
 
     LOCKSERVICE_Data_t notification_data;
     notification_data.p_Payload = (uint8_t *)&payload;

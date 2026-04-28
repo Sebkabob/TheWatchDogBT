@@ -51,64 +51,6 @@ uint8_t  BATTERY_GetDeadband(void);              // mA       (Subclass 107, off 
  */
 void     BATTERY_RefreshConfigCache(void);
 
-// --- Diagnostic instrumentation (BatteryDiagnostic v4) -----------------------
-typedef struct __attribute__((packed)) {
-    uint8_t  attempts_used;        // 1, 2, or 3 — which retry succeeded; 0 if none
-    uint8_t  entered;              // 1 if any enter_config attempt succeeded
-    uint8_t  exited;               // 1 if exit_config returned true
-    uint16_t flags_in_cfgmode;     // raw flags read while supposedly in CFGUPMODE
-    uint16_t design_cap_raw;       // value read from gauge in this session
-    uint8_t  user_ctrl_at_entry;   // _user_config_control state at function start
-} battery_refresh_diag_t;
-
-_Static_assert(sizeof(battery_refresh_diag_t) == 8,
-               "battery_refresh_diag_t must be exactly 8 bytes");
-
-battery_refresh_diag_t BATTERY_GetRefreshDiag(void);
-uint16_t               BATTERY_GetTestDesignCap(void);   // standalone read at end of Init
-uint8_t                BATTERY_GetReconfigCount(void);    // # of times reconfigure ran
-uint16_t               BATTERY_GetPreInitDesignCap(void); // design cap read BEFORE first refresh
-
-// --- v5 init-failure tracker ------------------------------------------------
-typedef struct __attribute__((packed)) {
-    uint8_t  init_fail_stage;          // see codes below; 0 = success / not yet
-    uint8_t  init_completed;           // 1 if BATTERY_Init reached the end
-    uint8_t  was_sealed;               // 1 if gauge was sealed at start of Init
-    uint8_t  chem_id_fail_stage;       // bq27427_get_chem_id_fail_stage() snapshot
-    uint16_t init_current_capacity;    // bq27427_capacity(DESIGN) at needs_config check
-    uint16_t init_current_terminate_v; // bq27427_terminate_voltage() at same point
-    uint16_t init_current_taper_rate;  // bq27427_taper_rate() at same point
-    uint16_t init_current_opconfig;    // bq27427_op_config() at same point
-    uint8_t  init_sleep_enabled;       // bit 5 of OpConfig
-    uint8_t  init_itpor_flag;          // bq27427_itpor_flag()
-} battery_init_diag_t;
-
-_Static_assert(sizeof(battery_init_diag_t) == 14,
-               "battery_init_diag_t must be exactly 14 bytes");
-
-battery_init_diag_t BATTERY_GetInitDiag(void);
-
-uint8_t BATTERY_GetTestDesignCapByte6(void);  // raw byte: bq27427_read_extended_data(STATE, 6)
-uint8_t BATTERY_GetTestDesignCapByte7(void);  // raw byte: bq27427_read_extended_data(STATE, 7)
-
-/**
- * @brief Increments on the very first line of BATTERY_Init(). If this stays 0
- *        on every BLE diag read, BATTERY_Init() is never being called and the
- *        BQ27427 telemetry pipeline is dead at its root.
- */
-uint8_t BATTERY_GetInitCallCount(void);
-
-/* init_fail_stage codes:
- *   0 = init completed successfully
- *   1 = bq27427_init() failed
- *   2 = device_type wrong
- *   3 = INITCOMP timeout
- *   4 = bq27427_set_chem_id failed (continued anyway in v5+)
- *   5 = enter_config failed in main reconfigure block
- *   6 = one of the set_* writes failed
- *   7 = exit_config failed
- */
-
 // LEGACY: Direct I2C read functions (use cached versions above instead)
 uint16_t BATTERY_SOC(void);
 int16_t BATTERY_Current(void);

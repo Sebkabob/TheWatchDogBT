@@ -562,7 +562,13 @@ bool bq27427_exit_config(bool user_control)
     if (user_control) _user_config_control = false;
 
     if (bq27427_soft_reset()) {
-        int16_t timeout = BQ27427_I2C_TIMEOUT;
+        // Flash-backed writes during the preceding reconfigure block need a
+        // settle window before the gauge will reflect CFGUPMODE clear.
+        HAL_Delay(50);
+        // 1000 ms cap (vs. 100 ms BQ27427_I2C_TIMEOUT): one-time cost during
+        // reconfigure; typical clear happens in <50 ms but flash writes can
+        // stall longer.
+        int16_t timeout = 1000;
         while ((timeout--) && ((bq27427_flags() & BQ27427_FLAG_CFGUPMODE))) {
             HAL_Delay(1);
         }
@@ -620,7 +626,8 @@ static bool bq27427_unseal(void)
 
 uint16_t bq27427_op_config(void)
 {
-    return bq27427_read_extended_data(BQ27427_ID_REGISTERS, 0);
+    return ((uint16_t)bq27427_read_extended_data(BQ27427_ID_REGISTERS, 0) << 8) |
+            (uint16_t)bq27427_read_extended_data(BQ27427_ID_REGISTERS, 1);
 }
 
 static bool bq27427_write_op_config(uint16_t value)

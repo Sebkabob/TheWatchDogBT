@@ -56,29 +56,6 @@ typedef struct {
 static BatteryState_t battery_state = {0};
 static uint16_t cached_design_capacity = 0;
 
-// --- Diagnostic instrumentation (BatteryDiagnostic v4) ----------------------
-static battery_refresh_diag_t s_refresh_diag = {0};
-static uint16_t                s_test_design_cap = 0;
-static uint8_t                 s_reconfig_count = 0;
-static uint16_t                s_pre_init_design_cap = 0;
-
-battery_refresh_diag_t BATTERY_GetRefreshDiag(void)  { return s_refresh_diag; }
-uint16_t               BATTERY_GetTestDesignCap(void) { return s_test_design_cap; }
-uint8_t                BATTERY_GetReconfigCount(void) { return s_reconfig_count; }
-uint16_t               BATTERY_GetPreInitDesignCap(void) { return s_pre_init_design_cap; }
-
-static battery_init_diag_t s_init_diag = {0};
-battery_init_diag_t    BATTERY_GetInitDiag(void)    { return s_init_diag; }
-
-static uint8_t s_test_design_cap_byte6 = 0;
-static uint8_t s_test_design_cap_byte7 = 0;
-uint8_t BATTERY_GetTestDesignCapByte6(void) { return s_test_design_cap_byte6; }
-uint8_t BATTERY_GetTestDesignCapByte7(void) { return s_test_design_cap_byte7; }
-
-// Incremented on first line of BATTERY_Init — proves the function is called.
-static uint8_t s_init_call_count = 0;
-uint8_t BATTERY_GetInitCallCount(void) { return s_init_call_count; }
-
 // Forward declaration for static function
 static uint8_t BATTERY_EstimateSOC_FromVoltage(uint16_t voltage_mV);
 
@@ -94,157 +71,79 @@ bool BATTERY_TestCapacityRead(uint16_t *design_cap)
  */
 bool BATTERY_Init(void)
 {
-    // First line: prove this function is reached at all (visible early in BLE diag).
-    s_init_call_count++;
-
-    // Reset init diag for this boot.
-    s_init_diag = (battery_init_diag_t){0};
+    // Idempotent guard: PowerMgmt_RestoreAll() and BLE-connect both invoke this
+    // function. Skip the full reconfigure (which writes flash) if a prior call
+    // succeeded this boot and the gauge hasn't lost its config (ITPOR clear).
+    static bool s_initialized = false;
+    if (s_initialized && !bq27427_itpor_flag()) {
+        return true;
+    }
 
     if (!bq27427_init()) {
-        s_init_diag.init_fail_stage = 1;
         return false;
     }
 
-    uint16_t device_type = bq27427_device_type();
-    if (device_type != 0x0427) {
-        s_init_diag.init_fail_stage = 2;
+    if (bq27427_device_type() != 0x0427) {
         return false;
     }
 
-    // Wait for INITCOMP after power-on
     uint32_t init_start = HAL_GetTick();
     while (!(bq27427_status() & BQ27427_STATUS_INITCOMP)) {
         if ((HAL_GetTick() - init_start) >= 1500) {
-            s_init_diag.init_fail_stage = 3;
             return false;
         }
         HAL_Delay(10);
     }
 
-    // Snapshot whether the gauge is sealed at boot — if unseal silently fails,
-    // every subsequent SET_CFGUPDATE will fail too.
-    s_init_diag.was_sealed = bq27427_is_user_config_active() ? 0 : 0;  // placeholder
-    // Use status SS bit directly (CONTROL_STATUS bit 13).
-    s_init_diag.was_sealed = (bq27427_status() & BQ27427_STATUS_SS) ? 1 : 0;
-
     // Extra settle window: data in the field shows CFGUPMODE never asserts when
-    // SET_CFGUPDATE is issued too soon after INITCOMP. 250 ms is well below the
-    // existing 1.5 s INITCOMP timeout and well below the 1 s post-config delay.
+    // SET_CFGUPDATE is issued too soon after INITCOMP.
     HAL_Delay(250);
 
-    // Notify gauge of battery presence if BAT_DET is clear
     if (!(bq27427_flags() & BQ27427_FLAG_BAT_DET)) {
         bq27427_execute_control_word(BQ27427_CONTROL_BAT_INSERT);
         HAL_Delay(100);
     }
 
-    // DIAGNOSTIC OVERRIDE: chem_id read/write bypassed. We're trying to confirm
-    // the reconfigure block can write to flash at all; chem_id has been the
-    // suspected blocker. Re-enable once flash writes are proven working.
-    // if (bq27427_chem_id() != BQ27427_CHEM_B) {
-    //     if (!bq27427_set_chem_id(BQ27427_CHEM_B)) {
-    //         s_init_diag.init_fail_stage = 4;
-    //     }
-    // }
+    if (bq27427_chem_id() != BQ27427_CHEM_B) {
+        bq27427_set_chem_id(BQ27427_CHEM_B);
+    }
 
-    // Check if already configured correctly
     uint16_t current_capacity = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
-    // Snapshot the gauge's stored design capacity BEFORE we touch it — tells us
-    // whether previous boots ever successfully wrote 300 mAh to flash.
-    s_pre_init_design_cap = current_capacity;
     uint16_t current_terminate_voltage = bq27427_terminate_voltage();
     uint16_t current_taper_rate = bq27427_taper_rate();
     uint16_t current_opconfig = bq27427_op_config();
     bool sleep_enabled = (current_opconfig & BQ27427_OPCONFIG_SLEEP) != 0;
 
-    s_init_diag.init_current_capacity    = current_capacity;
-    s_init_diag.init_current_terminate_v = current_terminate_voltage;
-    s_init_diag.init_current_taper_rate  = current_taper_rate;
-    s_init_diag.init_current_opconfig    = current_opconfig;
-    s_init_diag.init_sleep_enabled       = sleep_enabled ? 1 : 0;
-    s_init_diag.init_itpor_flag          = bq27427_itpor_flag() ? 1 : 0;
-    s_init_diag.chem_id_fail_stage       = bq27427_get_chem_id_fail_stage();
-
-    // DIAGNOSTIC OVERRIDE: force the reconfigure path unconditionally so we can
-    // observe whether enter_config / set_* / exit_config actually succeed,
-    // independent of any "looks already configured" early-out.
-    (void)current_terminate_voltage;
-    (void)current_taper_rate;
-    (void)sleep_enabled;
-    bool needs_config = true;
+    bool needs_config = (current_capacity != 300) ||
+                        (current_terminate_voltage != 3000) ||
+                        (current_taper_rate != 100) ||
+                        sleep_enabled ||
+                        bq27427_itpor_flag();
 
     if (needs_config) {
-        s_reconfig_count++;
-
         if (!bq27427_enter_config(true)) {
-            s_init_diag.init_fail_stage = 5;
             return false;
         }
-
-        if (!bq27427_set_current_polarity(0)) { // 0 = Positive current means battery is charging
-            s_init_diag.init_fail_stage = 6;
-            return false;
-        }
-        if (!bq27427_set_capacity(300)) {
-            s_init_diag.init_fail_stage = 6;
-            return false;
-        }
-        if (!bq27427_set_design_energy(1110)) {  // 300mAh * 3.7V
-            s_init_diag.init_fail_stage = 6;
-            return false;
-        }
-        if (!bq27427_set_terminate_voltage(3000)) {
-            s_init_diag.init_fail_stage = 6;
-            return false;
-        }
-        if (!bq27427_set_taper_rate(100)) {  // (300mAh / 30mA) * 10 = 100, CUTS OFF AT 26mA CHARGING
-            s_init_diag.init_fail_stage = 6;
-            return false;
-        }
-        // Force gauge to stay in NORMAL mode so AverageCurrent() reflects real load
-        // (SLEEP mode filters readings to ~10 mA when load is below 30 mA wake threshold).
-        if (!bq27427_disable_sleep()) {
-            s_init_diag.init_fail_stage = 6;
-            return false;
-        }
-
-        if (!bq27427_exit_config(true)) {
-            s_init_diag.init_fail_stage = 7;
-            return false;
-        }
+        if (!bq27427_set_current_polarity(0)) return false;
+        if (!bq27427_set_capacity(300)) return false;
+        if (!bq27427_set_design_energy(1110)) return false;
+        if (!bq27427_set_terminate_voltage(3000)) return false;
+        if (!bq27427_set_taper_rate(100)) return false;
+        if (!bq27427_disable_sleep()) return false;
+        if (!bq27427_exit_config(true)) return false;
 
         HAL_Delay(1000);
     }
 
-    // Give the gauge a brief settle window after the config-write exit_config
-    // (above) before re-entering CFGUPMODE for the readback batch — back-to-back
-    // sessions can race INITCOMP and cause enter_config to time out.
-    HAL_Delay(200);
+    // Settle window after the config-write exit_config — back-to-back CFGUPMODE
+    // sessions following a flash write race INITCOMP and cause subclass reads
+    // (incl. OpConfig at REGISTERS/0) to return 0x0000.
+    HAL_Delay(500);
 
-    // Snapshot all "static" gauge-config values exactly once.
-    // After init, BATTERY_UpdateState reads only dynamic registers — entering
-    // CONFIG UPDATE every second would suspend gauging and itself break current readings.
     BATTERY_RefreshConfigCache();
 
-    // One-shot diagnostic: try to read design capacity with NO user-config session.
-    // _user_config_control should be false here; read_extended_data manages its own
-    // enter/exit. If this also returns 0 the bug is below session management
-    // (I2C, addressing, BlockData dance, etc).
-    {
-        uint8_t b6 = bq27427_read_extended_data(BQ27427_ID_STATE, 6);
-        uint8_t b7 = bq27427_read_extended_data(BQ27427_ID_STATE, 7);
-        s_test_design_cap_byte6 = b6;
-        s_test_design_cap_byte7 = b7;
-        s_test_design_cap = ((uint16_t)b6 << 8) | b7;
-    }
-
-    // Initialize battery state
     battery_state.last_update = 0;
-
-    // If init_fail_stage was set to 4 (chem_id soft-failure) we leave it as-is
-    // for visibility, but mark init_completed=1 since we ran to the end. Any
-    // hard fail above already returned early without setting init_completed.
-    s_init_diag.init_completed = 1;
+    s_initialized = true;
 
     return true;
 }
@@ -255,10 +154,6 @@ bool BATTERY_Init(void)
  */
 void BATTERY_RefreshConfigCache(void)
 {
-    // Reset diag for this call.
-    s_refresh_diag = (battery_refresh_diag_t){0};
-    s_refresh_diag.user_ctrl_at_entry = bq27427_is_user_config_active() ? 1 : 0;
-
     // The gauge can need a moment between consecutive config sessions; retry
     // a few times before giving up so a transient INITCOMP race doesn't poison
     // the cache.
@@ -266,16 +161,12 @@ void BATTERY_RefreshConfigCache(void)
     for (int attempt = 0; attempt < 3; attempt++) {
         if (bq27427_enter_config(true)) {
             entered = true;
-            s_refresh_diag.attempts_used = (uint8_t)(attempt + 1);
             break;
         }
         HAL_Delay(50);
     }
-    s_refresh_diag.entered = entered ? 1 : 0;
 
     if (!entered) {
-        // Mark cache as invalid so consumers (and the BLE diagnostic) can
-        // distinguish "0 because read failed" from a legitimate value.
         battery_state.design_capacity_mAh   = 0;
         battery_state.terminate_voltage_mV  = 0;
         battery_state.taper_rate            = 0;
@@ -286,19 +177,14 @@ void BATTERY_RefreshConfigCache(void)
         return;
     }
 
-    // Confirm CFGUPMODE bit (0x10) is actually set after a "successful" entry.
-    s_refresh_diag.flags_in_cfgmode = bq27427_flags();
-
     battery_state.design_capacity_mAh   = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
-    s_refresh_diag.design_cap_raw       = battery_state.design_capacity_mAh;
     battery_state.terminate_voltage_mV  = bq27427_terminate_voltage();
     battery_state.taper_rate            = bq27427_taper_rate();
     battery_state.op_config_raw         = bq27427_op_config();
     battery_state.board_offset          = (int8_t)bq27427_read_extended_data(BQ27427_ID_CALIB_DATA, 0);
     battery_state.deadband_mA           = bq27427_read_extended_data(BQ27427_ID_CURRENT, 1);
 
-    bool exit_ok = bq27427_exit_config(true);
-    s_refresh_diag.exited = exit_ok ? 1 : 0;
+    bq27427_exit_config(true);
 
     cached_design_capacity = battery_state.design_capacity_mAh;
 }

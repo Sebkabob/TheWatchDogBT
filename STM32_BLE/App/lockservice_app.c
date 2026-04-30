@@ -344,16 +344,25 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
         }
 
         if (first_byte == CMD_UNBOND_DEVICE) {
-            if (data_length < 1 + LOYALTY_TOKEN_LEN ||
-                !Loyalty_IsClaimed() ||
-                !Loyalty_Verify(&received_data[1])) {
+            if (data_length < 1 + LOYALTY_TOKEN_LEN) {
+                APP_DBG_MSG("UNBOND: rejected - data length %u < 5\n", (unsigned)data_length);
                 Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
                 break;
             }
-            bool wipe_ok = Loyalty_Wipe();
-            if (!wipe_ok) {
-                APP_DBG_MSG("UNBOND: EEPROM wipe failed - in-RAM state cleared, but bond may persist across reboot. Hold cable for 30 s if rebooting.\n");
+            if (!Loyalty_IsClaimed()) {
+                APP_DBG_MSG("UNBOND: rejected - device not claimed\n");
+                Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+                break;
             }
+            if (!Loyalty_Verify(&received_data[1])) {
+                APP_DBG_MSG("UNBOND: rejected - token mismatch\n");
+                Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+                break;
+            }
+            APP_DBG_MSG("UNBOND: token verified, calling Loyalty_Wipe...\n");
+            bool wipe_ok = Loyalty_Wipe();
+            APP_DBG_MSG("UNBOND: Loyalty_Wipe returned %d (true=sentinel persisted)\n",
+                        (int)wipe_ok);
             /* Always send UNPAIR_ACK + disconnect - the iOS app needs to clean
              * up its local state regardless of EEPROM outcome. Loyalty_Wipe()
              * has already cleared s_claimed unconditionally, so the next CLAIM

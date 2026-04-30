@@ -145,6 +145,11 @@ static void CablePlug_UpdateState(void)
     uint8_t pluggedNow = IS_CABLE_PLUGGED() ? 1 : 0;
 
     if (pluggedNow) {
+        /* Rising edge: cable just plugged in. Kick off the LED fade-out
+         * transition before any state-loop LED routine runs. */
+        if (!cableWasPlugged) {
+            LED_PlugIn_Start();
+        }
         /* Cable is in — stay awake, clear unplug timer */
         stayAwakeFlag = 1;
         cableUnplugTime = 0;
@@ -154,9 +159,10 @@ static void CablePlug_UpdateState(void)
 
     /* Cable is NOT plugged in */
     if (cableWasPlugged) {
-        /* Just unplugged — start the awake window */
+        /* Just unplugged — start the awake window and the LED fade-out */
         cableUnplugTime = HAL_GetTick();
         cableWasPlugged = 0;
+        LED_PlugOut_Start();
     }
 
     /* If we're in the post-unplug awake window, keep stayAwakeFlag set */
@@ -185,7 +191,9 @@ void State_Disconnected_Idle_Loop(void)
         }
         stayAwakeFlag = 1;
 
-        if (IS_CHARGING_NOW() && !BATTERY_IsFullCached()) {
+        if (LED_PlugIn_InProgress()) {
+            LED_PlugIn_Tick();                  /* fade-to-black + 250 ms gap */
+        } else if (IS_CHARGING_NOW() && !BATTERY_IsFullCached()) {
             LED_ChargingPulse();                /* SOC gradient: red→green */
         } else if (BATTERY_IsFullCached()) {
             LED_Solid(0, 255, 0, 255);          /* green solid - charged */
@@ -200,7 +208,11 @@ void State_Disconnected_Idle_Loop(void)
             stayAwakeFlag = 0;
         }
 
-        LED_Off();
+        if (LED_PlugOut_InProgress()) {
+            LED_PlugOut_Tick();                 /* fade-to-black after unplug */
+        } else {
+            LED_Off();
+        }
 
         if (!stayAwakeFlag && !PowerMgmt_IsLowPower()) {
             PowerMgmt_EnterLowPower_Idle();
@@ -224,15 +236,19 @@ void State_Connected_Idle_Loop(void)
     /* Lights — skip while find-my is active so it gets clean LED control */
     if (!findMyActive) {
         if (IS_CABLE_PLUGGED()) {
-            if (IS_CHARGING_NOW() && !BATTERY_IsFullCached()) {
+            if (LED_PlugIn_InProgress()) {
+                LED_PlugIn_Tick();                  /* fade-to-black + 250 ms gap */
+            } else if (IS_CHARGING_NOW() && !BATTERY_IsFullCached()) {
                 LED_ChargingPulse();                /* SOC gradient: red→green */
             } else if (BATTERY_IsFullCached()) {
                 LED_Solid(0, 255, 0, 255);          /* green solid - charged */
             } else {
                 LED_Off();                          /* cable in, charger not started yet */
             }
+        } else if (LED_PlugOut_InProgress()) {
+            LED_PlugOut_Tick();                 /* fade-to-black after unplug */
         } else if (GET_LIGHTS_BIT(deviceState)) {
-            LED_Rainbow(5, 255);  /* rainbow - normal */
+            LED_Rainbow(10, 255);  /* rainbow - normal */
         } else {
             LED_Off();
         }

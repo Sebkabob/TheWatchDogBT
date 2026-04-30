@@ -326,6 +326,22 @@ void BUZZER_StartFindMe(void)
         sizeof(FIND_MY_PATTERN) / sizeof(Note_t), 0);
 }
 
+/* Storage for the active continuous-tone "sequence" — single note, no gap.
+ * The state machine loops it forever (loop=1) so the tone never breaks. */
+static Note_t continuous_tone_note = {0, 60000, 0};
+
+void BUZZER_StartContinuousTone(uint16_t frequency_hz)
+{
+    if (frequency_hz == 0) {
+        BUZZER_Stop();
+        return;
+    }
+    continuous_tone_note.frequency_hz = frequency_hz;
+    continuous_tone_note.duration_ms  = 60000;
+    continuous_tone_note.delay_ms     = 0;
+    BUZZER_PlaySequence(&continuous_tone_note, 1, 1);
+}
+
 /***************************************************************************
  * LEGACY BLOCKING FUNCTIONS (boot tones, etc.)
  ***************************************************************************/

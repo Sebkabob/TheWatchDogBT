@@ -17,6 +17,7 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* ---- Public LED API ---- */
 
@@ -60,6 +61,49 @@ void LED_Pulse(int duration,
                uint8_t g,
                uint8_t b,
                uint8_t intensity);
+
+/**
+ * @brief Force LED_Pulse to restart from dark on its next call.
+ */
+void LED_Pulse_Reset(void);
+
+/**
+ * @brief Begin the cable plug-in LED transition: capture the current LED
+ *        color and fade it to black over 500 ms, then hold off for 250 ms.
+ *        After completion, the next LED routine starts visually from dark.
+ *        Call LED_PlugIn_Tick() repeatedly while LED_PlugIn_InProgress()
+ *        returns true, instead of the normal LED routine.
+ */
+void LED_PlugIn_Start(void);
+
+/**
+ * @brief Drive the plug-in transition. Non-blocking; call from main loop.
+ */
+void LED_PlugIn_Tick(void);
+
+/**
+ * @brief True while the plug-in transition is still running.
+ */
+bool LED_PlugIn_InProgress(void);
+
+/**
+ * @brief Begin the cable unplug LED transition: capture the current LED
+ *        color and fade it to black over 100 ms. After completion, control
+ *        is handed back so the natural state-loop LED routine resumes.
+ *        Call LED_PlugOut_Tick() repeatedly while LED_PlugOut_InProgress()
+ *        returns true, instead of the normal LED routine.
+ */
+void LED_PlugOut_Start(void);
+
+/**
+ * @brief Drive the unplug transition. Non-blocking; call from main loop.
+ */
+void LED_PlugOut_Tick(void);
+
+/**
+ * @brief True while the unplug transition is still running.
+ */
+bool LED_PlugOut_InProgress(void);
 
 #ifdef __cplusplus
 }

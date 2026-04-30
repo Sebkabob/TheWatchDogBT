@@ -29,6 +29,7 @@
 static I2C_HandleTypeDef *_hi2c = NULL;
 static bool _seal_flag = false;
 static bool _user_config_control = false;
+static uint8_t _chem_id_fail_stage = 0;  /* diag — see bq27427_get_chem_id_fail_stage() */
 
 /******************************************************************************
  * Private Function Prototypes
@@ -37,7 +38,6 @@ static bool _user_config_control = false;
 static bool bq27427_sealed(void);
 static bool bq27427_seal(void);
 static bool bq27427_unseal(void);
-static uint16_t bq27427_op_config(void);
 static bool bq27427_write_op_config(uint16_t value);
 static bool bq27427_soft_reset(void);
 
@@ -52,7 +52,6 @@ static uint8_t bq27427_read_block_data(uint8_t offset);
 static bool bq27427_write_block_data(uint8_t offset, uint8_t data);
 static uint8_t bq27427_compute_block_checksum(void);
 static bool bq27427_write_block_checksum(uint8_t csum);
-static uint8_t bq27427_read_extended_data(uint8_t class_id, uint8_t offset);
 static bool bq27427_write_extended_data(uint8_t class_id, uint8_t offset, uint8_t *data, uint8_t len);
 
 static bool bq27427_i2c_read_bytes(uint8_t sub_address, uint8_t *dest, uint8_t count);
@@ -468,6 +467,8 @@ uint16_t bq27427_device_type(void)
 
 bool bq27427_set_chem_id(bq27427_chemistry_t chem_id)
 {
+    _chem_id_fail_stage = 0;
+
     if (bq27427_sealed()) {
         _seal_flag = true;
         bq27427_unseal();
@@ -495,16 +496,29 @@ bool bq27427_set_chem_id(bq27427_chemistry_t chem_id)
                             if (_seal_flag) bq27427_seal();
                             return true;
                         }
+                        _chem_id_fail_stage = 5;  // chem_id didn't actually change
                         return false;
                     }
+                    _chem_id_fail_stage = 4;  // post-reset CFGUPMODE clear timeout
+                    return false;
                 }
+                _chem_id_fail_stage = 3;  // soft_reset returned false
                 return false;
             } else {
+                _chem_id_fail_stage = 2;  // execute_control_word(chem_id) failed
                 return false;
             }
         }
+        _chem_id_fail_stage = 1;  // SET_CFGUPDATE → CFGUPMODE timeout
+        return false;
     }
+    _chem_id_fail_stage = 1;  // SET_CFGUPDATE control word write failed
     return false;
+}
+
+uint8_t bq27427_get_chem_id_fail_stage(void)
+{
+    return _chem_id_fail_stage;
 }
 
 bq27427_chemistry_t bq27427_chem_id(void)
@@ -513,10 +527,13 @@ bq27427_chemistry_t bq27427_chem_id(void)
     return (bq27427_chemistry_t)chem_id;
 }
 
+bool bq27427_is_user_config_active(void)
+{
+    return _user_config_control;
+}
+
 bool bq27427_enter_config(bool user_control)
 {
-    if (user_control) _user_config_control = true;
-
     if (bq27427_sealed()) {
         _seal_flag = true;
         bq27427_unseal();
@@ -529,6 +546,10 @@ bool bq27427_enter_config(bool user_control)
         }
 
         if (timeout > 0) {
+            // Only claim user_config_control on a confirmed entry; otherwise
+            // a failed entry would leave the flag stuck true and downstream
+            // extended_data reads would skip CFGUPMODE entirely → all zeros.
+            if (user_control) _user_config_control = true;
             return true;
         }
     }
@@ -541,7 +562,13 @@ bool bq27427_exit_config(bool user_control)
     if (user_control) _user_config_control = false;
 
     if (bq27427_soft_reset()) {
-        int16_t timeout = BQ27427_I2C_TIMEOUT;
+        // Flash-backed writes during the preceding reconfigure block need a
+        // settle window before the gauge will reflect CFGUPMODE clear.
+        HAL_Delay(50);
+        // 1000 ms cap (vs. 100 ms BQ27427_I2C_TIMEOUT): one-time cost during
+        // reconfigure; typical clear happens in <50 ms but flash writes can
+        // stall longer.
+        int16_t timeout = 1000;
         while ((timeout--) && ((bq27427_flags() & BQ27427_FLAG_CFGUPMODE))) {
             HAL_Delay(1);
         }
@@ -597,9 +624,10 @@ static bool bq27427_unseal(void)
     return !bq27427_sealed();
 }
 
-static uint16_t bq27427_op_config(void)
+uint16_t bq27427_op_config(void)
 {
-    return bq27427_read_extended_data(BQ27427_ID_REGISTERS, 0);
+    return ((uint16_t)bq27427_read_extended_data(BQ27427_ID_REGISTERS, 0) << 8) |
+            (uint16_t)bq27427_read_extended_data(BQ27427_ID_REGISTERS, 1);
 }
 
 static bool bq27427_write_op_config(uint16_t value)
@@ -609,6 +637,17 @@ static bool bq27427_write_op_config(uint16_t value)
     uint8_t op_config_data[2] = {op_config_msb, op_config_lsb};
 
     return bq27427_write_extended_data(BQ27427_ID_REGISTERS, 0, op_config_data, 2);
+}
+
+bool bq27427_disable_sleep(void)
+{
+    uint16_t op_config = bq27427_op_config();
+
+    if (!(op_config & BQ27427_OPCONFIG_SLEEP)) {
+        return true;
+    }
+
+    return bq27427_write_op_config(op_config & ~BQ27427_OPCONFIG_SLEEP);
 }
 
 static bool bq27427_soft_reset(void)
@@ -708,7 +747,7 @@ static bool bq27427_write_block_checksum(uint8_t csum)
     return bq27427_i2c_write_bytes(BQ27427_EXTENDED_CHECKSUM, &csum, 1);
 }
 
-static uint8_t bq27427_read_extended_data(uint8_t class_id, uint8_t offset)
+uint8_t bq27427_read_extended_data(uint8_t class_id, uint8_t offset)
 {
     uint8_t ret_data = 0;
 
@@ -717,11 +756,14 @@ static uint8_t bq27427_read_extended_data(uint8_t class_id, uint8_t offset)
     if (!bq27427_block_data_control()) {
         return 0;
     }
+    HAL_Delay(2);
     if (!bq27427_block_data_class(class_id)) {
         return 0;
     }
+    HAL_Delay(2);
 
     bq27427_block_data_offset(offset / 32);
+    HAL_Delay(2);
 
     ret_data = bq27427_read_block_data(offset % 32);
 
@@ -745,11 +787,14 @@ static bool bq27427_write_extended_data(uint8_t class_id, uint8_t offset, uint8_
     if (!bq27427_block_data_control()) {
         return false;
     }
+    HAL_Delay(2);
     if (!bq27427_block_data_class(class_id)) {
         return false;
     }
+    HAL_Delay(2);
 
     bq27427_block_data_offset(offset / 32);
+    HAL_Delay(2);
     bq27427_compute_block_checksum();
     bq27427_block_data_checksum();
 

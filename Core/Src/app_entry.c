@@ -139,10 +139,6 @@ static PowerSaveLevels App_PowerSaveLevel_Check(void)
   if (stayAwakeFlag)
     return POWER_SAVE_LEVEL_RUNNING;
 
-  /* Debug GPIO (PB5) held HIGH → stay awake for debugger */
-  if (HAL_GPIO_ReadPin(DEBUG_GPIO_GPIO_Port, DEBUG_GPIO_Pin) == GPIO_PIN_SET)
-    return POWER_SAVE_LEVEL_RUNNING;
-
   if (APP_BLE_Get_Server_Connection_Status() == APP_BLE_CONNECTED_SERVER){
       output_level = POWER_SAVE_LEVEL_STOP_LS_CLOCK_ON;
   } else {

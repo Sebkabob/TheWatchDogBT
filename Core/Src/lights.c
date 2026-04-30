@@ -18,8 +18,12 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 extern TIM_HandleTypeDef htim2;
+
+/* Set by LED_Pulse_Reset(); LED_Pulse clears it on next call. */
+static volatile uint8_t pulse_force_reset = 0;
 
 /* =========================================================================
  * HELPER: start / stop hardware PWM channels
@@ -221,12 +225,13 @@ void LED_Pulse(int duration, uint8_t r, uint8_t g, uint8_t b, uint8_t intensity)
     if (duration < 20) duration = 20;
 
     #define PULSE_RESET_TIMEOUT 500
-    if ((now - last_call) > PULSE_RESET_TIMEOUT) {
+    if (pulse_force_reset || (now - last_call) > PULSE_RESET_TIMEOUT) {
         pulse_value = 0;
         direction = 1;
         initialized_pulse = 0;
         last_update = now;
         last_r = last_g = last_b = 0;
+        pulse_force_reset = 0;
     }
     last_call = now;
 
@@ -258,4 +263,169 @@ void LED_Pulse(int duration, uint8_t r, uint8_t g, uint8_t b, uint8_t intensity)
     if (r > 0) { uint16_t pr = (r * pulse_value * intensity) / (255 * 255); SetRed(  999 - ((pr * 999) / 255)); }
     if (g > 0) { uint16_t pg = (g * pulse_value * intensity) / (255 * 255); SetGreen(999 - ((pg * 999) / 255)); }
     if (b > 0) { uint16_t pb = (b * pulse_value * intensity) / (255 * 255); SetBlue( 999 - ((pb * 999) / 255)); }
+}
+
+void LED_Pulse_Reset(void)
+{
+    pulse_force_reset = 1;
+}
+
+/* =========================================================================
+ * CABLE PLUG-IN TRANSITION
+ *   Phase 1 (500 ms): fade whatever was on the LEDs to black
+ *   Phase 2 (250 ms): all LEDs off
+ *   Phase 3        : hand back to caller; charging LED will start from dark
+ * ========================================================================= */
+
+#define PLUG_IN_FADE_MS  500u
+#define PLUG_IN_GAP_MS   250u
+
+typedef enum {
+    PLUG_IN_IDLE = 0,
+    PLUG_IN_FADE,
+    PLUG_IN_GAP,
+} PlugInPhase_t;
+
+static PlugInPhase_t plugInPhase = PLUG_IN_IDLE;
+static uint32_t plugInPhaseStart  = 0;
+static uint16_t plugInStartCCR_R = 999;
+static uint16_t plugInStartCCR_G = 999;
+static uint16_t plugInStartCCR_B = 999;
+
+void LED_PlugIn_Start(void)
+{
+    /* Snapshot whatever the LEDs are showing right now. CCR=999 means OFF
+     * (active-low PWM), CCR=0 means full ON. Channels that were stopped will
+     * have CCR=999 (StopXxxPWM sets it before stopping), so the fade is a
+     * no-op for those — exactly what we want. */
+    plugInStartCCR_R = (uint16_t)htim2.Instance->CCR4;
+    plugInStartCCR_G = (uint16_t)htim2.Instance->CCR3;
+    plugInStartCCR_B = (uint16_t)htim2.Instance->CCR2;
+
+    /* Make sure all 3 channels are running so the fade is actually visible. */
+    StartRedPWM();
+    StartGreenPWM();
+    StartBluePWM();
+
+    SetRed(plugInStartCCR_R);
+    SetGreen(plugInStartCCR_G);
+    SetBlue(plugInStartCCR_B);
+
+    plugInPhaseStart = HAL_GetTick();
+    plugInPhase = PLUG_IN_FADE;
+}
+
+bool LED_PlugIn_InProgress(void)
+{
+    return plugInPhase != PLUG_IN_IDLE;
+}
+
+void LED_PlugIn_Tick(void)
+{
+    if (plugInPhase == PLUG_IN_IDLE) return;
+
+    uint32_t elapsed = HAL_GetTick() - plugInPhaseStart;
+
+    if (plugInPhase == PLUG_IN_FADE) {
+        if (elapsed >= PLUG_IN_FADE_MS) {
+            LED_Off();
+            plugInPhase = PLUG_IN_GAP;
+            plugInPhaseStart = HAL_GetTick();
+            return;
+        }
+
+        /* Linear interpolate each captured CCR -> 999 (OFF) over PLUG_IN_FADE_MS */
+        uint32_t frac = (elapsed * 1000u) / PLUG_IN_FADE_MS;  /* 0..999 */
+
+        uint32_t r = plugInStartCCR_R + ((999u - plugInStartCCR_R) * frac) / 1000u;
+        uint32_t g = plugInStartCCR_G + ((999u - plugInStartCCR_G) * frac) / 1000u;
+        uint32_t b = plugInStartCCR_B + ((999u - plugInStartCCR_B) * frac) / 1000u;
+
+        if (r > 999u) r = 999u;
+        if (g > 999u) g = 999u;
+        if (b > 999u) b = 999u;
+
+        SetRed(r);
+        SetGreen(g);
+        SetBlue(b);
+        return;
+    }
+
+    if (plugInPhase == PLUG_IN_GAP) {
+        if (elapsed >= PLUG_IN_GAP_MS) {
+            plugInPhase = PLUG_IN_IDLE;
+            /* Force the next LED_Pulse() call to restart from dark, so the
+             * charging pulse fades in from black even if it was running
+             * less than PULSE_RESET_TIMEOUT ago. */
+            LED_Pulse_Reset();
+            return;
+        }
+        /* Hold OFF for the duration of the gap. LED_Off() was already
+         * called when we entered this phase. */
+        return;
+    }
+}
+
+/* =========================================================================
+ * CABLE UNPLUG TRANSITION
+ *   Phase 1 (100 ms): fade whatever was on the LEDs to black
+ *   Phase 2        : hand back to caller; natural LED routine resumes
+ * ========================================================================= */
+
+#define PLUG_OUT_FADE_MS 100u
+
+static uint8_t  plugOutActive       = 0;
+static uint32_t plugOutStartTick    = 0;
+static uint16_t plugOutStartCCR_R   = 999;
+static uint16_t plugOutStartCCR_G   = 999;
+static uint16_t plugOutStartCCR_B   = 999;
+
+void LED_PlugOut_Start(void)
+{
+    plugOutStartCCR_R = (uint16_t)htim2.Instance->CCR4;
+    plugOutStartCCR_G = (uint16_t)htim2.Instance->CCR3;
+    plugOutStartCCR_B = (uint16_t)htim2.Instance->CCR2;
+
+    StartRedPWM();
+    StartGreenPWM();
+    StartBluePWM();
+
+    SetRed(plugOutStartCCR_R);
+    SetGreen(plugOutStartCCR_G);
+    SetBlue(plugOutStartCCR_B);
+
+    plugOutStartTick = HAL_GetTick();
+    plugOutActive = 1;
+}
+
+bool LED_PlugOut_InProgress(void)
+{
+    return plugOutActive != 0;
+}
+
+void LED_PlugOut_Tick(void)
+{
+    if (!plugOutActive) return;
+
+    uint32_t elapsed = HAL_GetTick() - plugOutStartTick;
+
+    if (elapsed >= PLUG_OUT_FADE_MS) {
+        LED_Off();
+        plugOutActive = 0;
+        return;
+    }
+
+    uint32_t frac = (elapsed * 1000u) / PLUG_OUT_FADE_MS;  /* 0..999 */
+
+    uint32_t r = plugOutStartCCR_R + ((999u - plugOutStartCCR_R) * frac) / 1000u;
+    uint32_t g = plugOutStartCCR_G + ((999u - plugOutStartCCR_G) * frac) / 1000u;
+    uint32_t b = plugOutStartCCR_B + ((999u - plugOutStartCCR_B) * frac) / 1000u;
+
+    if (r > 999u) r = 999u;
+    if (g > 999u) g = 999u;
+    if (b > 999u) b = 999u;
+
+    SetRed(r);
+    SetGreen(g);
+    SetBlue(b);
 }

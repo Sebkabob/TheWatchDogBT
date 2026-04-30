@@ -38,6 +38,7 @@
 #include "accelerometer.h"
 #include "lis2dux12_app.h"
 #include "power_management.h"
+#include <string.h>
 
 
 /* USER CODE END Includes */
@@ -74,7 +75,7 @@ typedef struct
 
 /* External variables --------------------------------------------------------*/
 /* USER CODE BEGIN EV */
-
+extern uint8_t g_bd_address[6]; /* defined in app_ble.c, populated in BLE_Init() */
 /* USER CODE END EV */
 
 /* Private macros ------------------------------------------------------------*/
@@ -97,6 +98,8 @@ extern volatile uint8_t connectionStatus;
 // Track current transfer state
 static uint16_t currentEventIndex = 0;
 static uint8_t transferInProgress = 0;
+
+static uint8_t drain_mode_active = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -305,6 +308,14 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
     	                NVIC_SystemReset();
     	                break;
 
+    	            case CMD_DRAIN_MODE:
+    	                if (data_length >= 2 && (received_data[1] & 0x01)) {
+    	                    Drain_Start();
+    	                } else {
+    	                    Drain_Stop();
+    	                }
+    	                break;
+
     	            default:
     	                // Regular device state update
     	                deviceState = received_data[0];
@@ -420,6 +431,186 @@ void LOCKSERVICE_ForceStatusUpdate(void)
     LOCKSERVICE_Devicestatus_SendNotification();
     //lastSentDeviceInfo = deviceInfo;
 }
+
+/**
+ * @brief Build and send the BatteryDiagnostic notification.
+ *
+ * Wire format (51 bytes, little-endian, version 11):
+ *   bytes  0..29 — same layout as v3 (with version byte = 11)
+ *   bytes 30..45 — uint8_t calib_bytes[16] from Subclass 104 (Calibration)
+ *                  per BQ27427 TRM:
+ *                    0..3  CC Gain    (4-byte TI custom float)
+ *                    4..7  CC Delta   (4-byte TI custom float)
+ *                    8..9  CC Offset  (int16)
+ *                    10..11 candidate Board Offset (silicon-rev dependent)
+ *                    12..15 spare/other
+ *   byte  46    — uint8 init_fail_stage   (0 = ok; codes in battery.c)
+ *   byte  47    — uint8 init_completed    (1 if BATTERY_Init reached the end)
+ *   byte  48    — uint8 post_reset_fired  (1 if CC-Gain self-heal triggered RESET)
+ *   bytes 49..50 — uint16 chem_id_read    (BQ27427 chem_id() snapshot, LE)
+ *
+ * Original v3 layout:
+ *   uint8_t  version             = 3
+ *   uint8_t  soc_percent         (filtered, 0-100)
+ *   uint16_t voltage_mV
+ *   int16_t  current_mA          (negative = discharging)
+ *   uint16_t remaining_mAh
+ *   uint16_t full_charge_mAh
+ *   int16_t  temperature_0_1K    (divide by 10, subtract 273.15 for °C)
+ *   uint16_t flags_raw           (BQ27427 Flags() register)
+ *   uint16_t control_status_raw  (BQ27427 CONTROL_STATUS register)
+ *   uint8_t  status_bits         (packed convenience flags, see below)
+ *   uint8_t  soc_unfiltered      (raw IT SOC, 0-100)
+ *   --- v3 fields (config readback + power + calibration) ---
+ *   uint16_t design_capacity_mAh    (expected: 300)
+ *   uint16_t terminate_voltage_mV   (expected: 3000)
+ *   uint16_t taper_rate             (expected: 100)
+ *   uint16_t op_config_raw          (expected: 0x6458 — SLEEP cleared)
+ *   int16_t  average_power_mW       (signed; negative = discharging)
+ *   int8_t   board_offset           (signed counts; expected: 0)
+ *   uint8_t  deadband_mA            (expected: 5)
+ *
+ * status_bits layout (LSB first):
+ *   bit 0: is_charging   (FLAG_CHG)
+ *   bit 1: is_full       (FLAG_FC)
+ *   bit 2: is_low        (FLAG_SOC1)
+ *   bit 3: is_critical   (FLAG_SOCF)
+ *   bit 4: bat_detected  (FLAG_BAT_DET)
+ *   bit 5: qmax_learned  (CTRL_STATUS bit 9)
+ *   bit 6: res_learned   (CTRL_STATUS bit 8)
+ *   bit 7: itpor         (FLAG_ITPOR)
+ *
+ * STM32 is little-endian; multi-byte fields are written via direct memcpy
+ * of the packed struct, which matches the LE wire spec.
+ */
+void LOCKSERVICE_SendBatteryDiagnostic(void)
+{
+    if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
+        return;
+    }
+
+    typedef struct __attribute__((packed)) {
+        uint8_t  version;
+        uint8_t  soc_percent;
+        uint16_t voltage_mV;
+        int16_t  current_mA;
+        uint16_t remaining_mAh;
+        uint16_t full_charge_mAh;
+        int16_t  temperature_0_1K;
+        uint16_t flags_raw;
+        uint16_t control_status_raw;
+        uint8_t  status_bits;
+        uint8_t  soc_unfiltered;
+        uint16_t design_capacity_mAh;
+        uint16_t terminate_voltage_mV;
+        uint16_t taper_rate;
+        uint16_t op_config_raw;
+        int16_t  average_power_mW;
+        int8_t   board_offset;
+        uint8_t  deadband_mA;
+        // --- v9 one-shot Calibration subclass dump (temporary) ---
+        uint8_t  calib_bytes[16];
+        // --- v10 init-failure tracker (temporary) ---
+        uint8_t  init_fail_stage;
+        uint8_t  init_completed;
+        uint8_t  post_reset_fired;
+        // --- v11 chem_id snapshot (temporary) ---
+        uint16_t chem_id_read;
+    } battery_diag_payload_t;
+
+    _Static_assert(sizeof(battery_diag_payload_t) == 51,
+                   "BatteryDiagnostic payload must be exactly 51 bytes");
+
+    battery_diag_payload_t payload;
+    payload.version              = 11;
+    payload.soc_percent          = (uint8_t)(BATTERY_GetSOC() & 0xFF);
+    payload.voltage_mV           = BATTERY_GetVoltage();
+    payload.current_mA           = BATTERY_GetCurrent();
+    payload.remaining_mAh        = BATTERY_GetRemainingCapacity();
+    payload.full_charge_mAh      = BATTERY_GetFullChargeCapacity();
+    payload.temperature_0_1K     = BATTERY_GetTemperature_0_1K();
+    payload.flags_raw            = BATTERY_GetFlags();
+    payload.control_status_raw   = BATTERY_GetControlStatus();
+
+    uint8_t bits = 0;
+    if (BATTERY_IsCharging())          bits |= (1u << 0);
+    if (BATTERY_IsFullCached())        bits |= (1u << 1);
+    if (BATTERY_IsLowCached())         bits |= (1u << 2);
+    if (BATTERY_IsCriticallyCached())  bits |= (1u << 3);
+    if (BATTERY_IsBatteryDetected())   bits |= (1u << 4);
+    if (BATTERY_IsQmaxLearned())       bits |= (1u << 5);
+    if (BATTERY_IsResistanceLearned()) bits |= (1u << 6);
+    if (BATTERY_IsItpor())             bits |= (1u << 7);
+    payload.status_bits          = bits;
+    payload.soc_unfiltered       = BATTERY_GetSOC_Unfiltered();
+
+    payload.design_capacity_mAh  = BATTERY_GetDesignCapacity();
+    payload.terminate_voltage_mV = BATTERY_GetTerminateVoltage();
+    payload.taper_rate           = BATTERY_GetTaperRate();
+    payload.op_config_raw        = BATTERY_GetOpConfig();
+    payload.average_power_mW     = BATTERY_GetAveragePower();
+    payload.board_offset         = BATTERY_GetBoardOffset();
+    payload.deadband_mA          = BATTERY_GetDeadband();
+    memcpy(payload.calib_bytes, BATTERY_GetCalibBytes(), 16);
+    payload.init_fail_stage      = BATTERY_GetInitFailStage();
+    payload.init_completed       = BATTERY_GetInitCompleted();
+    payload.post_reset_fired     = BATTERY_GetPostResetFired();
+    payload.chem_id_read         = BATTERY_GetChemIdRead();
+
+    LOCKSERVICE_Data_t notification_data;
+    notification_data.p_Payload = (uint8_t *)&payload;
+    notification_data.Length    = sizeof(payload);
+
+    LOCKSERVICE_NotifyValue(LOCKSERVICE_BATTERYDIAG, &notification_data,
+                            LOCKSERVICE_APP_Context.ConnectionHandle);
+}
+
+/******************************************************************************
+ * Drain Mode — gauge-health diagnostic
+ *
+ * Drives the device into a high-load state so the fuel gauge can characterise
+ * the battery: white LED at full brightness + continuous 100 Hz buzzer tone.
+ * Auto-stops once SOC drops to DRAIN_AUTO_STOP_SOC (5 %).
+ *****************************************************************************/
+
+void Drain_Start(void)
+{
+    if (drain_mode_active) return;
+    drain_mode_active = 1;
+    LED_Solid(255, 255, 255, 255);
+    BUZZER_StartContinuousTone(DRAIN_TONE_FREQUENCY_HZ);
+}
+
+void Drain_Stop(void)
+{
+    if (!drain_mode_active) return;
+    drain_mode_active = 0;
+    BUZZER_Stop();
+    LED_Off();
+}
+
+uint8_t Drain_IsActive(void)
+{
+    return drain_mode_active;
+}
+
+void Drain_Tick(void)
+{
+    if (!drain_mode_active) return;
+
+    /* Auto-stop when battery is sufficiently drained. */
+    if (BATTERY_GetSOC() <= DRAIN_AUTO_STOP_SOC) {
+        Drain_Stop();
+        return;
+    }
+
+    /* Re-assert outputs every tick so other subsystems (state machine,
+     * alarm patterns) can't override us while drain is active. */
+    LED_Solid(255, 255, 255, 255);
+    if (!BUZZER_IsPlaying()) {
+        BUZZER_StartContinuousTone(DRAIN_TONE_FREQUENCY_HZ);
+    }
+}
 /* USER CODE END FD */
 
 /*************************************************************
@@ -456,7 +647,9 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
     int16_t accel[3];
     LIS2DUX12_ReadAcceleration(accel);
 
-    /* Pack data into BLE notification — 14 bytes */
+    /* Pack data into BLE notification — 16 bytes
+     * Bytes 14..15 carry the low 2 bytes of the BD address (LE), used by
+     * the iOS app as the user-visible "WatchDog #" identifier in Settings. */
     a_LOCKSERVICE_UpdateCharData[0]  = deviceState;
     a_LOCKSERVICE_UpdateCharData[1]  = deviceBattery;
     a_LOCKSERVICE_UpdateCharData[2]  = (uint8_t)(current_mA & 0xFF);
@@ -471,8 +664,10 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
     a_LOCKSERVICE_UpdateCharData[11] = (uint8_t)(accel[2] & 0xFF);
     a_LOCKSERVICE_UpdateCharData[12] = (uint8_t)((accel[2] >> 8) & 0xFF);
     a_LOCKSERVICE_UpdateCharData[13] = deviceInfo;
+    a_LOCKSERVICE_UpdateCharData[14] = g_bd_address[0]; /* WatchDog # low byte  (LSB of BD addr) */
+    a_LOCKSERVICE_UpdateCharData[15] = g_bd_address[1]; /* WatchDog # high byte */
 
-    lockservice_notification_data.Length = 14;
+    lockservice_notification_data.Length = 16;
   /* USER CODE END Service1Char2_NS_1*/
 
   if (notification_on_off != Devicestatus_NOTIFICATION_OFF && LOCKSERVICE_APP_Context.ConnectionHandle != 0xFFFF)

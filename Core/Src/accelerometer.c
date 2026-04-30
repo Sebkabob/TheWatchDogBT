@@ -35,12 +35,6 @@ void HAL_GPIO_EXTI_Callback(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin) {
         motion_detected_flag = 1;
         __HAL_GPIO_EXTI_CLEAR_IT(ACCEL_INT_GPIO_Port, ACCEL_INT_Pin);
     }
-    /* PB5 (DEBUG_GPIO) rising edge — wake device and hold awake.
-     * stayAwakeFlag keeps the BLE stack from entering DEEPSTOP. */
-    if (GPIOx == DEBUG_GPIO_GPIO_Port && GPIO_Pin == DEBUG_GPIO_Pin) {
-        extern volatile uint8_t stayAwakeFlag;
-        stayAwakeFlag = 1;
-    }
 }
 
 /***************************************************************************
@@ -56,11 +50,6 @@ void HAL_PWR_WKUPx_Callback(uint32_t WakeupIOs) {
     }
     if (WakeupIOs & PWR_WAKEUP_PB4) {
         CablePlug_IRQCallback();
-    }
-    if (WakeupIOs & PWR_WAKEUP_PB5) {
-        /* Debug GPIO woke us — set stayAwakeFlag so device stays up */
-        extern volatile uint8_t stayAwakeFlag;
-        stayAwakeFlag = 1;
     }
 }
 

@@ -41,15 +41,15 @@ typedef struct{
   uint16_t  DevicestatusCharHdle;			/**< DEVICESTATUS Characteristic Handle */
   uint16_t  MotiondataCharHdle;			/**< MOTIONDATA Characteristic Handle */
 /* USER CODE BEGIN Context */
-  /* Place holder for Characteristic Descriptors Handle*/
-
+  uint16_t  BatterydiagCharHdle;            /**< BATTERYDIAG Characteristic Handle */
 /* USER CODE END Context */
 }LOCKSERVICE_Context_t;
 
 /* Private defines -----------------------------------------------------------*/
 
 /* USER CODE BEGIN PD */
-
+#define BATTERYDIAG_SIZE        51  /* BatteryDiagnostic v11 packed payload */
+#define BATTERYDIAG_UUID        0x42,0x44,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
 /* USER CODE END PD */
 
 /* External variables --------------------------------------------------------*/
@@ -75,6 +75,35 @@ static LOCKSERVICE_Context_t LOCKSERVICE_Context;
 /* USER CODE BEGIN PV */
 //extern volatile uint8_t lockState;
 //extern volatile uint8_t deviceBattery;
+
+/* BATTERYDIAG characteristic — restored here (inside USER CODE blocks)
+ * after CubeMX regen wiped the previous out-of-block additions. Registered
+ * dynamically in InitService1Svc_2 via aci_gatt_srv_add_char() so it
+ * survives future .ioc regeneration.
+ */
+BLE_GATT_SRV_CCCD_DECLARE(batterydiag, CFG_BLE_NUM_RADIO_TASKS, BLE_GATT_SRV_CCCD_PERM_DEFAULT,
+                          BLE_GATT_SRV_OP_MODIFIED_EVT_ENABLE_FLAG);
+
+static uint8_t batterydiag_val_buffer[BATTERYDIAG_SIZE];
+
+static ble_gatt_val_buffer_def_t batterydiag_val_buffer_def = {
+  .op_flags   = BLE_GATT_SRV_OP_MODIFIED_EVT_ENABLE_FLAG,
+  .val_len    = BATTERYDIAG_SIZE,
+  .buffer_len = sizeof(batterydiag_val_buffer),
+  .buffer_p   = batterydiag_val_buffer
+};
+
+static ble_gatt_chr_def_t batterydiag_char = {
+  .properties   = BLE_GATT_SRV_CHAR_PROP_NOTIFY,
+  .permissions  = BLE_GATT_SRV_PERM_NONE,
+  .min_key_size = 0x10,
+  .uuid         = BLE_UUID_INIT_128(BATTERYDIAG_UUID),
+  .descrs = {
+      .descr_count = 1U,
+      .descrs_p    = &BLE_GATT_SRV_CCCD_DEF_NAME(batterydiag),
+  },
+  .val_buffer_p = &batterydiag_val_buffer_def
+};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -257,7 +286,24 @@ static BLEEVT_EvtAckStatus_t LOCKSERVICE_EventHandler(aci_blecore_event *p_evt)
       } /* if(p_attribute_modified->Attr_Handle == (LOCKSERVICE_Context.ApptowdCharHdle + CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET))*/
 
       /* USER CODE BEGIN EVT_BLUE_GATT_ATTRIBUTE_MODIFIED_END */
-
+      else if (p_attribute_modified->Attr_Handle ==
+               (LOCKSERVICE_Context.BatterydiagCharHdle + CHARACTERISTIC_DESCRIPTOR_ATTRIBUTE_OFFSET))
+      {
+        return_value = BLEEVT_Ack;
+        switch (p_attribute_modified->Attr_Data[0])
+        {
+          case (!BLE_GATT_SRV_CCCD_NOTIFICATION):
+            notification.EvtOpcode = LOCKSERVICE_BATTERYDIAG_NOTIFY_DISABLED_EVT;
+            LOCKSERVICE_Notification(&notification);
+            break;
+          case BLE_GATT_SRV_CCCD_NOTIFICATION:
+            notification.EvtOpcode = LOCKSERVICE_BATTERYDIAG_NOTIFY_ENABLED_EVT;
+            LOCKSERVICE_Notification(&notification);
+            break;
+          default:
+            break;
+        }
+      }
       /* USER CODE END EVT_BLUE_GATT_ATTRIBUTE_MODIFIED_END */
       break;/* ACI_GATT_SRV_ATTRIBUTE_MODIFIED_VSEVT_CODE */
     }
@@ -360,7 +406,20 @@ void LOCKSERVICE_Init(void)
   LOCKSERVICE_Context.MotiondataCharHdle = aci_gatt_srv_get_char_decl_handle((ble_gatt_chr_def_t *)&lockservice_chars[2]);
 
   /* USER CODE BEGIN InitService1Svc_2 */
-
+  /* Dynamically attach the BATTERYDIAG characteristic to the LockService.
+   * Done here (rather than in the const lockservice_chars[] array) so that
+   * .ioc regeneration cannot wipe the wiring. */
+  tBleStatus add_char_ret = aci_gatt_srv_add_char(&batterydiag_char,
+                                                  LOCKSERVICE_Context.LockserviceSvcHdle);
+  if (add_char_ret != BLE_STATUS_SUCCESS)
+  {
+    APP_DBG_MSG("  Fail   : aci_gatt_srv_add_char BATTERYDIAG, error code: 0x%x \n", add_char_ret);
+  }
+  else
+  {
+    LOCKSERVICE_Context.BatterydiagCharHdle = aci_gatt_srv_get_char_decl_handle(&batterydiag_char);
+    APP_DBG_MSG("  Success: aci_gatt_srv_add_char BATTERYDIAG \n");
+  }
   /* USER CODE END InitService1Svc_2 */
 
   if (ret != BLE_STATUS_SUCCESS)
@@ -455,7 +514,21 @@ tBleStatus LOCKSERVICE_NotifyValue(LOCKSERVICE_CharOpcode_t CharOpcode, LOCKSERV
   }
 
   /* USER CODE BEGIN Service1_App_Notify_Char_2 */
-
+  if (CharOpcode == LOCKSERVICE_BATTERYDIAG)
+  {
+    memcpy(batterydiag_val_buffer, pData->p_Payload,
+           MIN(pData->Length, sizeof(batterydiag_val_buffer)));
+    ret = aci_gatt_srv_notify(ConnectionHandle,
+                              BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                              LOCKSERVICE_Context.BatterydiagCharHdle + 1,
+                              GATT_NOTIFICATION,
+                              pData->Length,
+                              (uint8_t *)pData->p_Payload);
+    if (ret != BLE_STATUS_SUCCESS)
+    {
+      APP_DBG_MSG("  Fail   : aci_gatt_srv_notify BATTERYDIAG, error code: 0x%2X\n", ret);
+    }
+  }
   /* USER CODE END Service1_App_Notify_Char_2 */
 
   return ret;

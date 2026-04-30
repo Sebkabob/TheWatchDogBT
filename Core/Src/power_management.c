@@ -311,10 +311,6 @@ void PowerMgmt_EnterLowPower_Idle(void)
 {
     if (peripherals_gated) return;
 
-    /* If debug pin is held HIGH, don't enter low power */
-    if (HAL_GPIO_ReadPin(DEBUG_GPIO_GPIO_Port, DEBUG_GPIO_Pin) == GPIO_PIN_SET)
-        return;
-
     Gate_Timers();
     Gate_I2C();              /* kill I2C bus power — accel is off */
     Gate_EEPROM();
@@ -322,7 +318,6 @@ void PowerMgmt_EnterLowPower_Idle(void)
     Gate_AccelInterrupt();   /* no motion detection in idle */
     Gate_GPIO_Outputs();
     Keep_CablePlugInterrupt();
-    Keep_DebugGPIOInterrupt();
 
     peripherals_gated = 1;
 }
@@ -330,10 +325,6 @@ void PowerMgmt_EnterLowPower_Idle(void)
 void PowerMgmt_EnterLowPower_Armed(void)
 {
     if (peripherals_gated) return;
-
-    /* If debug pin is held HIGH, don't enter low power */
-    if (HAL_GPIO_ReadPin(DEBUG_GPIO_GPIO_Port, DEBUG_GPIO_Pin) == GPIO_PIN_SET)
-        return;
 
     Gate_Timers();
 
@@ -348,9 +339,8 @@ void PowerMgmt_EnterLowPower_Armed(void)
     Keep_AccelInterrupt();   /* keep PB15 active for wake-on-motion */
     Gate_GPIO_Outputs();
 
-    /* Keep PB4 (cable detect) and PB5 (debug) active */
+    /* Keep PB4 (cable detect) active */
     Keep_CablePlugInterrupt();
-    Keep_DebugGPIOInterrupt();
 
     peripherals_gated = 1;
 }
@@ -395,7 +385,6 @@ void PowerMgmt_RestoreAll(void)
     Restore_AccelInterrupt();
     Restore_CablePlugInterrupt();
     Restore_UART_Pins();
-    Restore_DebugGPIO();
 
     /* --- Re-init drivers that depend on I2C --- */
     HAL_Delay(10);

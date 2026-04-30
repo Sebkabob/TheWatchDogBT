@@ -38,6 +38,7 @@
 #include "accelerometer.h"
 #include "lis2dux12_app.h"
 #include "power_management.h"
+#include "loyalty.h"
 #include <string.h>
 
 
@@ -239,6 +240,32 @@ static void LOCKSERVICE_SendLogCleared(void)
                            LOCKSERVICE_APP_Context.ConnectionHandle);
 }
 
+/**
+ * @brief Send a 2-byte loyalty response on DEVICESTATUS, optionally followed
+ *        by a deferred disconnect. Used by CLAIM/VERIFY/UNBOND/REJECT flows.
+ */
+static void Loyalty_SendResponse(uint8_t marker, uint8_t value, uint8_t disconnect_after)
+{
+    if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
+        return;
+    }
+
+    a_LOCKSERVICE_UpdateCharData[0] = marker;
+    a_LOCKSERVICE_UpdateCharData[1] = value;
+
+    LOCKSERVICE_Data_t resp;
+    resp.p_Payload = (uint8_t *)a_LOCKSERVICE_UpdateCharData;
+    resp.Length    = 2;
+    LOCKSERVICE_NotifyValue(LOCKSERVICE_DEVICESTATUS, &resp,
+                            LOCKSERVICE_APP_Context.ConnectionHandle);
+
+    if (disconnect_after) {
+        HAL_Delay(50);  /* let the radio TX the notify */
+        (void)aci_gap_terminate(LOCKSERVICE_APP_Context.ConnectionHandle,
+                                0x13 /* REMOTE_USER_TERMINATED */);
+    }
+}
+
 /* USER CODE END PFP */
 
 /* Functions Definition ------------------------------------------------------*/
@@ -255,79 +282,162 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
 
     case LOCKSERVICE_APPTOWD_WRITE_EVT:
       /* USER CODE BEGIN Service1Char1_WRITE_EVT */
-    	StateMachine_UpdateBLEActivity();
-    	uint8_t *received_data = p_Notification->DataTransfered.p_Payload;
-    	    uint8_t data_length = p_Notification->DataTransfered.Length;
+      StateMachine_UpdateBLEActivity();
+      {
+        uint8_t *received_data = p_Notification->DataTransfered.p_Payload;
+        uint8_t  data_length   = p_Notification->DataTransfered.Length;
 
-    	    if(data_length > 0)
-    	    {
-    	        uint8_t command = received_data[0];
+        if (data_length == 0) {
+            break;
+        }
 
-    	        // Only extract timestamp if this is the initial boot time sync command
-    	        // (typically sent with the first connection or settings update)
-    	        if (data_length >= 7 && command != CMD_REQUEST_EVENT &&
-    	            command != CMD_REQUEST_LOG_COUNT && command != CMD_CLEAR_LOG &&
-    	            command != CMD_ACK_EVENT && command != CMD_FIND_MY_DEVICE &&
-    	            command != CMD_RESET_DEVICE) {
-    	            // This is a settings update with timestamp
-    	            UpdateBootTimeFromiOS(&received_data[data_length - 6]);
-    	        }
+        /* ── Loyalty layer ────────────────────────────────────────────
+         * Three special opcodes are self-contained:
+         *   CLAIM  : [0xC1, t0, t1, t2, t3]            (5 bytes)
+         *   VERIFY : [0xC2, t0, t1, t2, t3]            (5 bytes)
+         *   UNBOND : [0xC0, t0, t1, t2, t3]            (5 bytes)
+         *
+         * Every other (existing) opcode is now prefixed with the 4-byte
+         * token, i.e. [t0, t1, t2, t3, opcode, ...payload]. */
+        uint8_t first_byte = received_data[0];
 
-    	        switch(command) {
-    	            case CMD_REQUEST_LOG_COUNT:
-    	                transferInProgress = 1;
-    	                currentEventIndex = 0;
-    	                LOCKSERVICE_SendEventCount();
-    	                break;
+        if (first_byte == CMD_CLAIM_DEVICE) {
+            if (data_length < 1 + LOYALTY_TOKEN_LEN) {
+                Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+                break;
+            }
 
-    	            case CMD_REQUEST_EVENT:
-    	                if (data_length >= 3) {
-    	                    uint16_t requestedIndex = ((uint16_t)received_data[1] << 8) | received_data[2];
-    	                    LOCKSERVICE_SendEvent(requestedIndex);
-    	                }
-    	                break;
+            /* If already claimed, only accept a CLAIM whose token matches the
+             * existing one - that's the legitimate owner with stale local
+             * state (app reinstall, BondManager cleared, etc.). Treat it as
+             * a successful re-claim so iOS BondManager re-adds the device.
+             * A non-matching CLAIM (different phone) is still rejected. */
+            if (Loyalty_IsClaimed()) {
+                if (Loyalty_Verify(&received_data[1])) {
+                    APP_DBG_MSG("CLAIM: token matches existing - idempotent re-claim accepted\n");
+                    Loyalty_SendResponse(RESP_CLAIM_OK, 0x01, 0);
+                } else {
+                    APP_DBG_MSG("CLAIM: token mismatch with existing - REJECT\n");
+                    Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+                }
+                break;
+            }
 
-    	            case CMD_ACK_EVENT:
-    	                // iOS acknowledged receiving event
-    	                break;
+            /* Unowned: persist the new token. */
+            if (Loyalty_Claim(&received_data[1])) {
+                Loyalty_SendResponse(RESP_CLAIM_OK, 0x01, 0);
+            } else {
+                Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+            }
+            break;
+        }
 
-    	            case CMD_CLEAR_LOG:
-    	                MotionLogger_Clear();
-    	                transferInProgress = 0;
-    	                currentEventIndex = 0;
-    	                LOCKSERVICE_SendLogCleared();
-    	                break;
+        if (first_byte == CMD_VERIFY_OWNER) {
+            if (data_length < 1 + LOYALTY_TOKEN_LEN ||
+                !Loyalty_IsClaimed() ||
+                !Loyalty_Verify(&received_data[1])) {
+                Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+                break;
+            }
+            Loyalty_SendResponse(RESP_VERIFY_OK, 0x01, 0);
+            break;
+        }
 
-    	            case CMD_FIND_MY_DEVICE:
-    	                if (data_length >= 2 && (received_data[1] & 0x01)) {
-    	                    FindMyDevice_Start();
-    	                }
-    	                break;
+        if (first_byte == CMD_UNBOND_DEVICE) {
+            if (data_length < 1 + LOYALTY_TOKEN_LEN ||
+                !Loyalty_IsClaimed() ||
+                !Loyalty_Verify(&received_data[1])) {
+                Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+                break;
+            }
+            bool wipe_ok = Loyalty_Wipe();
+            if (!wipe_ok) {
+                APP_DBG_MSG("UNBOND: EEPROM wipe failed - in-RAM state cleared, but bond may persist across reboot. Hold cable for 30 s if rebooting.\n");
+            }
+            /* Always send UNPAIR_ACK + disconnect - the iOS app needs to clean
+             * up its local state regardless of EEPROM outcome. Loyalty_Wipe()
+             * has already cleared s_claimed unconditionally, so the next CLAIM
+             * in this session will be accepted. */
+            Loyalty_SendResponse(RESP_UNPAIR_ACK, 0x01, 1);
+            break;
+        }
 
-    	            case CMD_RESET_DEVICE:
-    	                NVIC_SystemReset();
-    	                break;
+        /* ── Regular command path (token-prefixed) ──────────────────── */
+        if (!Loyalty_IsClaimed() ||
+            data_length < LOYALTY_TOKEN_LEN + 1 ||
+            !Loyalty_Verify(received_data)) {
+            Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+            break;
+        }
 
-    	            case CMD_DRAIN_MODE:
-    	                if (data_length >= 2 && (received_data[1] & 0x01)) {
-    	                    Drain_Start();
-    	                } else {
-    	                    Drain_Stop();
-    	                }
-    	                break;
+        /* Token verified — strip the prefix and dispatch the rest with
+         * the existing per-opcode logic. */
+        uint8_t *cmd_data   = &received_data[LOYALTY_TOKEN_LEN];
+        uint8_t  cmd_length = data_length - LOYALTY_TOKEN_LEN;
+        uint8_t  command    = cmd_data[0];
 
-    	            default:
-    	                // Regular device state update
-    	                deviceState = received_data[0];
-    	                if (data_length >= 2) {
-    	                    deviceInfo = received_data[1];
-    	                }
-    	                HAL_Delay(5);
-    	                LOCKSERVICE_ForceStatusUpdate();
-    	                break;
-    	        }
-    	    }
-    	    break;
+        /* Only extract timestamp on settings-update writes (as before). */
+        if (cmd_length >= 7 && command != CMD_REQUEST_EVENT &&
+            command != CMD_REQUEST_LOG_COUNT && command != CMD_CLEAR_LOG &&
+            command != CMD_ACK_EVENT && command != CMD_FIND_MY_DEVICE &&
+            command != CMD_RESET_DEVICE) {
+            UpdateBootTimeFromiOS(&cmd_data[cmd_length - 6]);
+        }
+
+        switch (command) {
+            case CMD_REQUEST_LOG_COUNT:
+                transferInProgress = 1;
+                currentEventIndex = 0;
+                LOCKSERVICE_SendEventCount();
+                break;
+
+            case CMD_REQUEST_EVENT:
+                if (cmd_length >= 3) {
+                    uint16_t requestedIndex = ((uint16_t)cmd_data[1] << 8) | cmd_data[2];
+                    LOCKSERVICE_SendEvent(requestedIndex);
+                }
+                break;
+
+            case CMD_ACK_EVENT:
+                /* iOS acknowledged receiving event */
+                break;
+
+            case CMD_CLEAR_LOG:
+                MotionLogger_Clear();
+                transferInProgress = 0;
+                currentEventIndex = 0;
+                LOCKSERVICE_SendLogCleared();
+                break;
+
+            case CMD_FIND_MY_DEVICE:
+                if (cmd_length >= 2 && (cmd_data[1] & 0x01)) {
+                    FindMyDevice_Start();
+                }
+                break;
+
+            case CMD_RESET_DEVICE:
+                NVIC_SystemReset();
+                break;
+
+            case CMD_DRAIN_MODE:
+                if (cmd_length >= 2 && (cmd_data[1] & 0x01)) {
+                    Drain_Start();
+                } else {
+                    Drain_Stop();
+                }
+                break;
+
+            default:
+                /* Regular device state update */
+                deviceState = cmd_data[0];
+                if (cmd_length >= 2) {
+                    deviceInfo = cmd_data[1];
+                }
+                HAL_Delay(5);
+                LOCKSERVICE_ForceStatusUpdate();
+                break;
+        }
+      }
       /* USER CODE END Service1Char1_WRITE_EVT */
       break;
 

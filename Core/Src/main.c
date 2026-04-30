@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "lockservice_app.h"
+#include "loyalty.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -179,12 +180,33 @@ int main(void)
   LIS2DUX12_Init();
   BATTERY_Init();
 
-  /* Safe boot mode: hold while cable plugged in */
+  /* Safe boot mode: hold while cable plugged in. If the cable stays
+   * plugged for 30 consecutive seconds we additionally wipe the loyalty
+   * token (recovery hatch for users with a lost owner phone). The wipe
+   * fires once per safe-boot session and is announced with an ascending
+   * tone so the user knows the reset took effect. */
   if (IS_CABLE_PLUGGED()) {
       BUZZER_Tone(300, 50);
       BUZZER_Tone(200, 30);
       BUZZER_Tone(100, 20);
-      while (IS_CABLE_PLUGGED());
+
+      uint32_t cable_start_ms   = HAL_GetTick();
+      uint8_t  loyalty_wiped    = 0;
+      while (IS_CABLE_PLUGGED()) {
+          if (!loyalty_wiped &&
+              (HAL_GetTick() - cable_start_ms) >= 30000U) {
+              if (Loyalty_Wipe()) {
+                  /* Distinct "reset" jingle (ascending) so the user
+                   * recognises the hatch fired. */
+                  BUZZER_Tone(300, 30);
+                  HAL_Delay(20);
+                  BUZZER_Tone(450, 30);
+                  HAL_Delay(20);
+                  BUZZER_Tone(600, 60);
+              }
+              loyalty_wiped = 1;
+          }
+      }
   }
   /* USER CODE END 2 */
 
@@ -197,6 +219,11 @@ int main(void)
 
   firstBootTone();
   StateMachine_Init();
+
+  /* Application-layer loyalty token: load from EEPROM after BLE_Init
+   * has touched the BD-address region, so the two operations don't race
+   * on the EEPROM power rail. */
+  Loyalty_Init();
 
   /* Belt-and-braces: clear any pending GPIOB IRQs and force stayAwakeFlag
    * = 0 so nothing pinned during boot blocks DEEPSTOP. */

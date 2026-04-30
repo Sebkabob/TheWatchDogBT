@@ -78,6 +78,20 @@ typedef struct
 #define RESP_EVENT_DATA          0xE1  // WD: Sending event data
 #define RESP_NO_MORE_EVENTS      0xE2  // WD: No event at requested index
 #define RESP_LOG_CLEARED         0xE3  // WD: Log cleared confirmation
+
+/* Application-layer loyalty token opcodes (iOS -> firmware) */
+#define CMD_CLAIM_DEVICE         0xC1  // Payload: 4-byte token; first claim
+#define CMD_VERIFY_OWNER         0xC2  // Payload: 4-byte token; reconnect
+#define CMD_UNBOND_DEVICE        0xC0  // Payload: 4-byte token; user unpair
+
+/* Loyalty response markers (firmware -> iOS via DEVICESTATUS notify) */
+#define RESP_CLAIM_OK            0xE7  // Sent with [0x01]
+#define RESP_REJECT              0xE8  // Sent with [0x01]; followed by disconnect
+#define RESP_VERIFY_OK           0xE9  // Sent with [0x01]
+#define RESP_UNPAIR_ACK          0xE4  // Sent with [0x01] on UNBOND_OK; disconnect
+
+/* Token size in bytes */
+#define LOYALTY_TOKEN_LEN        4
 /* USER CODE END EV */
 
 /* Exported macros -----------------------------------------------------------*/

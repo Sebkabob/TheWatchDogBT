@@ -125,6 +125,32 @@ Currently empty placeholder (Oct 2025) — reserved for future system-level glue
 
 **Boot stayAwakeFlag clear:** Just before entering the main loop, `main()` runs `NVIC_ClearPendingIRQ(GPIOB_IRQn)` and forces `stayAwakeFlag = 0` so a stray IRQ during init can't pin the device awake forever.
 
+## Loyalty token (application-layer ownership)
+
+There is no BLE-layer pairing or bonding. Any phone may connect (the GATT characteristics are all `BLE_GATT_SRV_PERM_NONE`), but only the owner's commands are processed. Ownership is enforced by a 4-byte token stored at EEPROM offset `0x10` (inside the reserved device-info region). See `STM32_BLE/App/loyalty.{c,h}` and `FW_LOYALTY_TOKEN_PROMPT.md` for full design.
+
+Wire format on `APPTOWD` writes (from iOS):
+
+| First byte | Meaning | Payload |
+|------------|---------|---------|
+| `0xC1` | `CMD_CLAIM_DEVICE` (first claim) | 4-byte token |
+| `0xC2` | `CMD_VERIFY_OWNER` (reconnect) | 4-byte token |
+| `0xC0` | `CMD_UNBOND_DEVICE` (user unpair) | 4-byte token |
+| anything else | Existing opcodes (`0xF0`, settings, etc.) | Prefixed with 4-byte token: `[t0, t1, t2, t3, opcode, ...]` |
+
+Firmware responses on `DEVICESTATUS` notify (2 bytes each):
+
+| Bytes | Meaning |
+|-------|---------|
+| `[0xE7, 0x01]` | `RESP_CLAIM_OK` — token persisted |
+| `[0xE9, 0x01]` | `RESP_VERIFY_OK` — token matches |
+| `[0xE8, 0x01]` | `RESP_REJECT` — followed by disconnect ~50 ms later |
+| `[0xE4, 0x01]` | `RESP_UNPAIR_ACK` — EEPROM wiped, followed by disconnect |
+
+The dispatcher in `lockservice_app.c::LOCKSERVICE_Notification()` validates the token before forwarding any regular-command payload to the existing handlers. Payload offsets inside regular handlers are unchanged — the token is stripped before the inner switch runs.
+
+**Recovery hatch:** holding the charging cable plugged in for **30 consecutive seconds** during the safe-boot busy-wait in `main.c` calls `Loyalty_Wipe()` and plays a distinct ascending tone. After unplug, any phone can claim the device again. This exists for users whose owner phone is lost or the app's local token has been deleted.
+
 ## Key Pin Assignments
 
 | Signal | Pin | Notes |

@@ -176,15 +176,28 @@ void MotionLogger_SetBootTime(uint8_t year, uint8_t month, uint8_t day,
     boot_time.valid = 1;
 }
 
+// Gregorian leap-year rule: divisible by 4, except divisible by 100, except
+// divisible by 400. Without this the code would invent Feb 29 in 2100.
+static uint8_t is_leap_year(uint32_t year_full)
+{
+    if ((year_full % 4) != 0)   return 0;
+    if ((year_full % 100) != 0) return 1;
+    if ((year_full % 400) != 0) return 0;
+    return 1;
+}
+
 /***************************************************************************
  * MotionLogger_TickToDateTime — convert a HAL tick to YY/MM/DD HH:MM:SS
- *   Returns 00-01-01 00:00:00 if no boot time has been set yet.
- *   Year is 2-digit (00..99); leap year if (year % 4) == 0 (00 = leap).
+ *   Year is reported as offset from 2000 (matches the iOS wire format).
+ *   Returns 00-01-01 00:00:00 if no boot time has been set, or if iOS
+ *   sent a malformed boot time (month outside 1..12, day outside 1..31).
  ***************************************************************************/
 void MotionLogger_TickToDateTime(uint32_t tick_ms, uint8_t* year, uint8_t* month,
                                    uint8_t* day, uint8_t* hour, uint8_t* minute, uint8_t* second)
 {
-    if (!boot_time.valid) {
+    if (!boot_time.valid ||
+        boot_time.month < 1 || boot_time.month > 12 ||
+        boot_time.day   < 1 || boot_time.day   > 31) {
         *year = 0;
         *month = 1;
         *day = 1;
@@ -198,8 +211,8 @@ void MotionLogger_TickToDateTime(uint32_t tick_ms, uint8_t* year, uint8_t* month
     uint32_t elapsed_seconds = elapsed_ms / 1000;
 
     uint32_t total_seconds = boot_time.second +
-                             boot_time.minute * 60 +
-                             boot_time.hour * 3600 +
+                             boot_time.minute * 60u +
+                             boot_time.hour * 3600u +
                              elapsed_seconds;
 
     uint8_t new_second = total_seconds % 60;
@@ -211,13 +224,13 @@ void MotionLogger_TickToDateTime(uint32_t tick_ms, uint8_t* year, uint8_t* month
         31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
     };
 
-    uint32_t day_acc = (uint32_t)boot_time.day + elapsed_days;
+    uint32_t day_acc   = (uint32_t)boot_time.day + elapsed_days;
     uint8_t  new_month = boot_time.month;
-    uint8_t  new_year  = boot_time.year;
+    uint32_t year_full = 2000u + (uint32_t)boot_time.year;
 
     for (;;) {
         uint8_t dim = days_in_month[new_month - 1];
-        if (new_month == 2 && (new_year % 4) == 0) {
+        if (new_month == 2 && is_leap_year(year_full)) {
             dim = 29;
         }
         if (day_acc <= dim) {
@@ -227,15 +240,15 @@ void MotionLogger_TickToDateTime(uint32_t tick_ms, uint8_t* year, uint8_t* month
         new_month++;
         if (new_month > 12) {
             new_month = 1;
-            new_year++;
+            year_full++;
         }
     }
     uint8_t new_day = (uint8_t)day_acc;
 
-    *year = new_year;
-    *month = new_month;
-    *day = new_day;
-    *hour = new_hour;
+    *year   = (uint8_t)((year_full - 2000u) & 0xFFu);
+    *month  = new_month;
+    *day    = new_day;
+    *hour   = new_hour;
     *minute = new_minute;
     *second = new_second;
 }

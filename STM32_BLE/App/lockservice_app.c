@@ -291,6 +291,15 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
             break;
         }
 
+        /* If the EEPROM read at boot failed, refuse everything. Otherwise a
+         * transient I2C glitch at boot would let any phone CLAIM (and thus
+         * hijack) a device that is actually owned. */
+        if (Loyalty_StoreUnhealthy()) {
+            APP_DBG_MSG("Loyalty store UNHEALTHY - rejecting all writes\n");
+            Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+            break;
+        }
+
         /* ── Loyalty layer ────────────────────────────────────────────
          * Three special opcodes are self-contained:
          *   CLAIM  : [0xC1, t0, t1, t2, t3]            (5 bytes)

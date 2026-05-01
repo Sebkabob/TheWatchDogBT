@@ -82,15 +82,13 @@ int lis2dux12_app_mlc_status_changed(void);
  * CACHED MLC STATE (avoids I2C reads in the BLE status path)
  *
  * Byte values sent over BLE (status update byte 6):
- *   0 = Stationary (at reference / door closed)
- *   1 = Door Open  (displaced from reference, not moving)
- *   2 = In Motion  (MLC)
- *   3 = Shaken     (MLC)
- *   0xFE = Stabilizing (waiting for stillness before arming)
+ *   0    = Stationary
+ *   2    = In Motion   (MLC)
+ *   3    = Shaken      (MLC)
+ *   0xFE = Stabilizing (waiting for stillness before locking)
  *   0xFF = Unknown
  ***************************************************************************/
 #define CACHED_STATE_STATIONARY     0
-#define CACHED_STATE_DOOR_OPEN      1
 #define CACHED_STATE_IN_MOTION      2
 #define CACHED_STATE_SHAKEN         3
 #define CACHED_STATE_STABILIZING    0xFE
@@ -102,14 +100,23 @@ void lis2dux12_app_update_cached_state(uint8_t mlc_out);
 
 /**
  * @brief  Get the cached state for BLE status byte.
- *         Merges MLC classification with door detector state.
+ *         Returns CACHED_STATE_STABILIZING when the stabilizing
+ *         override is set, otherwise the latest MLC classification.
  */
 uint8_t lis2dux12_app_get_cached_mlc_state(void);
 
 /**
- * @brief  Set the door detector state override.
- *         Pass one of the CACHED_STATE_DOOR_* values, or 0 to clear.
+ * @brief  Toggle the stabilizing override on byte 6 of the BLE status.
+ *         Call with 1 when entering STATE_STABILIZING, 0 when leaving.
  */
-void lis2dux12_app_set_door_state(uint8_t door_state);
+void lis2dux12_app_set_stabilizing(uint8_t on);
+
+/**
+ * @brief  Read instantaneous X/Y/Z acceleration in milli-g.
+ *         Sensor mode is read back from the device, so this works
+ *         regardless of the FS/ODR baked into the loaded UCF.
+ * @return 0 on success, non-zero on I2C error.
+ */
+int lis2dux12_app_read_accel_mg(int16_t *x_mg, int16_t *y_mg, int16_t *z_mg);
 
 #endif /* INC_LIS2DUX12_APP_H_ */

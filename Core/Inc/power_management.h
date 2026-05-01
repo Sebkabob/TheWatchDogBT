@@ -14,6 +14,7 @@
 void PowerMgmt_EnterLowPower_Idle(void);
 void PowerMgmt_EnterLowPower_Armed(void);
 void PowerMgmt_RestoreAll(void);
+void PowerMgmt_RestoreForMotion(void);   /* lean wake — skips BATTERY_Init() */
 uint8_t PowerMgmt_IsLowPower(void);
 
 /* ---- EEPROM power control (PB6) --------------------------------------- */

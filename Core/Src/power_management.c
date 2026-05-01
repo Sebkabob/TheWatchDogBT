@@ -27,6 +27,7 @@
 #include "lights.h"
 #include "sound.h"
 #include "motion_logger.h"
+#include "state_machine.h"
 
 /* ---- External handles from main.c -------------------------------------- */
 extern I2C_HandleTypeDef  hi2c1;
@@ -35,6 +36,11 @@ extern TIM_HandleTypeDef  htim16;
 
 /* ---- Private state ----------------------------------------------------- */
 static volatile uint8_t peripherals_gated = 0;
+
+/* Tracks whether we entered armed LP with MLC alive (HIGH sensitivity)
+ * or with the chip wiped to ULP-wake-only (MEDIUM/LOW).  RestoreForMotion
+ * uses this to decide whether the UCF needs to be reloaded. */
+static volatile uint8_t mlc_kept_alive = 0;
 
 /* ---- Reinit wrappers defined in main.c ---- */
 extern void MX_I2C1_Reinit(void);
@@ -328,10 +334,30 @@ void PowerMgmt_EnterLowPower_Armed(void)
 
     Gate_Timers();
 
-    /* Put accel into 1.6 Hz ULP wake-up mode BEFORE gating I2C.
-     * IMPORTANT: Use Gate_I2C_KeepPower() — NOT Gate_I2C().
-     * Gate_I2C() kills VDD to the accelerometer, destroying the ULP config. */
-    LIS2DUX12_EnterUltraLowPowerWakeup();
+    /* Sensitivity gates the sleep mode of the accelerometer:
+     *   HIGH    — keep MLC running (UCF intact) for instant wake.
+     *             Costs a few extra µA but classification is ready
+     *             the moment the MCU comes out of DEEPSTOP.
+     *   MEDIUM  — ULP wake-only at 3 Hz (~1.7 µA).  Faster wake-up
+     *             latency than LOW; pairs with a raw-accel probe so
+     *             "significant motion" fires immediately and only
+     *             marginal motion has to wait for UCF reload + MLC.
+     *   LOW     — ULP wake-only at 1.6 Hz (~1.5 µA, lowest power).
+     *             Always waits for MLC after wake.
+     *
+     * Either way, use Gate_I2C_KeepPower() — NOT Gate_I2C() — so the
+     * accel chip stays powered and retains its config. */
+    uint8_t sens = GET_SENSITIVITY(deviceState);
+    if (sens == SENSITIVITY_HIGH) {
+        LIS2DUX12_ConfigArmedSleep();
+        mlc_kept_alive = 1;
+    } else if (sens == SENSITIVITY_MEDIUM) {
+        LIS2DUX12_EnterMediumLowPowerWakeup();
+        mlc_kept_alive = 0;
+    } else {
+        LIS2DUX12_EnterUltraLowPowerWakeup();
+        mlc_kept_alive = 0;
+    }
 
     Gate_I2C_KeepPower();
     Gate_EEPROM();
@@ -345,11 +371,16 @@ void PowerMgmt_EnterLowPower_Armed(void)
     peripherals_gated = 1;
 }
 
-void PowerMgmt_RestoreAll(void)
+/**
+ * @brief Restore the I2C bus (peripheral + GPIO power) without touching
+ *        the LIS2DUX12 — used by both RestoreAll and RestoreForMotion.
+ *        In armed LP the chip stayed powered (Gate_I2C_KeepPower), so
+ *        we only need to bring the MCU side back up.
+ */
+static void Restore_I2C_Bus(void)
 {
-    if (!peripherals_gated) return;
-
-    /* --- Restore I2C power pin (PA10) as output FIRST, then drive HIGH --- */
+    /* I2C power pin (PA10) — re-assert as output HIGH (might already be
+     * driven HIGH by Gate_I2C_KeepPower; restate to be safe). */
     GPIO_InitTypeDef gpio = {0};
     gpio.Mode  = GPIO_MODE_OUTPUT_PP;
     gpio.Pull  = GPIO_NOPULL;
@@ -357,40 +388,90 @@ void PowerMgmt_RestoreAll(void)
     gpio.Pin   = I2C_POWER_Pin;
     HAL_GPIO_Init(I2C_POWER_GPIO_Port, &gpio);
     HAL_GPIO_WritePin(I2C_POWER_GPIO_Port, I2C_POWER_Pin, GPIO_PIN_SET);
-    HAL_Delay(5);
 
-    /* --- Restore EEPROM power pin (PB6) as output, keep OFF --- */
+    /* EEPROM power pin (PB6) as output, keep OFF until explicitly used */
     gpio.Pin = EEPROM_POW_Pin;
     HAL_GPIO_Init(EEPROM_POW_GPIO_Port, &gpio);
     HAL_GPIO_WritePin(EEPROM_POW_GPIO_Port, EEPROM_POW_Pin, GPIO_PIN_RESET);
 
-    /* --- Re-enable clocks --- */
+    __HAL_RCC_I2C1_CLK_ENABLE();
+    MX_I2C1_Reinit();
+}
+
+void PowerMgmt_RestoreAll(void)
+{
+    if (!peripherals_gated) return;
+
+    Restore_I2C_Bus();
+    HAL_Delay(5);
+
+    /* Full timer restore: TIM2 (LEDs) + TIM16 (buzzer) */
     __HAL_RCC_TIM2_CLK_ENABLE();
     __HAL_RCC_TIM16_CLK_ENABLE();
-    __HAL_RCC_I2C1_CLK_ENABLE();
-
-    /* --- Reinitialise peripherals --- */
-    MX_I2C1_Reinit();
-    MX_TIM2_Reinit();    /* also calls HAL_TIM_MspPostInit -> restores PB2/PB3/PB7 AF */
-
+    MX_TIM2_Reinit();    /* restores PB2/PB3/PB7 AF for LEDs */
+    LED_Off();           /* clamp CCRs to 999 — without this the
+                            fresh MX_TIM2_Init leaves CCR=0, which
+                            (active-low) drives LEDs full ON for the
+                            tens of ms it takes to finish RestoreAll. */
     MX_TIM16_Reinit();
+    BUZZER_Init();       /* clamps PB0 LOW until a tone plays */
 
-    /* --- Re-init buzzer: stops PWM and clamps PB0 LOW as GPIO output.
-     *     Overrides the AF config from MX_TIM16_Reinit so the MOSFET gate
-     *     is held hard-off until a tone is actually played. --- */
-    BUZZER_Init();
-
-    /* --- Restore GPIO --- */
     Restore_GPIO_Outputs();
     Restore_AccelInterrupt();
     Restore_CablePlugInterrupt();
     Restore_UART_Pins();
 
-    /* --- Re-init drivers that depend on I2C --- */
+    /* UCF reload + battery init — only needed on full wake (BLE connect,
+     * cable plug, etc.), not on motion-wake (UCF stays loaded there). */
     HAL_Delay(10);
     LIS2DUX12_Init();
     LIS2DUX12_ClearMotion();
     BATTERY_Init();
+
+    peripherals_gated = 0;
+}
+
+/**
+ * @brief Lean restore for the LIS2DUX12-motion-wake path.
+ *
+ * Brings up ONLY what's needed to:
+ *   - read motion / MLC data over I2C
+ *   - drive the buzzer
+ *   - log to EEPROM (when explicitly powered on)
+ *   - service cable-plug + accel interrupts
+ *
+ * Explicitly skips:
+ *   - TIM2 / LED reinit (lights stay off in armed wake)
+ *   - LIS2DUX12_Init — UCF/MLC stayed loaded across sleep
+ *   - BATTERY_Init   — gauge runs on its own VDD; cache refreshes at 1 Hz
+ *
+ * Net wake latency on this path is dominated by the I2C/TIM16 reinit
+ * (~ a few ms) — the alarm can fire as soon as the first MLC read returns
+ * IN_MOTION/SHAKEN.
+ */
+void PowerMgmt_RestoreForMotion(void)
+{
+    if (!peripherals_gated) return;
+
+    Restore_I2C_Bus();
+
+    /* Buzzer only — no TIM2 / LED restore (deliberate). */
+    __HAL_RCC_TIM16_CLK_ENABLE();
+    MX_TIM16_Reinit();
+    BUZZER_Init();
+
+    Restore_AccelInterrupt();
+    Restore_CablePlugInterrupt();
+
+    /* UCF reload only needed if we entered LP with the chip wiped to
+     * ULP wake-only mode (MEDIUM/LOW sensitivity).  In HIGH-sensitivity
+     * sleep the MLC stayed loaded — the next read already reflects the
+     * motion that woke us. */
+    if (!mlc_kept_alive) {
+        HAL_Delay(10);
+        LIS2DUX12_Init();
+        LIS2DUX12_ClearMotion();
+    }
 
     peripherals_gated = 0;
 }

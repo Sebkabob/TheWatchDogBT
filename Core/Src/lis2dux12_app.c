@@ -197,16 +197,16 @@ int lis2dux12_app_mlc_status_changed(void)
  * CACHED MLC STATE
  * Avoids I2C reads in the 1-second BLE status notification path.
  * Updated by the state machine after every MLC interrupt read.
- * Door detector state is merged in via door_state_override.
+ *
  ***************************************************************************/
 static uint8_t cached_mlc_state = 0xFF; /* 0xFF = unknown / not yet read */
-static uint8_t door_state_override = 0; /* 0 = none, 1 = open */
+static uint8_t stabilizing_override = 0;
 
 void lis2dux12_app_update_cached_state(uint8_t mlc_out)
 {
     switch (mlc_out) {
         case MLC_STATE_STATIONARY_UPRIGHT:     cached_mlc_state = 0; break;
-        case MLC_STATE_STATIONARY_NOT_UPRIGHT: cached_mlc_state = 0; break; /* treat same as upright */
+        case MLC_STATE_STATIONARY_NOT_UPRIGHT: cached_mlc_state = 0; break;
         case MLC_STATE_IN_MOTION:              cached_mlc_state = 2; break;
         case MLC_STATE_SHAKEN:                 cached_mlc_state = 3; break;
         default:                               cached_mlc_state = 0xFF; break;
@@ -215,25 +215,27 @@ void lis2dux12_app_update_cached_state(uint8_t mlc_out)
 
 uint8_t lis2dux12_app_get_cached_mlc_state(void)
 {
-    /* Stabilizing overrides everything */
-    if (door_state_override == CACHED_STATE_STABILIZING) {
-        return CACHED_STATE_STABILIZING;
-    }
-    /* MLC in-motion / shaken overrides door-open position */
-    if (cached_mlc_state == CACHED_STATE_IN_MOTION ||
-        cached_mlc_state == CACHED_STATE_SHAKEN) {
-        return cached_mlc_state;
-    }
-    /* If MLC says stationary but door is displaced → door open */
-    if (door_state_override == CACHED_STATE_DOOR_OPEN) {
-        return CACHED_STATE_DOOR_OPEN;
-    }
+    if (stabilizing_override) return CACHED_STATE_STABILIZING;
     return cached_mlc_state;
 }
 
-void lis2dux12_app_set_door_state(uint8_t door_state)
+void lis2dux12_app_set_stabilizing(uint8_t on)
 {
-    door_state_override = door_state;
+    stabilizing_override = on ? 1 : 0;
+}
+
+int lis2dux12_app_read_accel_mg(int16_t *x_mg, int16_t *y_mg, int16_t *z_mg)
+{
+    lis2dux12_md_t md;
+    if (lis2dux12_mode_get(&dev_ctx, &md) != 0) return -1;
+
+    lis2dux12_xl_data_t xl;
+    if (lis2dux12_xl_data_get(&dev_ctx, &md, &xl) != 0) return -1;
+
+    *x_mg = (int16_t)xl.mg[0];
+    *y_mg = (int16_t)xl.mg[1];
+    *z_mg = (int16_t)xl.mg[2];
+    return 0;
 }
 
 /***************************************************************************

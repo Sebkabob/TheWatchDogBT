@@ -77,6 +77,23 @@ int32_t LIS2DUX12_ResetAndPowerDown(void);
 int32_t LIS2DUX12_EnterUltraLowPowerWakeup(void);
 
 /**
+ * @brief Reconfigure accel into 3 Hz ULP wake-up-only mode (~1.7 µA).
+ * @details Same as ULP wake-up but at 3 Hz polling (next step from 1.6 Hz)
+ *          for faster wake-up latency. Used for MEDIUM sensitivity.
+ * @return 0 on success, non-zero on I2C error
+ */
+int32_t LIS2DUX12_EnterMediumLowPowerWakeup(void);
+
+/**
+ * @brief Configure armed-state DEEPSTOP without losing MLC config.
+ * @details Adds wake-up engine on top of the running UCF.  MLC keeps
+ *          classifying across MCU sleep, so the alarm path can read
+ *          MLC output immediately on wake — no UCF reload latency.
+ * @return 0 on success, non-zero on I2C error
+ */
+int32_t LIS2DUX12_ConfigArmedSleep(void);
+
+/**
  * @brief Clear all accelerometer interrupt sources.
  */
 void LIS2DUX12_ClearAllInterrupts(void);

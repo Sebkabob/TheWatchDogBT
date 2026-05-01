@@ -29,7 +29,6 @@
 #include "lockservice_app.h"
 #include "accelerometer.h"
 #include "lis2dux12_app.h"
-#include "door_detector.h"
 #include "motion_logger.h"
 #include "power_management.h"
 #include "app_ble.h"
@@ -47,6 +46,27 @@ static uint32_t stateEntryTime = 0;
 static uint32_t lastActivityTime = 0;
 
 volatile uint8_t stayAwakeFlag = 0;
+
+/* Tick at which the post-connect motion-grace window expires.
+ * Set via StateMachine_StartMotionGrace().  While HAL_GetTick() is
+ * below this, the LOCKED state suppresses motion-triggered alarm
+ * transitions so a BLE connect (which runs RestoreAll → UCF reload)
+ * doesn't immediately fire the alarm. */
+static volatile uint32_t motion_grace_until = 0;
+
+void StateMachine_StartMotionGrace(uint32_t ms)
+{
+    uint32_t until = HAL_GetTick() + ms;
+    /* Don't shorten an existing window */
+    if ((int32_t)(until - motion_grace_until) > 0) {
+        motion_grace_until = until;
+    }
+}
+
+static uint8_t MotionGrace_Active(void)
+{
+    return (int32_t)(motion_grace_until - HAL_GetTick()) > 0;
+}
 
 /* Cable plug detection */
 volatile uint8_t cablePlugFlag = 0;
@@ -107,8 +127,6 @@ void StateMachine_Init(void)
     SET_SILENCE_BIT(deviceState, 0);
 
     deviceInfo = 0;
-
-    DoorDetector_Init();
 
     /* Initialise cable state tracking */
     cableWasPlugged = IS_CABLE_PLUGGED() ? 1 : 0;
@@ -262,8 +280,6 @@ void State_Connected_Idle_Loop(void)
     /* State Switch - STABILIZING (wait for stillness before locking) */
     if (GET_ARMED_BIT(deviceState)) {
         LIS2DUX12_ClearMotion();
-        DoorDetector_SetSensitivity(GET_SENSITIVITY(deviceState));
-        lis2dux12_app_set_door_state(CACHED_STATE_STABILIZING);
         StateMachine_ChangeState(STATE_STABILIZING);
     }
 }
@@ -272,7 +288,6 @@ void State_Stabilizing_Loop(void)
 {
     /* Disarmed — cancel stabilizing */
     if (!GET_ARMED_BIT(deviceState)) {
-        lis2dux12_app_set_door_state(0);
         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
         LED_Off();
         return;
@@ -323,10 +338,8 @@ void State_Stabilizing_Loop(void)
         }
     }
 
-    /* 3 seconds of no motion — capture reference and lock */
+    /* 3 seconds of no motion — lock */
     if (HAL_GetTick() - last_still_time >= 3000) {
-        DoorDetector_CaptureReference();
-        lis2dux12_app_set_door_state(0);
         stabilize_started = 0;
         StateMachine_ChangeState(STATE_LOCKED);
     }
@@ -339,6 +352,13 @@ void State_Locked_Loop(void)
     static uint32_t motion_assess_start = 0;
     #define MOTION_ASSESS_TIMEOUT_MS 10000
 
+    /* Deferred motion alert state — declared up-front so the LP-wake
+     * fast-paths (HIGH/MEDIUM sensitivity) can seed it before the
+     * MLC settle path picks it up. */
+    static uint8_t      motion_pending = 0;
+    static MotionType_t pending_type   = MOTION_TYPE_NONE;
+    static uint32_t     motion_pending_tick = 0;
+
     /* State Switch - UNLOCKED */
     if (!GET_ARMED_BIT(deviceState)) {
         motion_assessing = 0;
@@ -349,22 +369,100 @@ void State_Locked_Loop(void)
 
     /*--------------------------------------------------------------
      * Wake from armed LP on motion interrupt.
-     * Restore I2C + reload MLC so we can classify the motion.
-     * Stay awake for up to 10 seconds for assessment.
+     *
+     * The MLC kept running across MCU sleep (UCF stays loaded — see
+     * LIS2DUX12_ConfigArmedSleep), so the very first MLC read after
+     * peripherals come back will already reflect the motion that
+     * woke us.  No UCF reload, no MLC accumulation window.
+     *
+     * Behaviour:
+     *   - INT alone never fires the alarm.
+     *   - We read MLC + FSM data first.
+     *   - If MLC says IN_MOTION / SHAKEN → seed deferred alert and
+     *     transition to ALARM_ACTIVE.
+     *   - If MLC still says STATIONARY (a "breeze" wake) → leave
+     *     motion_assessing armed for ~10 s; the regular MLC/FSM
+     *     processing block below will catch any escalation.
      *--------------------------------------------------------------*/
     if (PowerMgmt_IsLowPower() && LIS2DUX12_PeekMotionStatus()) {
-        PowerMgmt_RestoreAll();
+        PowerMgmt_RestoreForMotion();
         LIS2DUX12_ClearMotion();
         stayAwakeFlag = 1;
         motion_assessing = 1;
         motion_assess_start = HAL_GetTick();
 
-        /* Log the ULP wake event immediately.  The MLC isn't loaded
-         * until PowerMgmt_RestoreAll() finishes, so brief motions that
-         * triggered the ULP threshold but stopped before MLC can
-         * classify them would otherwise go unrecorded. */
+        /* Log the wake event immediately so brief motions that stopped
+         * before any further classification still get recorded. */
         if (GET_LOGGING_BIT(deviceState)) {
             MotionLogger_LogEvent(MOTION_TYPE_IN_MOTION);
+        }
+
+        /* Significant-motion fast-path (MEDIUM + HIGH only).
+         * LOW always waits for MLC.  For MEDIUM/HIGH, if the raw
+         * acceleration vector deviates from 1 g by more than 250 mg,
+         * fire the alarm immediately — no need to wait for MLC.
+         * Threshold compared in mg² to avoid a sqrt. */
+        uint8_t fast_fired = 0;
+        if (GET_SENSITIVITY(deviceState) != SENSITIVITY_LOW) {
+            int16_t ax_mg = 0, ay_mg = 0, az_mg = 0;
+            if (lis2dux12_app_read_accel_mg(&ax_mg, &ay_mg, &az_mg) == 0) {
+                int32_t mag2 = (int32_t)ax_mg * ax_mg
+                             + (int32_t)ay_mg * ay_mg
+                             + (int32_t)az_mg * az_mg;
+                /* 1g ± 250 mg gate:  750 mg² … 1250 mg² */
+                const int32_t hi2 = 1250L * 1250L;
+                const int32_t lo2 =  750L *  750L;
+                if (mag2 > hi2 || mag2 < lo2) {
+                    if (!motion_pending) {
+                        motion_pending      = 1;
+                        pending_type        = MOTION_TYPE_IN_MOTION;
+                        motion_pending_tick = HAL_GetTick();
+                    }
+                    motion_assessing = 0;
+                    if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
+                        StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+                    }
+                    fast_fired = 1;
+                }
+            }
+        }
+
+        /* Read MLC directly — chip already has a fresh classification. */
+        uint8_t mlc_out;
+        if (!fast_fired && lis2dux12_app_get_mlc_output(&mlc_out) == 0) {
+            lis2dux12_app_update_cached_state(mlc_out);
+
+            /* FSM impact / freefall — discrete events, fire immediately. */
+            uint8_t impact = 0, freefall = 0;
+            lis2dux12_app_check_fsm_events(&impact, &freefall);
+            if (impact || freefall) {
+                MotionType_t mt = impact ? MOTION_TYPE_IMPACT : MOTION_TYPE_FREEFALL;
+                motion_assessing = 0;
+                if (GET_LOGGING_BIT(deviceState)) {
+                    MotionLogger_LogEvent(mt);
+                    LOCKSERVICE_SendMotionAlert(mt);
+                }
+                if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
+                    StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+                }
+            } else if (mlc_out == MLC_STATE_IN_MOTION ||
+                       mlc_out == MLC_STATE_SHAKEN) {
+                /* Seed deferred alert so the MLC-settle path resolves
+                 * door events + sends the BLE alert when motion stops. */
+                if (!motion_pending) {
+                    motion_pending      = 1;
+                    pending_type = (mlc_out == MLC_STATE_SHAKEN)
+                        ? MOTION_TYPE_SHAKEN : MOTION_TYPE_IN_MOTION;
+                    motion_pending_tick = HAL_GetTick();
+                }
+                motion_assessing = 0;
+                if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
+                    StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+                }
+            }
+            /* else: STATIONARY — wake-up engine tripped on tiny motion
+             * but MLC didn't escalate.  Stay awake briefly via the
+             * motion_assessing window in case it does. */
         }
     }
 
@@ -383,13 +481,13 @@ void State_Locked_Loop(void)
      *   - door moved  → log DOOR_OPENED  (suppress in-motion)
      *   - door same   → log the pending motion type
      * Impact/freefall are always sent immediately (discrete events).
+     * (motion_pending / pending_type / motion_pending_tick declared
+     *  at the top of the function so the LP-wake fast-path can seed
+     *  them before the MLC catches up.)
      *--------------------------------------------------------------*/
-    static uint8_t      motion_pending = 0;
-    static MotionType_t pending_type   = MOTION_TYPE_NONE;
-    static uint32_t     motion_pending_tick = 0;
 
     /* Only run MLC/FSM processing when peripherals are up */
-    if (!PowerMgmt_IsLowPower()) {
+    if (!PowerMgmt_IsLowPower() && !MotionGrace_Active()) {
 
         /* MLC interrupt fired — read classification */
         if (LIS2DUX12_IsMotionDetected()) {
@@ -431,33 +529,13 @@ void State_Locked_Loop(void)
             /* MLC returned to stationary — resolve the pending motion */
             if (mlc_out == MLC_STATE_STATIONARY_UPRIGHT ||
                 mlc_out == MLC_STATE_STATIONARY_NOT_UPRIGHT) {
-                uint8_t door_evt = DoorDetector_Check();
-                if (door_evt == DOOR_EVENT_OPENED) {
-                    motion_pending = 0;
-                    stayAwakeFlag = 1;
-                    motion_assessing = 0;
-                    if (GET_LOGGING_BIT(deviceState)) {
-                        MotionLogger_LogEvent((MotionType_t)door_evt);
-                        LOCKSERVICE_SendMotionAlert(door_evt);
-                    }
-                    if (!GET_SILENCE_BIT(deviceState)) {
-                        StateMachine_ChangeState(STATE_ALARM_ACTIVE);
-                    }
-                } else if (door_evt == DOOR_EVENT_CLOSED) {
-                    motion_pending = 0;
-                    if (GET_LOGGING_BIT(deviceState)) {
-                        MotionLogger_LogEvent((MotionType_t)door_evt);
-                        LOCKSERVICE_SendMotionAlert(door_evt);
-                    }
-                } else if (motion_pending) {
+                if (motion_pending) {
                     if (GET_LOGGING_BIT(deviceState)) {
                         MotionLogger_LogEvent(pending_type);
                         LOCKSERVICE_SendMotionAlert(pending_type);
                     }
                     motion_pending = 0;
                 }
-                lis2dux12_app_set_door_state(
-                    DoorDetector_IsOpen() ? CACHED_STATE_DOOR_OPEN : 0);
             }
         }
 
@@ -490,33 +568,21 @@ void State_Locked_Loop(void)
                 }
             }
 
-            uint8_t cached = lis2dux12_app_get_cached_mlc_state();
-            if (cached == CACHED_STATE_STATIONARY ||
-                cached == CACHED_STATE_DOOR_OPEN) {
-                uint8_t door_evt = DoorDetector_Check();
-                if (door_evt == DOOR_EVENT_OPENED) {
-                    motion_pending = 0;
-                    stayAwakeFlag = 1;
-                    motion_assessing = 0;
-                    if (GET_LOGGING_BIT(deviceState)) {
-                        MotionLogger_LogEvent((MotionType_t)door_evt);
-                        LOCKSERVICE_SendMotionAlert(door_evt);
-                    }
-                    if (!GET_SILENCE_BIT(deviceState)) {
-                        StateMachine_ChangeState(STATE_ALARM_ACTIVE);
-                    }
-                } else if (door_evt == DOOR_EVENT_CLOSED) {
-                    motion_pending = 0;
-                    if (GET_LOGGING_BIT(deviceState)) {
-                        MotionLogger_LogEvent((MotionType_t)door_evt);
-                        LOCKSERVICE_SendMotionAlert(door_evt);
-                    }
-                }
-                lis2dux12_app_set_door_state(
-                    DoorDetector_IsOpen() ? CACHED_STATE_DOOR_OPEN : 0);
-            }
         }
 
+    } else if (!PowerMgmt_IsLowPower() && MotionGrace_Active()) {
+        /* During the post-connect grace window, drain any motion the
+         * UCF reload + user handling produced so it doesn't latch
+         * and fire the alarm the instant grace ends. */
+        if (LIS2DUX12_IsMotionDetected()) {
+            uint8_t mlc_out;
+            lis2dux12_app_get_mlc_output(&mlc_out);
+            lis2dux12_app_update_cached_state(mlc_out);
+        }
+        uint8_t impact = 0, freefall = 0;
+        lis2dux12_app_check_fsm_events(&impact, &freefall);
+        (void)impact; (void)freefall;
+        motion_pending = 0;
     } /* end if (!PowerMgmt_IsLowPower()) */
 
     /* === If not connected while locked === */
@@ -662,11 +728,6 @@ void State_Alarm_Active_Loop(void)
                 LOCKSERVICE_SendMotionAlert(mt);
             }
         }
-
-        /* Door still open? Keep alarm alive. */
-        if (DoorDetector_IsOpen()) {
-            last_motion_time = HAL_GetTick();
-        }
     }
 
     /* Exit alarm only after at least one full melody duration with no motion */
@@ -691,6 +752,10 @@ void StateMachine_ChangeState(SystemState_t newState)
         } else {
             SET_ARMED_BIT(deviceState, 0);
         }
+
+        /* Status byte 6 carries CACHED_STATE_STABILIZING (0xFE) while
+         * the device is settling so the app can show "Stabilizing…". */
+        lis2dux12_app_set_stabilizing(newState == STATE_STABILIZING ? 1 : 0);
 
         LOCKSERVICE_SendStatusUpdate();
     }

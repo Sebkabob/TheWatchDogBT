@@ -178,7 +178,14 @@ int32_t LIS2DUX12_ResetAndPowerDown(void)
  *
  * @return 0 on success, non-zero on I2C error
  */
-int32_t LIS2DUX12_EnterUltraLowPowerWakeup(void)
+/**
+ * @brief  Internal: enter ULP wake-only mode at the requested ODR.
+ *         Software-resets the chip (wipes MLC/FSM) and configures the
+ *         wake-up engine alone for cheapest sleep.  Use the public
+ *         wrappers below.
+ */
+static int32_t lis2dux12_enter_ulp_wakeup(lis2dux12_odr_t odr,
+                                          lis2dux12_inact_odr_t inact_odr)
 {
     int32_t ret;
 
@@ -195,26 +202,24 @@ int32_t LIS2DUX12_EnterUltraLowPowerWakeup(void)
 
     HAL_Delay(5);
 
-    /* 2. Set sensor mode: 1.6 Hz ULP, +/-2g for maximum wake sensitivity */
+    /* 2. Set sensor mode at the caller-chosen ODR (+/-2g for sensitivity) */
     lis2dux12_md_t mode = {
-        .odr = LIS2DUX12_1Hz6_ULP,
+        .odr = odr,
         .fs  = LIS2DUX12_2g,
         .bw  = LIS2DUX12_ODR_div_2,
     };
     ret = lis2dux12_mode_set(&dev_ctx, &mode);
     if (ret != 0) return ret;
 
-    /* 3. Configure wake-up detection:
-     *    - threshold ~31.25 mg (wake_ths=1, weight=0 → 1 LSB = FS/64 = 2000/64)
-     *    - wake duration = 1 ODR sample
-     *    - sleep enabled so sensor stays in low-current idle until motion */
+    /* 3. Wake-up detection: ~31 mg threshold (lowest non-zero), SLEEP_ON
+     *    so the chip drops to inact_odr once motion stops. */
     lis2dux12_wakeup_config_t wkup_cfg = {0};
-    wkup_cfg.wake_ths        = 1;                     /* ~31.25 mg — maximum sensitivity */
-    wkup_cfg.wake_ths_weight = 0;                     /* coarse: FS/64 per LSB */
+    wkup_cfg.wake_ths        = 1;
+    wkup_cfg.wake_ths_weight = 0;
     wkup_cfg.wake_dur        = LIS2DUX12_1_ODR;
-    wkup_cfg.sleep_dur       = 1;                     /* 512 ODR cycles to re-enter sleep */
+    wkup_cfg.sleep_dur       = 1;
     wkup_cfg.wake_enable     = LIS2DUX12_SLEEP_ON;
-    wkup_cfg.inact_odr       = LIS2DUX12_ODR_1_6_HZ; /* 1.6 Hz during inactivity */
+    wkup_cfg.inact_odr       = inact_odr;
     ret = lis2dux12_wakeup_config_set(&dev_ctx, wkup_cfg);
     if (ret != 0) return ret;
 
@@ -224,11 +229,7 @@ int32_t LIS2DUX12_EnterUltraLowPowerWakeup(void)
     ret = lis2dux12_pin_int1_route_set(&dev_ctx, &int1_route);
     if (ret != 0) return ret;
 
-    /* 5. Enable interrupts, latched mode.
-     *    Latched keeps INT1 HIGH until status is read via I2C,
-     *    ensuring the MCU reliably wakes from DEEPSTOP even for
-     *    brief motion events.  The interrupt is cleared by
-     *    lis2dux12_all_sources_get() before we gate I2C. */
+    /* 5. Latched INT — keeps INT1 HIGH until the MCU reads sources. */
     lis2dux12_int_config_t int_cfg = {0};
     int_cfg.int_cfg = LIS2DUX12_INT_LATCHED;
     int_cfg.sleep_status_on_int = 0;
@@ -237,6 +238,77 @@ int32_t LIS2DUX12_EnterUltraLowPowerWakeup(void)
     if (ret != 0) return ret;
 
     /* 6. Configure PB15 as DEEPSTOP wakeup source */
+    LIS2DUX12_ConfigureWakeup();
+
+    /* Clear any pending interrupt */
+    lis2dux12_all_sources_t all_src;
+    lis2dux12_all_sources_get(&dev_ctx, &all_src);
+    motion_detected_flag = 0;
+
+    return 0;
+}
+
+int32_t LIS2DUX12_EnterUltraLowPowerWakeup(void)
+{
+    /* LOW sensitivity — slowest poll, cheapest sleep (~1.5 µA). */
+    return lis2dux12_enter_ulp_wakeup(LIS2DUX12_1Hz6_ULP, LIS2DUX12_ODR_1_6_HZ);
+}
+
+int32_t LIS2DUX12_EnterMediumLowPowerWakeup(void)
+{
+    /* MEDIUM sensitivity — 3 Hz ULP poll (~333 ms latency, ~1.7 µA). */
+    return lis2dux12_enter_ulp_wakeup(LIS2DUX12_3Hz_ULP, LIS2DUX12_ODR_3_HZ);
+}
+
+/**
+ * @brief  Configure the LIS2DUX12 for armed-state DEEPSTOP without losing MLC.
+ *
+ * Unlike LIS2DUX12_EnterUltraLowPowerWakeup(), this DOES NOT software-reset
+ * the chip — the asset-tracking UCF (MLC + FSM) stays loaded and continues
+ * classifying motion across MCU sleep at 25 Hz LP.
+ *
+ * Adds the wake-up engine on top of the existing MLC routing so that:
+ *   - any motion ≥ ~31 mg trips the wake-up engine → INT1 → MCU wakes
+ *   - MLC INT1 routing is preserved → MCU also wakes on classification change
+ *
+ * On wake the MCU can read the MLC output immediately (chip is already
+ * classified) — no UCF reload, no MLC accumulation window.
+ *
+ * @return 0 on success, non-zero on I2C error
+ */
+int32_t LIS2DUX12_ConfigArmedSleep(void)
+{
+    int32_t ret;
+
+    /* Wake-up engine: maximum sensitivity, MLC keeps running (SLEEP_OFF). */
+    lis2dux12_wakeup_config_t wkup_cfg = {0};
+    wkup_cfg.wake_ths        = 1;                       /* ~31 mg per LSB */
+    wkup_cfg.wake_ths_weight = 0;                       /* FS/64 per LSB  */
+    wkup_cfg.wake_dur        = LIS2DUX12_1_ODR;
+    wkup_cfg.sleep_dur       = 0;
+    wkup_cfg.wake_enable     = LIS2DUX12_SLEEP_OFF;     /* don't auto-pause MLC */
+    wkup_cfg.inact_odr       = LIS2DUX12_ODR_NO_CHANGE; /* keep UCF ODR */
+    ret = lis2dux12_wakeup_config_set(&dev_ctx, wkup_cfg);
+    if (ret != 0) return ret;
+
+    /* Preserve existing INT1 routing (MLC1, FSM, etc.) and add wake-up. */
+    lis2dux12_pin_int_route_t int1_route;
+    ret = lis2dux12_pin_int1_route_get(&dev_ctx, &int1_route);
+    if (ret != 0) return ret;
+    int1_route.wake_up = 1;
+    ret = lis2dux12_pin_int1_route_set(&dev_ctx, &int1_route);
+    if (ret != 0) return ret;
+
+    /* Latched INT so brief MLC pulses or wake-up events propagate
+     * reliably to the PWR controller even if the MCU is in DEEPSTOP. */
+    lis2dux12_int_config_t int_cfg = {0};
+    int_cfg.int_cfg = LIS2DUX12_INT_LATCHED;
+    int_cfg.sleep_status_on_int = 0;
+    int_cfg.dis_rst_lir_all_int = 0;
+    ret = lis2dux12_int_config_set(&dev_ctx, &int_cfg);
+    if (ret != 0) return ret;
+
+    /* PB15 as DEEPSTOP wakeup source */
     LIS2DUX12_ConfigureWakeup();
 
     /* Clear any pending interrupt */

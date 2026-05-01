@@ -498,6 +498,12 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification)
       LOCKSERVICE_APP_Context.ConnectionHandle = p_Notification->ConnectionHandle;
       /* USER CODE BEGIN Service1_APP_CENTR_CONN_HANDLE_EVT */
       PowerMgmt_RestoreAll();
+      /* RestoreAll runs LIS2DUX12_Init() which SW-resets and reloads
+       * the UCF — INT1 glitches and the user is invariably handling
+       * the device.  Suppress motion-triggered alarm transitions for
+       * a short grace window so this doesn't fire the alarm. */
+      LIS2DUX12_ClearMotion();
+      StateMachine_StartMotionGrace(2000);
       StateMachine_UpdateBLEActivity();
       connectionStatus = 1;
       LOCKSERVICE_ForceStatusUpdate();  // Force send on connection

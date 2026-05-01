@@ -67,6 +67,14 @@ extern volatile uint8_t cablePlugFlag;
 
 void StateMachine_UpdateBLEActivity(void);
 
+/**
+ * @brief  Suppress motion-triggered alarm transitions for the next
+ *         @p ms milliseconds.  Used after BLE connect / RestoreAll
+ *         so the UCF reload + user handling the device while pairing
+ *         doesn't immediately re-trigger the alarm.
+ */
+void StateMachine_StartMotionGrace(uint32_t ms);
+
 // Function prototypes
 void StateMachine_Init(void);
 void StateMachine_Run(void);

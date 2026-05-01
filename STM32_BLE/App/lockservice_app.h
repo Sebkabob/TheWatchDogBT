@@ -64,33 +64,32 @@ typedef struct
 
 /* External variables --------------------------------------------------------*/
 /* USER CODE BEGIN EV */
-/* BLE Command Definitions */
-#define CMD_REQUEST_LOG_COUNT    0xF0  // iOS: Request total event count
-#define CMD_REQUEST_EVENT        0xF1  // iOS: Request specific event by index
-#define CMD_CLEAR_LOG            0xF2  // iOS: Clear all events
-#define CMD_ACK_EVENT            0xF3  // iOS: Acknowledge received event
-#define CMD_FIND_MY_DEVICE       0xFA  // iOS: Find my device ping
-#define CMD_RESET_DEVICE         0xFB  // iOS: Reset device
-#define CMD_DRAIN_MODE           0xFC  // iOS: byte[1]=1 start drain, 0 stop drain
+// iOS → device opcodes (first byte of an APPTOWD write, after the token).
+#define CMD_REQUEST_LOG_COUNT    0xF0
+#define CMD_REQUEST_EVENT        0xF1   // payload: uint16 BE event index
+#define CMD_CLEAR_LOG            0xF2
+#define CMD_ACK_EVENT            0xF3
+#define CMD_FIND_MY_DEVICE       0xFA   // byte[1] bit 0 = start
+#define CMD_RESET_DEVICE         0xFB
+#define CMD_DRAIN_MODE           0xFC   // byte[1] bit 0: 1=start, 0=stop
 
-/* Response Types */
-#define RESP_LOG_COUNT           0xE0  // WD: Sending log count
-#define RESP_EVENT_DATA          0xE1  // WD: Sending event data
-#define RESP_NO_MORE_EVENTS      0xE2  // WD: No event at requested index
-#define RESP_LOG_CLEARED         0xE3  // WD: Log cleared confirmation
+// Device → iOS response markers (DEVICESTATUS notify).
+#define RESP_LOG_COUNT           0xE0
+#define RESP_EVENT_DATA          0xE1
+#define RESP_NO_MORE_EVENTS      0xE2
+#define RESP_LOG_CLEARED         0xE3
 
-/* Application-layer loyalty token opcodes (iOS -> firmware) */
-#define CMD_CLAIM_DEVICE         0xC1  // Payload: 4-byte token; first claim
-#define CMD_VERIFY_OWNER         0xC2  // Payload: 4-byte token; reconnect
-#define CMD_UNBOND_DEVICE        0xC0  // Payload: 4-byte token; user unpair
+// Loyalty (application-layer ownership) opcodes — self-contained writes.
+#define CMD_CLAIM_DEVICE         0xC1   // first claim
+#define CMD_VERIFY_OWNER         0xC2   // reconnect
+#define CMD_UNBOND_DEVICE        0xC0   // user unpair
 
-/* Loyalty response markers (firmware -> iOS via DEVICESTATUS notify) */
-#define RESP_CLAIM_OK            0xE7  // Sent with [0x01]
-#define RESP_REJECT              0xE8  // Sent with [0x01]; followed by disconnect
-#define RESP_VERIFY_OK           0xE9  // Sent with [0x01]
-#define RESP_UNPAIR_ACK          0xE4  // Sent with [0x01] on UNBOND_OK; disconnect
+// Loyalty response markers (firmware → iOS via DEVICESTATUS notify).
+#define RESP_CLAIM_OK            0xE7   // [0xE7, 0x01]
+#define RESP_REJECT              0xE8   // [0xE8, 0x01], followed by disconnect
+#define RESP_VERIFY_OK           0xE9   // [0xE9, 0x01]
+#define RESP_UNPAIR_ACK          0xE4   // [0xE4, 0x01], followed by disconnect
 
-/* Token size in bytes */
 #define LOYALTY_TOKEN_LEN        4
 /* USER CODE END EV */
 
@@ -108,9 +107,8 @@ void LOCKSERVICE_ForceStatusUpdate(void);
 void LOCKSERVICE_SendMotionAlert(uint8_t motionType);
 void LOCKSERVICE_SendBatteryDiagnostic(void);
 
-/* Battery drain-mode test feature.
- * While active: white LED at max brightness + continuous 60 Hz buzzer tone.
- * Auto-stops when SOC <= DRAIN_AUTO_STOP_SOC. Call Drain_Tick() each main loop. */
+// Drain-mode test: white LED at max + continuous tone, auto-stops at SOC=5%.
+// Drain_Tick() must run every main-loop iteration to re-assert outputs.
 #define DRAIN_AUTO_STOP_SOC      5
 #define DRAIN_TONE_FREQUENCY_HZ  60
 

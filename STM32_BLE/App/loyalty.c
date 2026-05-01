@@ -1,30 +1,30 @@
-/**
- ******************************************************************************
- * @file    loyalty.c
- * @brief   Application-layer loyalty token store. EEPROM-backed 4-byte
- *          ownership marker; replaces BLE pairing/bonding for the prototype.
+/***************************************************************************
+ * loyalty.c
+ * created by Sebastian Forenza 2026
  *
- * Layout (single record at 0x10..0x15):
+ * Application-layer loyalty token store. EEPROM-backed 4-byte ownership
+ * marker; stands in for BLE pairing/bonding for the prototype.
+ *
+ * Record layout (single 6-byte record at 0x10..0x15):
  *   [0]    status: 0xA7=CLAIMED, 0xCE=CLEARED, anything else=BLANK
- *   [1..4] 4-byte token (valid only when status == CLAIMED && CRC matches)
+ *   [1..4] 4-byte token (only valid when CLAIMED + CRC matches)
  *   [5]    CRC8 over [0..4]
  *
- * EEPROM map (M24C08 = 1024 B):
- *   0x00..0x06  BD address: magic(1) + addr(6)            (motion_logger.h)
- *   0x07..0x0F  reserved
- *   0x10..0x15  loyalty record (this file)
- *   0x16..0x3F  reserved (unused inside the device-info block)
- *   0x40..0x47  motion-log header                         (motion_logger.h)
- *   0x48..0x3FF motion-log event data
- ******************************************************************************
- */
+ * EEPROM map (M24C08, 1024 B):
+ *   0x00..0x06   BD address: magic(1) + addr(6)
+ *   0x07..0x0F   reserved
+ *   0x10..0x15   loyalty record (this file)
+ *   0x16..0x3F   reserved
+ *   0x40..0x47   motion-log header (motion_logger.h)
+ *   0x48..0x3FF  motion-log event data
+ ***************************************************************************/
 
 #include "loyalty.h"
 #include "lockservice_app.h"
 #include "main.h"
 #include "app_common.h"
 #include "power_management.h"
-#include "motion_logger.h"   /* EEPROM_I2C_ADDRESS */
+#include "motion_logger.h"   // EEPROM_I2C_ADDRESS
 
 #define M24CXX_MODEL 0
 #include "m24cxx.h"
@@ -38,7 +38,7 @@ static bool    s_claimed   = false;
 static bool    s_unhealthy = false;
 static uint8_t s_token[LOYALTY_TOKEN_LEN] = {0};
 
-/* CRC-8/CCITT (poly 0x07, init 0x00). Cheap byte-wise loop, no table. */
+// CRC-8/CCITT (poly 0x07, init 0x00). Byte-wise loop, no table.
 static uint8_t loyalty_crc8(const uint8_t *data, size_t len)
 {
     uint8_t crc = 0x00;
@@ -51,7 +51,7 @@ static uint8_t loyalty_crc8(const uint8_t *data, size_t len)
     return crc;
 }
 
-/* Build a 6-byte record in dst from status + token. */
+// Build a 6-byte record from status + token (NULL token → token bytes 0xFF).
 static void loyalty_pack(uint8_t status, const uint8_t *token, uint8_t dst[EEPROM_LOYALTY_LEN])
 {
     dst[0] = status;
@@ -63,9 +63,11 @@ static void loyalty_pack(uint8_t status, const uint8_t *token, uint8_t dst[EEPRO
     dst[5] = loyalty_crc8(dst, 5);
 }
 
-/* Write+readback an EEPROM region with up to 3 retries. Caller has already
- * powered on the EEPROM and called m24cxx_init. m24cxx_write ACK-polls until
- * the flash-commit cycle completes, so no extra HAL_Delay is needed. */
+/***************************************************************************
+ * loyalty_write_verify — write+readback with up to 3 retries
+ *   Caller has already powered EEPROM and called m24cxx_init. m24cxx_write
+ *   ACK-polls until the flash-commit cycle completes, so no extra delay.
+ ***************************************************************************/
 static bool loyalty_write_verify(uint16_t addr, const uint8_t *src, uint16_t len)
 {
     uint8_t readback[EEPROM_LOYALTY_LEN];
@@ -89,6 +91,13 @@ static bool loyalty_write_verify(uint16_t addr, const uint8_t *src, uint16_t len
     return false;
 }
 
+/***************************************************************************
+ * Loyalty_Init — read EEPROM, set s_claimed/s_unhealthy, migrate legacy
+ *   Legacy records (pre-CRC) had status=0xA7 with buf[5]=0x00. We rewrite
+ *   them in place once with the correct CRC. If the rewrite fails the
+ *   store goes UNHEALTHY (safer than accepting an in-RAM claim we couldn't
+ *   persist).
+ ***************************************************************************/
 void Loyalty_Init(void)
 {
     s_claimed   = false;
@@ -132,18 +141,6 @@ void Loyalty_Init(void)
             s_claimed = true;
             APP_DBG_MSG("Loyalty: token loaded (claimed, CRC ok)\n");
         } else {
-            /* CRC mismatch on a CLAIMED record. Two possibilities:
-             *   (a) Legacy format from pre-CRC firmware: status=0xA7, token at
-             *       [1..4], buf[5] is whatever (often 0x00 from the old write
-             *       path that did `buf[5] = 0x00`). Migrate in place by
-             *       rewriting the record with the correct CRC.
-             *   (b) Genuine bit-rot on a new-format record. Indistinguishable
-             *       from (a) at this point — if the token bytes are corrupt,
-             *       VERIFY will fail on the next connect and the user re-claims,
-             *       same outcome as without migration.
-             * We attempt the rewrite once. If it persists, treat the device as
-             * claimed. If the write fails, drop to UNHEALTHY (safer than
-             * accepting an in-RAM claim we couldn't persist). */
             APP_DBG_MSG("Loyalty: CRC mismatch (got 0x%02X exp 0x%02X) - migrating legacy record\n",
                         buf[5], expected);
 
@@ -185,6 +182,9 @@ bool Loyalty_Verify(const uint8_t *incoming_token)
     return (memcmp(s_token, incoming_token, LOYALTY_TOKEN_LEN) == 0);
 }
 
+/***************************************************************************
+ * Loyalty_Claim — persist a fresh token and mark the device claimed
+ ***************************************************************************/
 bool Loyalty_Claim(const uint8_t *token)
 {
     if (token == NULL || s_unhealthy) {
@@ -217,6 +217,11 @@ bool Loyalty_Claim(const uint8_t *token)
     return true;
 }
 
+/***************************************************************************
+ * Loyalty_Wipe — clear the EEPROM record (UNBOND or recovery hatch)
+ *   Always clears in-RAM state, even if EEPROM persistence failed, so the
+ *   current session sees the device as unclaimed.
+ ***************************************************************************/
 bool Loyalty_Wipe(void)
 {
     PowerMgmt_EEPROM_PowerOn();
@@ -236,8 +241,6 @@ bool Loyalty_Wipe(void)
     bool ok = loyalty_write_verify(EEPROM_LOYALTY_ADDR, record, EEPROM_LOYALTY_LEN);
     PowerMgmt_EEPROM_PowerOff();
 
-    /* Always clear in-RAM state so the current session sees the device as
-     * unclaimed even if EEPROM persistence is broken. */
     memset(s_token, 0, sizeof(s_token));
     s_claimed = false;
 

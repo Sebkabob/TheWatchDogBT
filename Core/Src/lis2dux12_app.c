@@ -1,36 +1,25 @@
 /***************************************************************************
  * lis2dux12_app.c
+ * created by Sebastian Forenza 2026
  *
- * MLC asset tracking module for LIS2DUX12.
- * Loads the pre-built UCF configuration that programs the sensor's
- * Machine Learning Core and Finite State Machine to classify:
- *   - Stationary (upright / not upright)
- *   - In motion
- *   - Shaken
- *   - Impact (FSM1)
- *   - Free-fall (FSM2)
+ * MLC asset-tracking module for the LIS2DUX12. Loads ST's pre-built UCF
+ * to program the on-chip Machine Learning Core (motion classification)
+ * and Finite State Machine (impact / free-fall detection).
  *
- * Sensor config after UCF load: +/-16g, 25 Hz, low-power mode.
- * INT1: pulsed on MLC state change. INT2: pulsed on FSM events.
+ * MLC classes: Stationary Upright / Stationary Not-Upright / In Motion / Shaken
+ * FSM events:  FSM1 = Impact, FSM2 = Free-fall
+ *
+ * Sensor config after UCF load: ±16 g, 25 Hz, low-power. INT1 pulses on
+ * MLC class change; INT2 pulses on FSM events.
  ***************************************************************************/
 
 #include "lis2dux12_app.h"
 #include "lis2dux12_asset_tracking.h"
 #include <string.h>
 
-/***************************************************************************
- * I2C ADDRESS
- *
- * LIS2DUX12_I2C_ADD_H = 0x33 from the PID driver.
- * These defines encode (7-bit addr << 1) | 1, i.e. the read address.
- * STM32 HAL I2C functions accept the device address in this shifted
- * format and handle the R/W bit internally, so we use the define as-is
- * (same convention as accelerometer.c).
- ***************************************************************************/
+// LIS2DUX12_I2C_ADD_H = 0x33 from the PID driver, encodes (7-bit addr << 1) | 1.
+// HAL I2C accepts the shifted form and overrides the R/W bit internally.
 
-/***************************************************************************
- * PLATFORM I/O (wraps STM32 HAL I2C)
- ***************************************************************************/
 static I2C_HandleTypeDef *app_hi2c;
 
 static int32_t app_platform_write(void *handle, uint8_t reg,
@@ -61,22 +50,21 @@ static void app_platform_delay(uint32_t millisec)
 }
 
 /***************************************************************************
- * INITIALIZATION
+ * lis2dux12_app_init — verify WHO_AM_I, software-reset, replay UCF
+ *   The UCF is a v2.0 mems_conf_op stream — WRITE / DELAY / READ /
+ *   POLL_RESET / POLL_SET. UCF errors return -3.
  ***************************************************************************/
 int lis2dux12_app_init(I2C_HandleTypeDef *hi2c)
 {
     app_hi2c = hi2c;
 
-    /* Set up driver context (reuses the global dev_ctx) */
     dev_ctx.write_reg = app_platform_write;
     dev_ctx.read_reg  = app_platform_read;
     dev_ctx.mdelay    = app_platform_delay;
     dev_ctx.handle    = app_hi2c;
 
-    /* Boot time */
     HAL_Delay(20);
 
-    /* Verify WHO_AM_I */
     uint8_t whoami = 0;
     if (lis2dux12_device_id_get(&dev_ctx, &whoami) != 0) {
         return -1;
@@ -85,12 +73,10 @@ int lis2dux12_app_init(I2C_HandleTypeDef *hi2c)
         return -1;
     }
 
-    /* Software reset */
     if (lis2dux12_init_set(&dev_ctx, LIS2DUX12_RESET) != 0) {
         return -2;
     }
 
-    /* Wait for reset to complete (poll BOOT bit, timeout ~100ms) */
     lis2dux12_status_t status;
     uint32_t timeout = HAL_GetTick() + 100;
     do {
@@ -102,11 +88,6 @@ int lis2dux12_app_init(I2C_HandleTypeDef *hi2c)
 
     HAL_Delay(10);
 
-    /* Load the entire UCF configuration (MLC + FSM + sensor setup).
-     * The v2.0 format uses mems_conf_op structs with typed operations:
-     *   WRITE — write data to register address
-     *   DELAY — wait data milliseconds
-     *   POLL_RESET — poll register until masked bits are 0        */
     const struct mems_conf_op *conf = lis2dux12_asset_tracking_conf_0;
     uint32_t conf_len = (uint32_t)MEMS_CONF_ARRAY_LEN(lis2dux12_asset_tracking_conf_0);
 
@@ -153,18 +134,18 @@ int lis2dux12_app_init(I2C_HandleTypeDef *hi2c)
 }
 
 /***************************************************************************
- * MLC OUTPUT
+ * lis2dux12_app_get_mlc_output — read MLC1_SRC (motion classification)
+ *   The PID helper reads MLC1..MLC4 in one shot with embedded-page bank
+ *   switching; only MLC1 is exposed here.
  ***************************************************************************/
 int lis2dux12_app_get_mlc_output(uint8_t *mlc_out)
 {
-    /* lis2dux12_mlc_out_get reads 4 bytes (MLC1-MLC4) with automatic
-     * embedded functions memory bank switching. We only need MLC1. */
     uint8_t mlc_buf[4];
     int32_t ret = lis2dux12_mlc_out_get(&dev_ctx, mlc_buf);
     if (ret != 0) {
         return ret;
     }
-    *mlc_out = mlc_buf[0]; /* MLC1_SRC */
+    *mlc_out = mlc_buf[0];
     return 0;
 }
 
@@ -193,13 +174,8 @@ int lis2dux12_app_mlc_status_changed(void)
     return mlc_status.is_mlc1;
 }
 
-/***************************************************************************
- * CACHED MLC STATE
- * Avoids I2C reads in the 1-second BLE status notification path.
- * Updated by the state machine after every MLC interrupt read.
- *
- ***************************************************************************/
-static uint8_t cached_mlc_state = 0xFF; /* 0xFF = unknown / not yet read */
+// Avoids I2C reads in the 1-second BLE status notification path.
+static uint8_t cached_mlc_state = 0xFF;
 static uint8_t stabilizing_override = 0;
 
 void lis2dux12_app_update_cached_state(uint8_t mlc_out)
@@ -224,6 +200,11 @@ void lis2dux12_app_set_stabilizing(uint8_t on)
     stabilizing_override = on ? 1 : 0;
 }
 
+/***************************************************************************
+ * lis2dux12_app_read_accel_mg — instantaneous X/Y/Z in milli-g
+ *   FS/ODR are read back from the device so this works regardless of the
+ *   UCF baked into the chip.
+ ***************************************************************************/
 int lis2dux12_app_read_accel_mg(int16_t *x_mg, int16_t *y_mg, int16_t *z_mg)
 {
     lis2dux12_md_t md;
@@ -239,14 +220,13 @@ int lis2dux12_app_read_accel_mg(int16_t *x_mg, int16_t *y_mg, int16_t *z_mg)
 }
 
 /***************************************************************************
- * FSM EVENTS
+ * lis2dux12_app_check_fsm_events — read FSM status (impact / free-fall)
  ***************************************************************************/
 int lis2dux12_app_check_fsm_events(uint8_t *impact, uint8_t *freefall)
 {
     *impact = 0;
     *freefall = 0;
 
-    /* Read FSM status from the main page register (no bank switch needed) */
     lis2dux12_fsm_status_mainpage_t fsm_status;
     int32_t ret = lis2dux12_fsm_status_get(&dev_ctx, &fsm_status);
     if (ret != 0) {

@@ -285,7 +285,6 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
         // I2C glitch must not let any phone CLAIM (and therefore hijack) a
         // device that is actually owned.
         if (Loyalty_StoreUnhealthy()) {
-            APP_DBG_MSG("Loyalty store UNHEALTHY - rejecting all writes\n");
             Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
             break;
         }
@@ -309,10 +308,8 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
             // successful re-claim. Any other token is a different phone.
             if (Loyalty_IsClaimed()) {
                 if (Loyalty_Verify(&received_data[1])) {
-                    APP_DBG_MSG("CLAIM: token matches existing - idempotent re-claim accepted\n");
                     Loyalty_SendResponse(RESP_CLAIM_OK, 0x01, 0);
                 } else {
-                    APP_DBG_MSG("CLAIM: token mismatch with existing - REJECT\n");
                     Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
                 }
                 break;
@@ -338,29 +335,17 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
         }
 
         if (first_byte == CMD_UNBOND_DEVICE) {
-            if (data_length < 1 + LOYALTY_TOKEN_LEN) {
-                APP_DBG_MSG("UNBOND: rejected - data length %u < 5\n", (unsigned)data_length);
+            if (data_length < 1 + LOYALTY_TOKEN_LEN ||
+                !Loyalty_IsClaimed() ||
+                !Loyalty_Verify(&received_data[1])) {
                 Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
                 break;
             }
-            if (!Loyalty_IsClaimed()) {
-                APP_DBG_MSG("UNBOND: rejected - device not claimed\n");
-                Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
-                break;
-            }
-            if (!Loyalty_Verify(&received_data[1])) {
-                APP_DBG_MSG("UNBOND: rejected - token mismatch\n");
-                Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
-                break;
-            }
-            APP_DBG_MSG("UNBOND: token verified, calling Loyalty_Wipe...\n");
-            bool wipe_ok = Loyalty_Wipe();
-            APP_DBG_MSG("UNBOND: Loyalty_Wipe returned %d (true=sentinel persisted)\n",
-                        (int)wipe_ok);
             // Always send UNPAIR_ACK + disconnect even if the EEPROM write
             // failed — iOS still needs to clear its local state, and
             // Loyalty_Wipe() has already cleared s_claimed unconditionally
             // so the next CLAIM in this session is accepted.
+            (void)Loyalty_Wipe();
             Loyalty_SendResponse(RESP_UNPAIR_ACK, 0x01, 1);
             break;
         }

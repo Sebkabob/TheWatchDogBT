@@ -76,17 +76,14 @@ static bool loyalty_write_verify(uint16_t addr, const uint8_t *src, uint16_t len
     }
     for (int attempt = 0; attempt < 3; attempt++) {
         if (m24cxx_write(&s_eeprom, addr, (uint8_t *)src, len) != M24CXX_Ok) {
-            APP_DBG_MSG("Loyalty: write attempt %d @0x%02X failed\n", attempt, addr);
             continue;
         }
         if (m24cxx_read(&s_eeprom, addr, readback, len) != M24CXX_Ok) {
-            APP_DBG_MSG("Loyalty: readback attempt %d @0x%02X failed\n", attempt, addr);
             continue;
         }
         if (memcmp(readback, src, len) == 0) {
             return true;
         }
-        APP_DBG_MSG("Loyalty: readback mismatch attempt %d @0x%02X\n", attempt, addr);
     }
     return false;
 }
@@ -105,16 +102,13 @@ void Loyalty_Init(void)
     memset(s_token, 0, sizeof(s_token));
 
 #if LOYALTY_WIPE_ON_BOOT
-    APP_DBG_MSG("Loyalty: LOYALTY_WIPE_ON_BOOT=1 - wiping EEPROM at boot\n");
     (void)Loyalty_Wipe();
-    APP_DBG_MSG("Loyalty: post-wipe complete, proceeding with normal init\n");
 #endif
 
     PowerMgmt_EEPROM_PowerOn();
     HAL_Delay(2);
 
     if (m24cxx_init(&s_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) != M24CXX_Ok) {
-        APP_DBG_MSG("Loyalty: m24cxx_init failed - store UNHEALTHY\n");
         s_unhealthy = true;
         PowerMgmt_EEPROM_PowerOff();
         return;
@@ -122,43 +116,30 @@ void Loyalty_Init(void)
 
     uint8_t buf[EEPROM_LOYALTY_LEN] = {0};
     if (m24cxx_read(&s_eeprom, EEPROM_LOYALTY_ADDR, buf, EEPROM_LOYALTY_LEN) != M24CXX_Ok) {
-        APP_DBG_MSG("Loyalty: EEPROM read failed - store UNHEALTHY\n");
         s_unhealthy = true;
         PowerMgmt_EEPROM_PowerOff();
         return;
     }
 
-    APP_DBG_MSG("Loyalty: EEPROM[0x%02X..]=%02X %02X %02X %02X %02X %02X\n",
-                EEPROM_LOYALTY_ADDR,
-                buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
-
-    if (buf[0] == EEPROM_LOYALTY_CLEARED) {
-        APP_DBG_MSG("Loyalty: status=CLEARED - unclaimed\n");
-    } else if (buf[0] == EEPROM_LOYALTY_CLAIMED) {
+    if (buf[0] == EEPROM_LOYALTY_CLAIMED) {
         uint8_t expected = loyalty_crc8(buf, 5);
         if (expected == buf[5]) {
             memcpy(s_token, &buf[1], LOYALTY_TOKEN_LEN);
             s_claimed = true;
-            APP_DBG_MSG("Loyalty: token loaded (claimed, CRC ok)\n");
         } else {
-            APP_DBG_MSG("Loyalty: CRC mismatch (got 0x%02X exp 0x%02X) - migrating legacy record\n",
-                        buf[5], expected);
-
+            // Legacy pre-CRC record (status=0xA7, crc=0x00). Rewrite once
+            // with the correct CRC; if the rewrite fails, mark UNHEALTHY
+            // rather than accepting an in-RAM claim we couldn't persist.
             uint8_t migrated[EEPROM_LOYALTY_LEN];
             loyalty_pack(EEPROM_LOYALTY_CLAIMED, &buf[1], migrated);
 
             if (loyalty_write_verify(EEPROM_LOYALTY_ADDR, migrated, EEPROM_LOYALTY_LEN)) {
                 memcpy(s_token, &buf[1], LOYALTY_TOKEN_LEN);
                 s_claimed = true;
-                APP_DBG_MSG("Loyalty: legacy record migrated (CRC=0x%02X persisted)\n",
-                            migrated[5]);
             } else {
-                APP_DBG_MSG("Loyalty: legacy migration write failed - store UNHEALTHY\n");
                 s_unhealthy = true;
             }
         }
-    } else {
-        APP_DBG_MSG("Loyalty: status=0x%02X - blank/unowned\n", buf[0]);
     }
 
     PowerMgmt_EEPROM_PowerOff();
@@ -195,7 +176,6 @@ bool Loyalty_Claim(const uint8_t *token)
     HAL_Delay(2);
 
     if (m24cxx_init(&s_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) != M24CXX_Ok) {
-        APP_DBG_MSG("Loyalty: claim - m24cxx_init failed\n");
         PowerMgmt_EEPROM_PowerOff();
         return false;
     }
@@ -207,13 +187,11 @@ bool Loyalty_Claim(const uint8_t *token)
     PowerMgmt_EEPROM_PowerOff();
 
     if (!ok) {
-        APP_DBG_MSG("Loyalty: CLAIM_FAILED after 3 attempts\n");
         return false;
     }
 
     memcpy(s_token, token, LOYALTY_TOKEN_LEN);
     s_claimed = true;
-    APP_DBG_MSG("Loyalty: claimed (EEPROM verified)\n");
     return true;
 }
 
@@ -228,7 +206,6 @@ bool Loyalty_Wipe(void)
     HAL_Delay(2);
 
     if (m24cxx_init(&s_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) != M24CXX_Ok) {
-        APP_DBG_MSG("Loyalty: wipe - m24cxx_init failed\n");
         PowerMgmt_EEPROM_PowerOff();
         memset(s_token, 0, sizeof(s_token));
         s_claimed = false;
@@ -244,6 +221,5 @@ bool Loyalty_Wipe(void)
     memset(s_token, 0, sizeof(s_token));
     s_claimed = false;
 
-    APP_DBG_MSG("Loyalty_Wipe: persisted=%d\n", (int)ok);
     return ok;
 }

@@ -43,7 +43,6 @@ volatile uint8_t connectionStatus = 0;
 
 /* Static variables for timing */
 static uint32_t stateEntryTime = 0;
-static uint32_t lastActivityTime = 0;
 
 volatile uint8_t stayAwakeFlag = 0;
 
@@ -74,8 +73,6 @@ static uint32_t cableUnplugTime = 0;      /* tick when cable was last seen remov
 static uint8_t  cableWasPlugged = 0;       /* tracks previous cable state for edge detect */
 
 static volatile uint8_t findMyActive = 0;
-static uint32_t lastBLEActivityTime = 0;
-#define BLE_INACTIVITY_TIMEOUT_MS  10000  /* 10 seconds */
 
 /***************************************************************************
  * CHARGING LED COLOR — smooth red→yellow→green gradient based on SOC
@@ -97,10 +94,6 @@ static void LED_ChargingPulse(void)
         g = 255;
     }
     LED_Pulse(4000, r, g, 0, 255);
-}
-
-void StateMachine_UpdateBLEActivity(void) {
-    lastBLEActivityTime = HAL_GetTick();
 }
 
 /***************************************************************************
@@ -131,26 +124,6 @@ void StateMachine_Init(void)
     /* Initialise cable state tracking */
     cableWasPlugged = IS_CABLE_PLUGGED() ? 1 : 0;
     cableUnplugTime = 0;
-}
-
-void StateMachine_UpdateActivity(void) {
-    lastActivityTime = HAL_GetTick();
-}
-
-void StateMachine_CheckInactivityTimeout(void) {
-    if (currentState == STATE_ALARM_ACTIVE) {
-        return;
-    }
-
-    /* If cable is plugged in, reset timeout */
-    if (IS_CABLE_PLUGGED()) {
-        lastActivityTime = HAL_GetTick();
-        return;
-    }
-
-    if ((HAL_GetTick() - lastActivityTime) >= BLE_INACTIVITY_TIMEOUT_MS) {
-        StateMachine_ChangeState(STATE_SLEEP);
-    }
 }
 
 /***************************************************************************
@@ -615,11 +588,6 @@ void State_Locked_Loop(void)
     }
 }
 
-void State_Sleep_Loop(void)
-{
-    /* Placeholder for deep sleep entry */
-}
-
 void State_Alarm_Active_Loop(void)
 {
     stayAwakeFlag = 1;
@@ -826,9 +794,6 @@ void StateMachine_Run(void)
             break;
         case STATE_LOCKED:
             State_Locked_Loop();
-            break;
-        case STATE_SLEEP:
-            State_Sleep_Loop();
             break;
         case STATE_ALARM_ACTIVE:
             State_Alarm_Active_Loop();

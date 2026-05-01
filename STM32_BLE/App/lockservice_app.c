@@ -34,7 +34,6 @@
 #include "battery.h"
 #include "state_machine.h"
 #include "lights.h"
-#include "battery.h"
 #include "accelerometer.h"
 #include "lis2dux12_app.h"
 #include "power_management.h"
@@ -282,7 +281,6 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
 
     case LOCKSERVICE_APPTOWD_WRITE_EVT:
       /* USER CODE BEGIN Service1Char1_WRITE_EVT */
-      StateMachine_UpdateBLEActivity();
       {
         uint8_t *received_data = p_Notification->DataTransfered.p_Payload;
         uint8_t  data_length   = p_Notification->DataTransfered.Length;
@@ -504,7 +502,6 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification)
        * a short grace window so this doesn't fire the alarm. */
       LIS2DUX12_ClearMotion();
       StateMachine_StartMotionGrace(2000);
-      StateMachine_UpdateBLEActivity();
       connectionStatus = 1;
       LOCKSERVICE_ForceStatusUpdate();  // Force send on connection
 
@@ -551,19 +548,12 @@ void LOCKSERVICE_APP_Init(void)
 /* USER CODE BEGIN FD */
 void LOCKSERVICE_SendStatusUpdate(void)
 {
-    // Only send if the state has actually changed OR if it's the first time
-    //if (deviceInfo != lastSentDeviceInfo)
-    //{
-        LOCKSERVICE_Devicestatus_SendNotification();
-        //lastSentDeviceInfo = deviceInfo;  // Update the last sent value
-    //}
+    LOCKSERVICE_Devicestatus_SendNotification();
 }
 
 void LOCKSERVICE_ForceStatusUpdate(void)
 {
-    // Force send regardless of state change (for initial connection)
     LOCKSERVICE_Devicestatus_SendNotification();
-    //lastSentDeviceInfo = deviceInfo;
 }
 
 /**
@@ -797,7 +787,7 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
     a_LOCKSERVICE_UpdateCharData[10] = (uint8_t)((accel[1] >> 8) & 0xFF);
     a_LOCKSERVICE_UpdateCharData[11] = (uint8_t)(accel[2] & 0xFF);
     a_LOCKSERVICE_UpdateCharData[12] = (uint8_t)((accel[2] >> 8) & 0xFF);
-    a_LOCKSERVICE_UpdateCharData[13] = deviceInfo;
+    a_LOCKSERVICE_UpdateCharData[13] = deviceInfo & 0x01;  /* only HIGH_PERF defined today */
     a_LOCKSERVICE_UpdateCharData[14] = g_bd_address[0]; /* WatchDog # low byte  (LSB of BD addr) */
     a_LOCKSERVICE_UpdateCharData[15] = g_bd_address[1]; /* WatchDog # high byte */
 

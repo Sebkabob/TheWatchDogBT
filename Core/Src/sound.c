@@ -51,13 +51,6 @@ static const Note_t NORMAL_ALARM_PATTERN[] = {
     {880,  150, 15},
 };
 
-static const Note_t LOUD_ALARM_PATTERN[] = {
-    {2186, 300, 15},
-    {3520, 300, 15},
-    {2186, 300, 15},
-    {3520, 300, 15},
-};
-
 /* 3-tone ascending chirp × 3 repetitions — Apple "Find My" style ping */
 static const Note_t FIND_MY_PATTERN[] = {
     /* Rep 1 */
@@ -294,18 +287,6 @@ uint32_t BUZZER_GetNormalAlarmDuration(void)
 {
     return BUZZER_GetSequenceDuration(NORMAL_ALARM_PATTERN,
         sizeof(NORMAL_ALARM_PATTERN) / sizeof(Note_t));
-}
-
-void BUZZER_StartLoudAlarm(void)
-{
-    BUZZER_PlaySequence(LOUD_ALARM_PATTERN,
-        sizeof(LOUD_ALARM_PATTERN) / sizeof(Note_t), 1);
-}
-
-uint32_t BUZZER_GetLoudAlarmDuration(void)
-{
-    return BUZZER_GetSequenceDuration(LOUD_ALARM_PATTERN,
-        sizeof(LOUD_ALARM_PATTERN) / sizeof(Note_t));
 }
 
 void BUZZER_StartLaCucaracha(void)

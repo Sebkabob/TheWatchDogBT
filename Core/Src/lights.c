@@ -52,8 +52,6 @@ void LED_Rainbow(int ms_delay, uint8_t intensity)
     static uint32_t last_update = 0;
     static uint32_t last_call = 0;
 
-    if (intensity > 255) intensity = 255;
-
     uint32_t current_time = HAL_GetTick();
 
     #define RAINBOW_RESET_TIMEOUT 500
@@ -111,8 +109,6 @@ void LED_Armed(int ms_delay, uint8_t intensity)
     static uint8_t pulse_direction = 1;
     static uint32_t last_update = 0;
     static uint32_t last_call = 0;
-
-    if (intensity > 255) intensity = 255;
 
     uint32_t current_time = HAL_GetTick();
 
@@ -199,7 +195,6 @@ void LED_Alarm(int flash_interval_ms, uint8_t red, uint8_t green, uint8_t blue, 
     }
 
     if (led_state) {
-        if (intensity > 255) intensity = 255;
         if (red > 0)   { uint16_t sr = (red   * intensity) / 255; SetRed(  999 - ((sr * 999) / 255)); }
         if (green > 0) { uint16_t sg = (green * intensity) / 255; SetGreen(999 - ((sg * 999) / 255)); }
         if (blue > 0)  { uint16_t sb = (blue  * intensity) / 255; SetBlue( 999 - ((sb * 999) / 255)); }
@@ -221,7 +216,6 @@ void LED_Pulse(int duration, uint8_t r, uint8_t g, uint8_t b, uint8_t intensity)
 
     uint32_t now = HAL_GetTick();
 
-    if (intensity > 255) intensity = 255;
     if (duration < 20) duration = 20;
 
     #define PULSE_RESET_TIMEOUT 500

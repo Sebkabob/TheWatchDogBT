@@ -5,7 +5,6 @@
 
 // State definitions
 typedef enum {
-    STATE_SLEEP,
     STATE_ALARM_ACTIVE,
     STATE_LOCKED,
     STATE_STABILIZING,
@@ -65,8 +64,6 @@ extern volatile uint8_t deviceBattery;
 extern volatile uint8_t stayAwakeFlag;
 extern volatile uint8_t cablePlugFlag;
 
-void StateMachine_UpdateBLEActivity(void);
-
 /**
  * @brief  Suppress motion-triggered alarm transitions for the next
  *         @p ms milliseconds.  Used after BLE connect / RestoreAll
@@ -79,8 +76,6 @@ void StateMachine_StartMotionGrace(uint32_t ms);
 void StateMachine_Init(void);
 void StateMachine_Run(void);
 void StateMachine_ChangeState(SystemState_t newState);
-void StateMachine_UpdateActivity(void);
-void StateMachine_CheckInactivityTimeout(void);
 
 /**
  * @brief  Called from GPIOB ISR when PB4 (BQ251_PG) fires.

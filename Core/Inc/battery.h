@@ -6,7 +6,6 @@
 
 // Initialization
 bool BATTERY_Init(void);
-bool BATTERY_TestCapacityRead(uint16_t *design_cap);
 
 // NEW: Cached battery state functions (call BATTERY_UpdateState first)
 bool BATTERY_UpdateState(void);      // Call once per second to update all values
@@ -66,18 +65,5 @@ uint8_t  BATTERY_GetInitFailStage(void);
 uint8_t  BATTERY_GetInitCompleted(void);
 uint8_t  BATTERY_GetPostResetFired(void);
 uint16_t BATTERY_GetChemIdRead(void);
-
-// LEGACY: Direct I2C read functions (use cached versions above instead)
-uint16_t BATTERY_SOC(void);
-int16_t BATTERY_Current(void);
-uint16_t BATTERY_Voltage(void);
-bool BATTERY_Charging(void);
-bool BATTERY_IsCriticallyLow(void);
-bool BATTERY_IsLow(void);
-bool BATTERY_IsFull(void);
-bool BATTERY_GetStatus(uint16_t *voltage_mV, uint16_t *soc_percent, bool *is_charging);
-
-// Debug functions
-bool BATTERY_SelfTest(void);
 
 #endif // BATTERY_H

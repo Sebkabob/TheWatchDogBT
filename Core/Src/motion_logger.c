@@ -224,18 +224,31 @@ void MotionLogger_TickToDateTime(uint32_t tick_ms, uint8_t* year, uint8_t* month
     uint8_t new_hour = (total_seconds / 3600) % 24;
     uint32_t elapsed_days = total_seconds / 86400;
 
-    uint8_t new_day = boot_time.day + elapsed_days;
-    uint8_t new_month = boot_time.month;
-    uint8_t new_year = boot_time.year;
+    static const uint8_t days_in_month[12] = {
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+    };
 
-    while (new_day > 30) {
-        new_day -= 30;
+    uint32_t day_acc = (uint32_t)boot_time.day + elapsed_days;
+    uint8_t  new_month = boot_time.month;
+    uint8_t  new_year  = boot_time.year;
+
+    for (;;) {
+        uint8_t dim = days_in_month[new_month - 1];
+        /* year is 2-digit (00..99); leap if divisible by 4, treat 00 as leap */
+        if (new_month == 2 && (new_year % 4) == 0) {
+            dim = 29;
+        }
+        if (day_acc <= dim) {
+            break;
+        }
+        day_acc -= dim;
         new_month++;
         if (new_month > 12) {
             new_month = 1;
             new_year++;
         }
     }
+    uint8_t new_day = (uint8_t)day_acc;
 
     *year = new_year;
     *month = new_month;

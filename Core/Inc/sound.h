@@ -43,10 +43,8 @@ uint32_t BUZZER_GetSequenceDuration(const Note_t* sequence, uint8_t num_notes);
 /* Alarm sequences */
 void BUZZER_StartCalmAlarm(void);
 void BUZZER_StartNormalAlarm(void);
-void BUZZER_StartLoudAlarm(void);
 uint32_t BUZZER_GetCalmAlarmDuration(void);
 uint32_t BUZZER_GetNormalAlarmDuration(void);
-uint32_t BUZZER_GetLoudAlarmDuration(void);
 
 /* Fun melody */
 void BUZZER_StartLaCucaracha(void);

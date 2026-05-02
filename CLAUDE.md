@@ -6,19 +6,53 @@ ONLY EDIT CODE WITHIN THE USER EDITABLE SECTIONS!!!
 
 ## Firmware Version
 
-**Current: V1.0.0**
+**Current: V1.9.23**  (last reconciled at commit `bc17931`)
 
 Format: `V<MAJOR>.<MAIN>.<V2>` — single source of truth lives in `Core/Inc/firmware_version.h` (`FW_VERSION_MAJOR/MAIN/V2`, plus `FW_VERSION_STRING`). This line in CLAUDE.md and the macros in the header **must stay in sync**.
 
-Bump rules:
+### Bump rules
 
-| Field | When to bump |
-|-------|--------------|
-| `MAJOR` | Manual only — Sebastian explicitly asks ("bump major", architectural milestone). Reset `MAIN` and `V2` to `0` when bumped. |
-| `MAIN`  | +1 for every commit/push that lands on the `main` branch. Reset `V2` to `0` when bumped. |
-| `V2`    | +1 for every commit/push that lands on the `V2` branch. |
+| Field | When to bump | Cascading reset |
+|-------|--------------|-----------------|
+| `MAJOR` | Manual only — Sebastian explicitly asks ("bump major", architectural milestone). | **Reset both `MAIN` and `V2` to `0`.** |
+| `MAIN`  | +1 for every commit that lands on the `main` branch. | **Reset `V2` to `0`.** |
+| `V2`    | +1 for every commit that lands on the `V2` branch. | None. |
 
-**Claude's responsibility:** before creating any commit (or when the user asks for a commit / PR / push), inspect the target branch and bump the matching field in **both** `firmware_version.h` and the "Current" line above as part of the same commit. If the user is committing on a feature branch that will merge into `main`/`V2`, treat the eventual landing branch as the target — when in doubt, ask. Don't bump for amends, rebases, or local-only WIP commits unless the user says so.
+The cascading reset is non-negotiable — never carry an old `V2` (or `MAIN`) value forward across a higher-field bump. Worked examples:
+
+- At `V1.0.7`, a `MAJOR` bump → `V2.0.0` (not `V2.0.7`).
+- At `V1.3.5`, a `MAIN` bump → `V1.4.0` (not `V1.4.5`).
+- At `V1.3.5`, a `V2` bump → `V1.3.6`.
+- At `V1.3.5`, two `main` commits then one `V2` commit → `V1.5.1` (MAIN→4 resets V2→0; MAIN→5 resets V2→0; V2→1).
+
+### Counting from scratch (the canonical recompute)
+
+`MAIN` and `V2` are not free-running counters tied to a "reconciled SHA" — they are derived **from full history** every time. Always recompute from the full repo, not from a delta. The reconciled-SHA marker is just a convenience receipt of the last successful run; never trust it as the only input.
+
+Canonical recompute:
+
+```
+MAIN = number of first-parent commits on `main`
+       (i.e. `git rev-list --count --first-parent main`)
+
+V2   = number of commits on `V2` not reachable from `main`
+       (i.e. `git rev-list --count main..V2`)
+```
+
+This makes the rule self-correcting: if a `main` commit ever lands while you weren't looking, the next recompute notices it, picks up the new `MAIN`, and resets `V2` automatically. Merge commits and rebases do not double-count because `--first-parent main` follows only the merges/commits that actually landed on `main`, and `main..V2` excludes anything already on `main`.
+
+`MAJOR` is never derived from history — it only changes when Sebastian says so.
+
+### Claude — do this every session, before any other work
+
+1. Run `git rev-list --count --first-parent main` → that's the new `MAIN`.
+2. Run `git rev-list --count main..V2` → that's the new `V2`.
+3. Compare against `firmware_version.h`. If different: update `FW_VERSION_MAIN` / `FW_VERSION_V2`, update the "Current: V…" line and the reconciled-sha (set it to current `git rev-parse --short HEAD`) in lockstep. Commit message style: `version bump to Vx.y.z`.
+4. If both fields already match: do nothing, don't touch the files.
+
+### When the user asks you to commit/push
+
+Make your edits, stage them, then **before** committing run the recompute above against `HEAD` *as it would be after your commit lands* — i.e. add 1 to whichever counter the current branch feeds (`main` → `MAIN+1, V2=0`; `V2` → `V2+1`). Bake the bumped version into the same commit. Don't bump for amends, rebases, or local-only WIP commits unless the user says so. When in doubt about which branch a commit will land on, ask.
 
 ## Project Overview
 

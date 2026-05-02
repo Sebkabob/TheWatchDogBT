@@ -176,25 +176,6 @@ static void Keep_CablePlugInterrupt(void)
     HAL_NVIC_EnableIRQ(GPIOB_IRQn);
 }
 
-/***************************************************************************
- * Keep_DebugGPIOInterrupt — PB5 wakes from DEEPSTOP for debugger attach
- ***************************************************************************/
-static void Keep_DebugGPIOInterrupt(void)
-{
-    GPIO_InitTypeDef gpio = {0};
-    gpio.Pin  = DEBUG_GPIO_Pin;
-    gpio.Mode = GPIO_MODE_IT_RISING;
-    gpio.Pull = GPIO_PULLDOWN;
-    HAL_GPIO_Init(DEBUG_GPIO_GPIO_Port, &gpio);
-
-    __HAL_GPIO_EXTI_CLEAR_IT(DEBUG_GPIO_GPIO_Port, DEBUG_GPIO_Pin);
-
-    LL_PWR_EnableWakeUpPin(LL_PWR_WAKEUP_PB5);
-    LL_PWR_SetWakeUpPinPolarityHigh(LL_PWR_WAKEUP_PB5);
-
-    HAL_NVIC_EnableIRQ(GPIOB_IRQn);
-}
-
 static void Gate_GPIO_Outputs(void)
 {
     HAL_GPIO_WritePin(GPOUT_GPIO_Port, GPOUT_Pin, GPIO_PIN_RESET);
@@ -254,18 +235,6 @@ static void Restore_UART_Pins(void)
     gpio.Mode = GPIO_MODE_INPUT;
     gpio.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(STAT_GPIO_Port, &gpio);
-}
-
-static void Restore_DebugGPIO(void)
-{
-    GPIO_InitTypeDef gpio = {0};
-    gpio.Pin  = DEBUG_GPIO_Pin;
-    gpio.Mode = GPIO_MODE_IT_RISING;
-    gpio.Pull = GPIO_PULLDOWN;
-    HAL_GPIO_Init(DEBUG_GPIO_GPIO_Port, &gpio);
-
-    __HAL_GPIO_EXTI_CLEAR_IT(DEBUG_GPIO_GPIO_Port, DEBUG_GPIO_Pin);
-    HAL_NVIC_EnableIRQ(GPIOB_IRQn);
 }
 
 void PowerMgmt_EnterLowPower_Idle(void)

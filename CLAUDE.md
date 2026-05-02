@@ -4,6 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ONLY EDIT CODE WITHIN THE USER EDITABLE SECTIONS!!!
 
+## Firmware Version
+
+**Current: V1.0.0**
+
+Format: `V<MAJOR>.<MAIN>.<V2>` — single source of truth lives in `Core/Inc/firmware_version.h` (`FW_VERSION_MAJOR/MAIN/V2`, plus `FW_VERSION_STRING`). This line in CLAUDE.md and the macros in the header **must stay in sync**.
+
+Bump rules:
+
+| Field | When to bump |
+|-------|--------------|
+| `MAJOR` | Manual only — Sebastian explicitly asks ("bump major", architectural milestone). Reset `MAIN` and `V2` to `0` when bumped. |
+| `MAIN`  | +1 for every commit/push that lands on the `main` branch. Reset `V2` to `0` when bumped. |
+| `V2`    | +1 for every commit/push that lands on the `V2` branch. |
+
+**Claude's responsibility:** before creating any commit (or when the user asks for a commit / PR / push), inspect the target branch and bump the matching field in **both** `firmware_version.h` and the "Current" line above as part of the same commit. If the user is committing on a feature branch that will merge into `main`/`V2`, treat the eventual landing branch as the target — when in doubt, ask. Don't bump for amends, rebases, or local-only WIP commits unless the user says so.
+
 ## Project Overview
 
 WatchDogBT is embedded firmware for a Bluetooth Low Energy asset-tracking/alarm device built on the **STM32WB05KZV6TR** (Cortex-M0+, STM32WB0 family). The device uses a LIS2DUX12 accelerometer with an on-chip Machine Learning Core (MLC) for motion classification, a BQ25186 battery charger (PG/STAT lines on PB4/PA11), a BQ27427 fuel gauge (I2C, see `Drivers/BQ27427/`), an M24C08 EEPROM (see `Drivers/M24C08/`), RGB LEDs, and a magnetic buzzer.
@@ -104,7 +120,7 @@ A short **motion-grace window** is started on every BLE connect (`StateMachine_S
 
 Custom **LockService** (16-bit UUID `0x183E`) GATT service with three characteristics:
 - `APPTOWD` (write) — iOS → device commands. First byte of the inner payload (after the 4-byte loyalty token) = opcode; remaining bytes are payload. Settings writes (no opcode match) also carry a 6-byte trailing timestamp consumed by `UpdateBootTimeFromiOS()`.
-- `DEVICESTATUS` (notify) — **16-byte** payload built by `LOCKSERVICE_Devicestatus_SendNotification()`. Pushed at 50 Hz when `HIGH_PERF` is set, 2 Hz otherwise (gated by `PowerMgmt_IsLowPower()`). Bytes 14..15 carry the low 2 bytes of the BD address (LE) — used by iOS as the user-visible "WatchDog #" identifier.
+- `DEVICESTATUS` (notify) — **19-byte** payload built by `LOCKSERVICE_Devicestatus_SendNotification()`. Pushed at 50 Hz when `HIGH_PERF` is set, 2 Hz otherwise (gated by `PowerMgmt_IsLowPower()`). Bytes 14..15 carry the low 2 bytes of the BD address (LE) — used by iOS as the user-visible "WatchDog #" identifier. Bytes 16..18 are the firmware version triplet (`FW_VERSION_MAJOR`, `FW_VERSION_MAIN`, `FW_VERSION_V2`) from `firmware_version.h`. Shorter framed responses on the same characteristic (motion alert, log-count, event-data, loyalty acks, …) are unchanged.
 - `BATTERYDIAG` (notify) — 51-byte packed gauge telemetry payload (v11), attached dynamically at init in `lockservice.c`. Sent every ~1 s from `main()`'s battery tick.
 
 iOS opcodes (`lockservice_app.h`) — these run **after** the 4-byte loyalty token has been stripped:

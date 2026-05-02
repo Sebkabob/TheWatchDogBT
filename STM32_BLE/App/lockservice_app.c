@@ -38,6 +38,7 @@
 #include "lis2dux12_app.h"
 #include "power_management.h"
 #include "loyalty.h"
+#include "firmware_version.h"
 #include <string.h>
 /* USER CODE END Includes */
 
@@ -717,9 +718,10 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
     int16_t accel[3];
     LIS2DUX12_ReadAcceleration(accel);
 
-    // 16-byte DEVICESTATUS payload. Bytes 14..15 carry the low 2 bytes of
+    // 19-byte DEVICESTATUS payload. Bytes 14..15 carry the low 2 bytes of
     // the BD address (LE) — used by the iOS app as the user-visible
-    // "WatchDog #" identifier.
+    // "WatchDog #" identifier. Bytes 16..18 are firmware version
+    // (MAJOR, MAIN, V2) — see firmware_version.h.
     a_LOCKSERVICE_UpdateCharData[0]  = deviceState;
     a_LOCKSERVICE_UpdateCharData[1]  = deviceBattery;
     a_LOCKSERVICE_UpdateCharData[2]  = (uint8_t)(current_mA & 0xFF);
@@ -736,8 +738,11 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
     a_LOCKSERVICE_UpdateCharData[13] = deviceInfo & 0x01;   // only HIGH_PERF defined
     a_LOCKSERVICE_UpdateCharData[14] = g_bd_address[0];
     a_LOCKSERVICE_UpdateCharData[15] = g_bd_address[1];
+    a_LOCKSERVICE_UpdateCharData[16] = FW_VERSION_MAJOR;
+    a_LOCKSERVICE_UpdateCharData[17] = FW_VERSION_MAIN;
+    a_LOCKSERVICE_UpdateCharData[18] = FW_VERSION_V2;
 
-    lockservice_notification_data.Length = 16;
+    lockservice_notification_data.Length = 19;
   /* USER CODE END Service1Char2_NS_1*/
 
   if (notification_on_off != Devicestatus_NOTIFICATION_OFF && LOCKSERVICE_APP_Context.ConnectionHandle != 0xFFFF)

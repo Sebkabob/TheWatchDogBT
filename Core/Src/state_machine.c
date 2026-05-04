@@ -26,7 +26,6 @@
 #include "motion_logger.h"
 #include "power_management.h"
 #include "app_ble.h"
-#include "alarm_duration.h"
 #include "app_common.h"
 
 volatile SystemState_t currentState = STATE_CONNECTED_IDLE;
@@ -213,7 +212,7 @@ void State_Connected_Idle_Loop(void)
         } else if (LED_PlugOut_InProgress()) {
             LED_PlugOut_Tick();
         } else if (GET_LIGHTS_BIT(deviceState)) {
-            LED_Rainbow(10, 255);
+            LED_Rainbow(10, LedBrightness_Get());
         } else {
             LED_Off();
         }
@@ -244,7 +243,7 @@ void State_Stabilizing_Loop(void)
 
     if (!findMyActive) {
         if (GET_LIGHTS_BIT(deviceState)) {
-            LED_Pulse(1000, 0, 0, 255, 255);
+            LED_Pulse(1000, 0, 0, 255, LedBrightness_Get());
         } else {
             LED_Off();
         }
@@ -391,7 +390,7 @@ void State_Locked_Loop(void)
 
     if (!findMyActive) {
         if (GET_LIGHTS_BIT(deviceState) && !PowerMgmt_IsLowPower()) {
-            LED_Armed(10, 255);
+            LED_Armed(10, LedBrightness_Get());
         } else {
             LED_Off();
         }
@@ -551,19 +550,20 @@ void State_Alarm_Active_Loop(void)
     if (!alarm_started) {
         uint8_t alarmType  = GET_ALARM_TYPE(deviceState);
         uint8_t showLights = GET_LIGHTS_BIT(deviceState);
+        uint8_t led_b      = LedBrightness_Get();
         switch (alarmType) {
             case ALARM_NONE:
                 break;
             case ALARM_CALM:
-                if (showLights) LED_Alarm(300, 255, 0, 0, 255);
+                if (showLights) LED_Alarm(300, 255, 0, 0, led_b);
                 BUZZER_StartCalmAlarm();
                 break;
             case ALARM_NORMAL:
-                if (showLights) LED_Alarm(300, 255, 0, 0, 255);
+                if (showLights) LED_Alarm(300, 255, 0, 0, led_b);
                 BUZZER_StartNormalAlarm();
                 break;
             case ALARM_LOUD:
-                if (showLights) LED_Alarm(125, 255, 225, 0, 255);
+                if (showLights) LED_Alarm(125, 255, 225, 0, led_b);
                 BUZZER_StartLaCucaracha();
                 break;
             default:
@@ -651,10 +651,19 @@ void State_Alarm_Active_Loop(void)
 /***************************************************************************
  * StateMachine_ChangeState — set ARMED bit, push BLE notify, record entry
  *   Status byte 6 carries CACHED_STATE_STABILIZING (0xFE) while the device
- *   is settling so the iOS app can show "Stabilizing…".
+ *   is settling so the iOS app can show "Stabilizing…". Centrally enforces
+ *   the alarmDisabled gate: any incoming STATE_ALARM_ACTIVE is dropped when
+ *   the persisted flag is set, so every motion-trigger site is covered
+ *   without per-site changes.
  ***************************************************************************/
 void StateMachine_ChangeState(SystemState_t newState)
 {
+    if (newState == STATE_ALARM_ACTIVE && AlarmDisabled_Get()) {
+        // Suppress at the trigger. Motion logging + BLE motion alerts have
+        // already run in the caller; only the alarm path itself is gated.
+        return;
+    }
+
     if (newState != currentState) {
         previousState = currentState;
         currentState = newState;
@@ -708,7 +717,7 @@ void FindMyDevice_Update(void)
     }
 
     if (BUZZER_IsToneActive()) {
-        LED_Solid(0, 255, 0, 255);
+        LED_Solid(0, 255, 0, LedBrightness_Get());
     } else {
         LED_Off();
     }

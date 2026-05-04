@@ -32,7 +32,6 @@
 #include <stdlib.h>
 #include "lockservice_app.h"
 #include "loyalty.h"
-#include "alarm_duration.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -208,6 +207,12 @@ int main(void)
   /* Persisted alarm post-motion duration. Same EEPROM, same power rail —
    * runs after Loyalty_Init for the same race-avoidance reason. */
   AlarmDuration_Init();
+
+  /* Persisted user LED brightness scalar. */
+  LedBrightness_Init();
+
+  /* Persisted alarm-suppression flag (deviceInfo bit 1). */
+  AlarmDisabled_Init();
 
   /* Belt-and-braces: clear any pending GPIOB IRQs and force stayAwakeFlag
    * = 0 so nothing pinned during boot blocks DEEPSTOP. */

@@ -49,6 +49,28 @@ void LED_PlugOut_Start(void);
 void LED_PlugOut_Tick(void);
 bool LED_PlugOut_InProgress(void);
 
+/***************************************************************************
+ * Persisted LED brightness scalar (1..255, default 255). Applied as a
+ * multiplier to every "status" LED call (armed pulse, stabilizing pulse,
+ * alarm flash, find-my, connected-idle rainbow). Charging-status and the
+ * drain-mode diagnostic bypass this and render at full brightness.
+ *
+ * EEPROM record at 0x1A: magic 0xC4 + value byte.
+ ***************************************************************************/
+
+#define LED_BRIGHTNESS_DEFAULT      255u
+#define LED_BRIGHTNESS_MIN          1u
+#define LED_BRIGHTNESS_MAX          255u
+#define EEPROM_LED_BRIGHTNESS_ADDR  0x1A
+#define EEPROM_LED_BRIGHTNESS_LEN   2
+#define EEPROM_LED_BRIGHTNESS_MAGIC 0xC4
+
+void    LedBrightness_Init(void);
+uint8_t LedBrightness_Get(void);
+// Clamps to [1, 255] (zero maps to 1) and persists. Returns the stored
+// value. Skips the EEPROM write when unchanged.
+uint8_t LedBrightness_Set(uint8_t value);
+
 #ifdef __cplusplus
 }
 #endif

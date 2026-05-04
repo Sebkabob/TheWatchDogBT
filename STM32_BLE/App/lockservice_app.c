@@ -39,7 +39,6 @@
 #include "power_management.h"
 #include "loyalty.h"
 #include "firmware_version.h"
-#include "alarm_duration.h"
 #include <string.h>
 /* USER CODE END Includes */
 
@@ -417,23 +416,31 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
 
             default: {
                 // Settings update. Post-token payload is
-                //   [settings, deviceInfo, alarmDur?, ts0..ts5]
+                //   [settings, deviceInfo, alarmDur?, ledBright?, ts0..ts5]
                 // The 6-byte timestamp tail is stripped above when
-                // cmd_length >= 7 — discount it here so a length-2 or
-                // length-3 settings core is recognised correctly.
+                // cmd_length >= 7 — discount it here so a length-2/3/4
+                // settings core is recognised correctly.
                 uint8_t settings_len = (cmd_length >= 7) ? (uint8_t)(cmd_length - 6)
                                                          : cmd_length;
                 if (settings_len >= 1) {
                     deviceState = cmd_data[0];
                 }
                 if (settings_len >= 2) {
-                    deviceInfo = cmd_data[1];
+                    // Bit 0 = HIGH_PERF, bit 1 = alarmDisabled, bits 2..7
+                    // reserved (mask off so reads stay clean).
+                    deviceInfo = cmd_data[1] & 0x03;
+                    (void)AlarmDisabled_Set((cmd_data[1] >> 1) & 0x01);
                 }
                 if (settings_len >= 3) {
                     (void)AlarmDuration_Set(cmd_data[2]);
                 }
-                APP_DBG_MSG("Recv settings · 0x%02X deviceInfo 0x%02X alarmDur=%us\n",
-                            deviceState, deviceInfo, AlarmDuration_Get());
+                if (settings_len >= 4) {
+                    (void)LedBrightness_Set(cmd_data[3]);
+                }
+                APP_DBG_MSG("Recv settings · 0x%02X deviceInfo 0x%02X alarmDur=%us ledBright=%u alarmDisabled=%u\n",
+                            deviceState, deviceInfo,
+                            AlarmDuration_Get(), LedBrightness_Get(),
+                            AlarmDisabled_Get() ? 1u : 0u);
                 HAL_Delay(5);
                 LOCKSERVICE_ForceStatusUpdate();
                 break;
@@ -750,7 +757,10 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
     a_LOCKSERVICE_UpdateCharData[10] = (uint8_t)((accel[1] >> 8) & 0xFF);
     a_LOCKSERVICE_UpdateCharData[11] = (uint8_t)(accel[2] & 0xFF);
     a_LOCKSERVICE_UpdateCharData[12] = (uint8_t)((accel[2] >> 8) & 0xFF);
-    a_LOCKSERVICE_UpdateCharData[13] = deviceInfo & 0x01;   // only HIGH_PERF defined
+    // Bit 0 = HIGH_PERF, bit 1 = alarmDisabled (sourced from the persisted
+    // store so the value survives boot). Bits 2..7 reserved.
+    a_LOCKSERVICE_UpdateCharData[13] = (uint8_t)((deviceInfo & 0x01)
+                                                | (AlarmDisabled_Get() ? 0x02 : 0));
     a_LOCKSERVICE_UpdateCharData[14] = g_bd_address[0];
     a_LOCKSERVICE_UpdateCharData[15] = g_bd_address[1];
     a_LOCKSERVICE_UpdateCharData[16] = FW_VERSION_MAJOR;

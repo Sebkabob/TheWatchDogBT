@@ -82,6 +82,14 @@ void StateMachine_Init(void);
 void StateMachine_Run(void);
 void StateMachine_ChangeState(SystemState_t newState);
 
+// EEPROM-backed mirror of deviceState (alarm type / sensitivity / lights /
+// logging / silence) and deviceInfo bit 0 HIGH_PERF. ARMED bit is never
+// persisted — boot always comes up disarmed. Init reads from EEPROM and
+// applies on top of the StateMachine_Init defaults; Persist is called from
+// the iOS settings dispatcher after each settings write.
+void DeviceSettings_Init(void);
+void DeviceSettings_Persist(void);
+
 // Called from GPIOB ISR when PB4 (BQ251_PG) fires. Safe from interrupt context.
 void CablePlug_IRQCallback(void);
 

@@ -28,6 +28,11 @@
 #include "app_ble.h"
 #include "app_common.h"
 
+#define M24CXX_MODEL 0
+#include "m24cxx.h"
+
+extern I2C_HandleTypeDef hi2c1;
+
 volatile SystemState_t currentState = STATE_CONNECTED_IDLE;
 volatile SystemState_t previousState = STATE_CONNECTED_IDLE;
 volatile uint8_t deviceState = 0;
@@ -751,4 +756,97 @@ void StateMachine_Run(void)
             StateMachine_ChangeState(STATE_DISCONNECTED_IDLE);
             break;
     }
+}
+
+/***************************************************************************
+ * Persisted device-state record — EEPROM-backed mirror of the user-facing
+ * settings byte (alarm type, sensitivity, lights, logging, silence) plus
+ * deviceInfo bit 0 (HIGH_PERF). The ARMED bit is intentionally NOT
+ * persisted: boot always comes up disarmed so a power glitch can't leave a
+ * stolen device armed without the owner re-arming it from the app.
+ *
+ * EEPROM record (3 bytes at 0x1E):
+ *   [0] magic = 0xC6
+ *   [1] deviceState (ARMED bit forced to 0 on save)
+ *   [2] deviceInfo HIGH_PERF (bit 0 only; bit 1 alarmDisabled lives in its
+ *       own record at 0x1C, owned by sound.c)
+ ***************************************************************************/
+
+#define EEPROM_DEVICE_SETTINGS_ADDR  0x1E
+#define EEPROM_DEVICE_SETTINGS_LEN   3
+#define EEPROM_DEVICE_SETTINGS_MAGIC 0xC6
+
+static M24CXX_HandleTypeDef s_sm_eeprom;
+
+void DeviceSettings_Init(void)
+{
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_sm_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) != M24CXX_Ok) {
+        PowerMgmt_EEPROM_PowerOff();
+        return;
+    }
+
+    uint8_t buf[EEPROM_DEVICE_SETTINGS_LEN] = {0};
+    if (m24cxx_read(&s_sm_eeprom, EEPROM_DEVICE_SETTINGS_ADDR, buf,
+                    EEPROM_DEVICE_SETTINGS_LEN) == M24CXX_Ok) {
+        if (buf[0] == EEPROM_DEVICE_SETTINGS_MAGIC) {
+            // Apply persisted bits, force ARMED clear.
+            deviceState = buf[1];
+            SET_ARMED_BIT(deviceState, 0);
+            // Preserve any deviceInfo bits already loaded by other inits
+            // (alarmDisabled doesn't touch the RAM byte at boot, so this
+            // is mostly defensive for future bits).
+            deviceInfo = (deviceInfo & ~0x01) | (buf[2] & 0x01);
+        } else {
+            // Blank EEPROM / wrong magic — seed from the StateMachine_Init
+            // defaults that already populated deviceState/deviceInfo.
+            uint8_t fresh[EEPROM_DEVICE_SETTINGS_LEN];
+            fresh[0] = EEPROM_DEVICE_SETTINGS_MAGIC;
+            fresh[1] = deviceState & ~0x01;   // ARMED off
+            fresh[2] = deviceInfo  &  0x01;
+            (void)m24cxx_write(&s_sm_eeprom, EEPROM_DEVICE_SETTINGS_ADDR,
+                               fresh, EEPROM_DEVICE_SETTINGS_LEN);
+        }
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+}
+
+/***************************************************************************
+ * DeviceSettings_Persist — write the current deviceState/deviceInfo to
+ *   EEPROM. Called after the iOS settings dispatcher applies a write.
+ *   Skips the I2C transaction when the persisted-relevant bits are
+ *   unchanged, to avoid wear on settings notifications that don't actually
+ *   modify any user-facing flag.
+ ***************************************************************************/
+void DeviceSettings_Persist(void)
+{
+    static uint8_t cached_state = 0xFF;   // forces first write
+    static uint8_t cached_info  = 0xFF;
+
+    uint8_t to_save_state = deviceState & ~0x01;   // never persist ARMED
+    uint8_t to_save_info  = deviceInfo  &  0x01;
+
+    if (to_save_state == cached_state && to_save_info == cached_info) {
+        return;
+    }
+
+    cached_state = to_save_state;
+    cached_info  = to_save_info;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_sm_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) == M24CXX_Ok) {
+        uint8_t buf[EEPROM_DEVICE_SETTINGS_LEN];
+        buf[0] = EEPROM_DEVICE_SETTINGS_MAGIC;
+        buf[1] = to_save_state;
+        buf[2] = to_save_info;
+        (void)m24cxx_write(&s_sm_eeprom, EEPROM_DEVICE_SETTINGS_ADDR, buf,
+                           EEPROM_DEVICE_SETTINGS_LEN);
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
 }

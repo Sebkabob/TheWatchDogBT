@@ -18,7 +18,9 @@
  *   0x18..0x19   alarm-duration record (sound.{c,h})
  *   0x1A..0x1B   led-brightness record (lights.{c,h})
  *   0x1C..0x1D   alarm-disabled record (sound.{c,h})
- *   0x1E..0x3F   reserved
+ *   0x1E..0x20   device-settings record (state_machine.{c,h}) —
+ *                deviceState (sans ARMED) + deviceInfo HIGH_PERF
+ *   0x21..0x3F   reserved
  *   0x40..0x47   motion-log header (motion_logger.h)
  *   0x48..0x3FF  motion-log event data
  ***************************************************************************/

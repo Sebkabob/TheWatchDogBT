@@ -6,7 +6,7 @@ ONLY EDIT CODE WITHIN THE USER EDITABLE SECTIONS!!!
 
 ## Firmware Version
 
-**Current: V1.11.1**  (last reconciled at commit `0755a74`)
+**Current: V1.11.16**  (last reconciled at commit `0755a74`)
 
 Format: `V<MAJOR>.<MAIN>.<V2>` — single source of truth lives in `Core/Inc/firmware_version.h` (`FW_VERSION_MAJOR/MAIN/V2`, plus `FW_VERSION_STRING`). This line in CLAUDE.md and the macros in the header **must stay in sync**.
 

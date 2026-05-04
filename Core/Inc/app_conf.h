@@ -30,8 +30,13 @@
 
 /**
  * Define to 1 if LSE is used, otherwise set it to 0.
+ *
+ * Auto-flips CFG_BLE_SLEEP_CLOCK_ACCURACY (500→100 ppm) so the BLE
+ * stack matches the actual crystal accuracy. If LSE fails to start at
+ * boot, main.c falls back to LSI at runtime — the SCA mismatch hurts
+ * adv timing margins slightly but BLE still works.
  */
-#define CFG_LSCLK_LSE                       (0)
+#define CFG_LSCLK_LSE                       (1)
 
 /******************************************************************************
  * Application Config
@@ -45,7 +50,7 @@
 /**
  * Define Tx Power
  */
-#define CFG_TX_POWER                        (0x1E) /* 0x1E <=> 5 dBm */
+#define CFG_TX_POWER                        (0x18) /* 0x18 <=> 0 dBm — drops radio peak ~6 mA → ~4.3 mA per adv burst */
 
 /**
  * Define Advertising parameters

@@ -159,12 +159,12 @@ bool BATTERY_Init(void)
     uint16_t current_terminate_voltage = bq27427_terminate_voltage();
     uint16_t current_taper_rate = bq27427_taper_rate();
     uint16_t current_opconfig = bq27427_op_config();
-    bool sleep_enabled = (current_opconfig & BQ27427_OPCONFIG_SLEEP) != 0;
+    bool sleep_disabled = (current_opconfig & BQ27427_OPCONFIG_SLEEP) == 0;
 
     bool needs_config = (current_capacity != 300) ||
                         (current_terminate_voltage != 3000) ||
                         (current_taper_rate != 100) ||
-                        sleep_enabled ||
+                        sleep_disabled ||
                         bq27427_itpor_flag();
 
     if (needs_config) {
@@ -174,7 +174,7 @@ bool BATTERY_Init(void)
         if (!bq27427_set_design_energy(1110)) { s_init_fail_stage = 8;  return false; }
         if (!bq27427_set_terminate_voltage(3000)) { s_init_fail_stage = 9;  return false; }
         if (!bq27427_set_taper_rate(100))     { s_init_fail_stage = 10; return false; }
-        if (!bq27427_disable_sleep())         { s_init_fail_stage = 11; return false; }
+        if (!bq27427_enable_sleep())          { s_init_fail_stage = 11; return false; }
         if (!bq27427_exit_config(true))       { s_init_fail_stage = 12; return false; }
 
         HAL_Delay(1000);

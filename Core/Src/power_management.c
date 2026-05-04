@@ -42,24 +42,29 @@ extern void MX_TIM2_Reinit(void);
 extern void MX_TIM16_Reinit(void);
 
 /***************************************************************************
- * Gate_I2C — kill I2C peripheral, bus power, and float SDA/SCL/PA10
+ * Gate_I2C — kill I2C peripheral, hard-cut bus power, float SDA/SCL
+ *   PA10 (I2C_POWER) is held as a driven LOW push-pull output across
+ *   DEEPSTOP — leaving it analog/Hi-Z let the load-switch gate drift,
+ *   which can partially re-power the bus rail and leak through the
+ *   LIS2DUX12 / BQ27427 / EEPROM body diodes.
  ***************************************************************************/
 static void Gate_I2C(void)
 {
     HAL_I2C_DeInit(&hi2c1);
     __HAL_RCC_I2C1_CLK_DISABLE();
 
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+    gpio.Pull  = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    gpio.Pin   = I2C_POWER_Pin;
+    HAL_GPIO_Init(I2C_POWER_GPIO_Port, &gpio);
     HAL_GPIO_WritePin(I2C_POWER_GPIO_Port, I2C_POWER_Pin, GPIO_PIN_RESET);
 
-    GPIO_InitTypeDef gpio = {0};
     gpio.Mode = GPIO_MODE_ANALOG;
     gpio.Pull = GPIO_NOPULL;
-
     gpio.Pin  = GPIO_PIN_0 | GPIO_PIN_1;
     HAL_GPIO_Init(GPIOA, &gpio);
-
-    gpio.Pin = I2C_POWER_Pin;
-    HAL_GPIO_Init(I2C_POWER_GPIO_Port, &gpio);
 }
 
 /***************************************************************************
@@ -242,6 +247,13 @@ void PowerMgmt_EnterLowPower_Idle(void)
     if (peripherals_gated) return;
 
     Gate_Timers();
+
+    /* Force the LIS2DUX12 to ODR=0 + soft-reset before the I2C rail goes
+     * down. If the accel is on the switched rail, this is harmless (the
+     * rail kill below shuts it off anyway). If it's on always-on rail,
+     * this drops it from ~5 µA MLC-running to ~0.4 µA power-down. */
+    (void)LIS2DUX12_ResetAndPowerDown();
+
     Gate_I2C();
     Gate_EEPROM();
     Gate_UART();

@@ -650,6 +650,33 @@ bool bq27427_disable_sleep(void)
     return bq27427_write_op_config(op_config & ~BQ27427_OPCONFIG_SLEEP);
 }
 
+bool bq27427_enable_sleep(void)
+{
+    uint16_t op_config = bq27427_op_config();
+
+    if (op_config & BQ27427_OPCONFIG_SLEEP) {
+        return true;
+    }
+
+    return bq27427_write_op_config(op_config | BQ27427_OPCONFIG_SLEEP);
+}
+
+/* SHUTDOWN sequence per BQ27427 TRM: arm with SHUTDOWN_ENABLE then commit
+ * with SHUTDOWN within ~4 s. Drops the chip to its deepest mode (~0.4 µA).
+ * The chip exits SHUTDOWN only on a power cycle of its VDD or a specific
+ * GPOUT toggle — gauge state is NOT preserved across SHUTDOWN.
+ *
+ * Diagnostic / power-floor use only — calling this disables the fuel
+ * gauge until next reset of the chip's VDD rail. */
+bool bq27427_shutdown(void)
+{
+    if (!bq27427_execute_control_word(BQ27427_CONTROL_SHUTDOWN_ENABLE)) {
+        return false;
+    }
+    HAL_Delay(10);
+    return bq27427_execute_control_word(BQ27427_CONTROL_SHUTDOWN);
+}
+
 static bool bq27427_soft_reset(void)
 {
     return bq27427_execute_control_word(BQ27427_CONTROL_SOFT_RESET);

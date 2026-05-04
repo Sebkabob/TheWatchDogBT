@@ -48,7 +48,22 @@
 #define BD_ADDRESS_OVERRIDE 0
 const uint8_t bd_address_override = BD_ADDRESS_OVERRIDE;
 
+/* Diagnostic: 1 = put BQ27427 fuel gauge into SHUTDOWN at boot to validate
+ * how much of the residual quiescent it accounts for. SHUTDOWN takes the
+ * gauge to ~0.4 µA but loses all SOC state — set back to 0 for production. */
+#define BQ27427_SHUTDOWN_AT_BOOT 0
+
+/* Diagnostic: park MCU in DEEPSTOP forever, no BLE. Removed — the naive
+ * "set SLEEPDEEP + WFI" path doesn't actually enter DEEPSTOP on WB0
+ * because the framework's CPUcontextSave is required. Net result was
+ * WFI at run-mode clock (~1.5 mA). Don't re-enable without rewriting. */
+#define DEEPSTOP_FOREVER_DIAGNOSTIC 0
+
 stmdev_ctx_t dev_ctx;
+/* 1 = LSE locked at boot, 0 = LSI fallback. Read by PeriphCommonClock_Config
+ * to route the BLE-wakeup clock, and by the boot-tone diagnostic so you can
+ * tell which clock is in use without a debugger. */
+volatile uint8_t g_lse_active = 0;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -99,17 +114,45 @@ static void MX_GPIO_LowPower_Unused(void)
     gpio.Mode = GPIO_MODE_ANALOG;
     gpio.Pull = GPIO_NOPULL;
 
-    /*
-     * PA9 — USART1_TX. Set to analog since UART is disabled in production.
-     * STAT (charge status) is now on PA11, configured by MX_GPIO_Init.
-     */
+    /* PA9 — USART1_TX, PB14 — USART1_RX. Set analog since UART is disabled. */
     gpio.Pin = GPIO_PIN_9;
     HAL_GPIO_Init(GPIOA, &gpio);
-
-    /*
-     * PB14 — USART1_RX. Set to analog since UART is disabled.
-     */
     gpio.Pin = GPIO_PIN_14;
+    HAL_GPIO_Init(GPIOB, &gpio);
+
+    /* PA3 SWCLK — set analog and disable DEEPSTOP pulls. SWDIO retention is
+     * already disabled via LL_PWR_DisableDBGRET below. */
+    gpio.Pin = GPIO_PIN_3;
+    HAL_GPIO_Init(GPIOA, &gpio);
+
+    /* On STM32WB0 the DEEPSTOP pull-up/down state is controlled by the PWR
+     * controller, NOT the GPIO PUPDR register. Any pin not explicitly cleared
+     * may keep a default pull active during sleep, leaking through floating
+     * traces. Force-clear pulls on every unused pin (and SWCLK) here. */
+    HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A,
+        PWR_GPIO_BIT_3 | PWR_GPIO_BIT_4 | PWR_GPIO_BIT_5 | PWR_GPIO_BIT_6 |
+        PWR_GPIO_BIT_7 | PWR_GPIO_BIT_12 | PWR_GPIO_BIT_13 | PWR_GPIO_BIT_14 |
+        PWR_GPIO_BIT_15);
+    HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A,
+        PWR_GPIO_BIT_3 | PWR_GPIO_BIT_4 | PWR_GPIO_BIT_5 | PWR_GPIO_BIT_6 |
+        PWR_GPIO_BIT_7 | PWR_GPIO_BIT_12 | PWR_GPIO_BIT_13 | PWR_GPIO_BIT_14 |
+        PWR_GPIO_BIT_15);
+
+    HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_B,
+        PWR_GPIO_BIT_1 | PWR_GPIO_BIT_8 | PWR_GPIO_BIT_9 | PWR_GPIO_BIT_10 |
+        PWR_GPIO_BIT_11 | PWR_GPIO_BIT_13);
+    HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B,
+        PWR_GPIO_BIT_1 | PWR_GPIO_BIT_8 | PWR_GPIO_BIT_9 | PWR_GPIO_BIT_10 |
+        PWR_GPIO_BIT_11 | PWR_GPIO_BIT_13);
+
+    /* Configure all of the unused pins themselves as analog so the input
+     * Schmitt trigger isn't burning power on slow / floating signals. */
+    gpio.Pin = GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 |
+               GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
+    HAL_GPIO_Init(GPIOA, &gpio);
+
+    gpio.Pin = GPIO_PIN_1 | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 |
+               GPIO_PIN_11 | GPIO_PIN_13;
     HAL_GPIO_Init(GPIOB, &gpio);
 }
 /* USER CODE END 0 */
@@ -174,11 +217,25 @@ int main(void)
   /* === Fix unused pins for low power === */
   MX_GPIO_LowPower_Unused();
 
+  /* PWR_CR2_DBGRET defaults ON — retains PA2 SWDIO / PA3 SWCLK pin state
+   * across DEEPSTOP so the debugger doesn't lose the chip. Costs current.
+   * For production / power profiling, disable it. SWD will reconnect after
+   * a target reset; while running it will drop on first DEEPSTOP entry. */
+  LL_PWR_DisableDBGRET();
+
   /* All 3 LEDs are now TIM2 HW PWM — no software init needed */
   MotionLogger_Init();
   HAL_Delay(100);
   LIS2DUX12_Init();
   BATTERY_Init();
+
+#if (BQ27427_SHUTDOWN_AT_BOOT == 1)
+  /* Force the fuel gauge into SHUTDOWN to characterise the board's true
+   * floor without the gauge contributing. Re-flash with the macro = 0 to
+   * restore normal SOC tracking. */
+  extern bool bq27427_shutdown(void);
+  bq27427_shutdown();
+#endif
 
 
   if (IS_CABLE_PLUGGED()) {
@@ -189,6 +246,27 @@ int main(void)
   }
   /* USER CODE END 2 */
 
+#if (DEEPSTOP_FOREVER_DIAGNOSTIC == 1)
+  /* Hard-floor diagnostic. Two long high chirps so you know we're in this
+   * mode, then gate everything and park in DEEPSTOP forever. Only PB4
+   * (cable) or PB5 (debug) can wake. Whatever the profiler reads after
+   * this is the absolute board floor with NO BLE radio. */
+  BUZZER_Tone(2500, 200);
+  HAL_Delay(80);
+  BUZZER_Tone(2500, 200);
+  HAL_Delay(50);
+
+  PowerMgmt_EnterLowPower_Idle();
+
+  /* Set SLEEPDEEP, request DEEPSTOP, WFI. Loop in case any stray IRQ wakes
+   * us — we go right back to sleep. */
+  SET_BIT(SCB->SCR, SCB_SCR_SLEEPDEEP_Msk);
+  LL_PWR_SetPowerMode(LL_PWR_MODE_DEEPSTOP);
+  while (1) {
+    __WFI();
+  }
+#endif
+
   /* Init code for STM32_BLE */
   MX_APPE_Init(NULL);
 
@@ -197,6 +275,17 @@ int main(void)
 
 
   firstBootTone();
+
+  /* Sleep-clock diagnostic: one short high chirp = LSE locked,
+   * three descending chirps = LSI fallback. */
+  if (g_lse_active) {
+      BUZZER_Tone(2000, 60);
+  } else {
+      BUZZER_Tone(800, 80);
+      BUZZER_Tone(600, 80);
+      BUZZER_Tone(400, 80);
+  }
+
   StateMachine_Init();
 
   /* Application-layer loyalty token: load from EEPROM after BLE_Init
@@ -272,12 +361,31 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
+  /* LSE drive must be set BEFORE enabling. MEDIUMLOW = lowest drive that
+   * still starts a typical 32.768 kHz crystal. */
+  __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_MEDIUMLOW);
+
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSE|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) == HAL_OK)
   {
-    Error_Handler();
+    g_lse_active = 1;
+  }
+  else
+  {
+    /* LSE didn't start (no crystal / load caps wrong / bad layout).
+     * Fall back to LSI so the device still boots. SCA penalty hurts adv
+     * power but BLE keeps working. */
+    g_lse_active = 0;
+    RCC_OscInitTypeDef fallback = {0};
+    fallback.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
+    fallback.HSEState = RCC_HSE_ON;
+    fallback.LSIState = RCC_LSI_ON;
+    if (HAL_RCC_OscConfig(&fallback) != HAL_OK)
+    {
+      Error_Handler();
+    }
   }
 
   /** Configure the SYSCLKSource and SYSCLKDivider
@@ -301,8 +409,16 @@ void PeriphCommonClock_Config(void)
 
   /** Initializes the peripherals clock
   */
-  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SMPS;
+  /* Route the BLE wake-up / RTC / WDG slow-clock to LSE if it locked.
+   * Without this selection, even an enabled LSE doesn't drive the BLE
+   * timer — the chip stays on its HSI64M/2048 default and we get no
+   * adv-power benefit from the crystal. */
+  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SMPS
+                                           | RCC_PERIPHCLK_RTC_WDG_BLEWKUP;
   PeriphClkInitStruct.SmpsDivSelection = RCC_SMPSCLK_DIV4;
+  PeriphClkInitStruct.RTCWDGBLEWKUPClockSelection =
+      g_lse_active ? RCC_RTC_WDG_BLEWKUP_CLKSOURCE_LSE
+                   : RCC_RTC_WDG_BLEWKUP_CLKSOURCE_HSI64M_DIV2048;
 
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
   {
@@ -449,8 +565,20 @@ static void MX_RADIO_TIMER_Init(void)
   /* Wait to be sure that the Radio Timer is active */
   while(LL_RADIO_TIMER_GetAbsoluteTime(WAKEUP) < 0x10);
   RADIO_TIMER_InitStruct.XTAL_StartupTime = 320;
-  RADIO_TIMER_InitStruct.enableInitialCalibration = TRUE;
-  RADIO_TIMER_InitStruct.periodicCalibrationInterval = 10000;
+
+  /* When the BLE wakeup clock is the LSE crystal (set in PeriphCommonClock_Config
+   * if g_lse_active), the radio timer doesn't need calibration — the crystal
+   * is already accurate. With LSI fallback we still need calibration since the
+   * RC oscillator drifts with temperature and supply. */
+  extern volatile uint8_t g_lse_active;
+  if (g_lse_active) {
+    RADIO_TIMER_InitStruct.enableInitialCalibration = FALSE;
+    RADIO_TIMER_InitStruct.periodicCalibrationInterval = 0;
+  } else {
+    RADIO_TIMER_InitStruct.enableInitialCalibration = TRUE;
+    RADIO_TIMER_InitStruct.periodicCalibrationInterval = 10000;
+  }
+
   HAL_RADIO_TIMER_Init(&RADIO_TIMER_InitStruct);
   /* USER CODE BEGIN RADIO_TIMER_Init 2 */
 

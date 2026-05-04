@@ -214,6 +214,11 @@ int main(void)
   /* Persisted alarm-suppression flag (deviceInfo bit 1). */
   AlarmDisabled_Init();
 
+  /* Persisted deviceState bits (alarm type / sensitivity / lights / logging /
+   * silence) and deviceInfo HIGH_PERF. ARMED is never persisted — boot
+   * always comes up disarmed. */
+  DeviceSettings_Init();
+
   /* Belt-and-braces: clear any pending GPIOB IRQs and force stayAwakeFlag
    * = 0 so nothing pinned during boot blocks DEEPSTOP. */
   NVIC_ClearPendingIRQ(GPIOB_IRQn);

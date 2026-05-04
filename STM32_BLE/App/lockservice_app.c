@@ -437,6 +437,11 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
                 if (settings_len >= 4) {
                     (void)LedBrightness_Set(cmd_data[3]);
                 }
+                // Persist the deviceState/deviceInfo bytes (ARMED bit
+                // excluded). The other persisted records (alarm duration /
+                // LED brightness / alarm-disabled) already wrote inside
+                // their own Set() calls above.
+                DeviceSettings_Persist();
                 APP_DBG_MSG("Recv settings · 0x%02X deviceInfo 0x%02X alarmDur=%us ledBright=%u alarmDisabled=%u\n",
                             deviceState, deviceInfo,
                             AlarmDuration_Get(), LedBrightness_Get(),

@@ -25,7 +25,6 @@ uint8_t LIS2DUX12_IsMotionDetected(void);
 uint8_t LIS2DUX12_PeekMotionStatus(void);
 
 void LIS2DUX12_ClearMotion(void);
-void LIS2DUX12_ClearMotionFlag(void);
 
 // Arms PB15 as a DEEPSTOP wakeup source (HIGH polarity).
 void LIS2DUX12_ConfigureWakeup(void);
@@ -45,7 +44,6 @@ int32_t LIS2DUX12_EnterMediumLowPowerWakeup(void);
 // Adds wake-up engine on top of the running UCF — MLC keeps classifying.
 int32_t LIS2DUX12_ConfigArmedSleep(void);
 
-void LIS2DUX12_ClearAllInterrupts(void);
 void LIS2DUX12_ReadAcceleration(int16_t accel[3]);
 
 // Snapshot current gravity vector as the tilt-detection reference.
@@ -53,7 +51,5 @@ void LIS2DUX12_CaptureReference(void);
 
 // Returns 1 if tilted >15° from reference (10° hysteresis to clear).
 uint8_t LIS2DUX12_CheckTilt(void);
-
-void LIS2DUX12_I2CScan(void);
 
 #endif /* INC_ACCELEROMETER_H_ */

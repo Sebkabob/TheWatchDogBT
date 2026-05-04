@@ -6,7 +6,7 @@ ONLY EDIT CODE WITHIN THE USER EDITABLE SECTIONS!!!
 
 ## Firmware Version
 
-**Current: V1.9.23**  (last reconciled at commit `bc17931`)
+**Current: V1.9.24**  (last reconciled at commit `303299e`)
 
 Format: `V<MAJOR>.<MAIN>.<V2>` — single source of truth lives in `Core/Inc/firmware_version.h` (`FW_VERSION_MAJOR/MAIN/V2`, plus `FW_VERSION_STRING`). This line in CLAUDE.md and the macros in the header **must stay in sync**.
 
@@ -130,7 +130,7 @@ DISCONNECTED_IDLE → (BLE connect) → CONNECTED_IDLE
 CONNECTED_IDLE    → (armed)       → STABILIZING
 STABILIZING       → (3s still)    → LOCKED
 LOCKED            → (motion)      → ALARM_ACTIVE
-ALARM_ACTIVE      → (melody done + no motion) → LOCKED
+ALARM_ACTIVE      → (alarm_duration_seconds elapsed with no motion) → LOCKED
 ```
 
 `StateMachine_ChangeState()` automatically sets/clears the ARMED bit when entering STABILIZING/LOCKED/ALARM_ACTIVE vs. any other state, then pushes a status notification.
@@ -169,7 +169,7 @@ iOS opcodes (`lockservice_app.h`) — these run **after** the 4-byte loyalty tok
 | `0xFB` | `CMD_RESET_DEVICE` | none — calls `NVIC_SystemReset()` |
 | `0xFC` | `CMD_DRAIN_MODE` | byte[1] bit 0: 1=start drain, 0=stop |
 
-Anything not matching an opcode is interpreted as a settings write: `cmd_data[0] → deviceState`, `cmd_data[1] → deviceInfo`, then a forced status notification.
+Anything not matching an opcode is interpreted as a settings write: `cmd_data[0] → deviceState`, `cmd_data[1] → deviceInfo`, optional `cmd_data[2] → alarm_duration_seconds` (clamped to 0..30, EEPROM-persisted via `alarm_duration.c`), then a forced status notification. The settings core can be 1, 2, or 3 bytes; the dispatcher computes its length as `cmd_length - 6` when the trailing 6-byte timestamp is present (`cmd_length >= 7`).
 
 `app_ble.c` handles GAP/GATT stack init and connection events; `lockservice.c` is the auto-generated GATT server (with hand-added BATTERYDIAG inside USER CODE blocks); `lockservice_app.c` contains all application logic for processing writes and sending notifications. `g_bd_address[6]` is published in `app_ble.c` and `bd_address_override` in `main.c` controls whether the code-defined BD address overwrites EEPROM at boot.
 
@@ -297,6 +297,6 @@ The dispatcher in `lockservice_app.c::LOCKSERVICE_Notification()` validates the 
 
 These are the files you should edit / clean up. Vendor (`Drivers/`, `Middlewares/`) and CubeMX-generated infrastructure (`main.c`, `app_entry.c`, `stm32wb0x_*`, `system_*`, `syscalls.c`, `sysmem.c`) are off-limits unless explicitly requested.
 
-**`Core/Src` + `Core/Inc`:** `accelerometer`, `battery`, `lights`, `lis2dux12_app`, `motion_logger`, `power_management`, `sound`, `state_machine`, `wd_system`
+**`Core/Src` + `Core/Inc`:** `accelerometer`, `alarm_duration`, `battery`, `lights`, `lis2dux12_app`, `motion_logger`, `power_management`, `sound`, `state_machine`, `wd_system`
 
 **`STM32_BLE/App` (CubeMX-generated, edit only inside `USER CODE` blocks):** `lockservice_app`, plus the fully-user-authored `loyalty.{c,h}`

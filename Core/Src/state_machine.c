@@ -26,6 +26,8 @@
 #include "motion_logger.h"
 #include "power_management.h"
 #include "app_ble.h"
+#include "alarm_duration.h"
+#include "app_common.h"
 
 volatile SystemState_t currentState = STATE_CONNECTED_IDLE;
 volatile SystemState_t previousState = STATE_CONNECTED_IDLE;
@@ -515,9 +517,12 @@ void State_Locked_Loop(void)
 
 /***************************************************************************
  * State_Alarm_Active_Loop — drive alarm sound/lights, exit when motion stops
- *   Stays in this state until at least one full melody has elapsed without
- *   any new motion. MLC interrupts only fire on state changes, so we also
- *   poll MLC + FSM at 2 Hz to catch sustained motion.
+ *   Sounds the looping alarm pattern until alarm_duration_seconds elapses
+ *   with no motion. Every qualifying motion event (MLC IN_MOTION/SHAKEN,
+ *   FSM impact/freefall) HARD-RESETS the countdown to the full duration —
+ *   the timer never extends, never partially drains. Duration 0 means stop
+ *   the instant motion stops; a fresh motion event re-triggers from LOCKED.
+ *   MLC INTs only fire on state changes, so MLC+FSM are also polled at 2 Hz.
  ***************************************************************************/
 void State_Alarm_Active_Loop(void)
 {
@@ -528,46 +533,48 @@ void State_Alarm_Active_Loop(void)
     }
 
     static uint32_t last_motion_time = 0;
-    static uint8_t alarm_started = 0;
-    static uint32_t melody_duration_ms = 0;
+    static uint8_t  alarm_started    = 0;
+    uint8_t motion_this_iter = 0;
 
     if (!GET_ARMED_BIT(deviceState)) {
         BUZZER_Stop();
         alarm_started = 0;
-        melody_duration_ms = 0;
         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
         return;
     }
 
+    // Read once per iteration so a mid-alarm setting change from iOS takes
+    // effect immediately and the log line never lags the actual countdown.
+    uint8_t  alarm_duration_s  = AlarmDuration_Get();
+    uint32_t alarm_duration_ms = (uint32_t)alarm_duration_s * 1000u;
+
     if (!alarm_started) {
-        uint8_t alarmType = GET_ALARM_TYPE(deviceState);
+        uint8_t alarmType  = GET_ALARM_TYPE(deviceState);
         uint8_t showLights = GET_LIGHTS_BIT(deviceState);
         switch (alarmType) {
             case ALARM_NONE:
-                melody_duration_ms = 1000;
                 break;
             case ALARM_CALM:
                 if (showLights) LED_Alarm(300, 255, 0, 0, 255);
                 BUZZER_StartCalmAlarm();
-                melody_duration_ms = BUZZER_GetCalmAlarmDuration();
                 break;
             case ALARM_NORMAL:
                 if (showLights) LED_Alarm(300, 255, 0, 0, 255);
                 BUZZER_StartNormalAlarm();
-                melody_duration_ms = BUZZER_GetNormalAlarmDuration();
                 break;
             case ALARM_LOUD:
                 if (showLights) LED_Alarm(125, 255, 225, 0, 255);
                 BUZZER_StartLaCucaracha();
-                melody_duration_ms = BUZZER_GetLaCucarachaDuration();
                 break;
             default:
-                melody_duration_ms = 1000;
                 break;
         }
 
-        alarm_started = 1;
-        last_motion_time = HAL_GetTick();
+        alarm_started     = 1;
+        last_motion_time  = HAL_GetTick();
+        // Treat the entry tick as "fresh motion" so a duration-of-0 alarm
+        // doesn't immediately satisfy the exit check on its first iteration.
+        motion_this_iter  = 1;
     }
 
     if (LIS2DUX12_IsMotionDetected()) {
@@ -586,6 +593,8 @@ void State_Alarm_Active_Loop(void)
         if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN
             || impact || freefall) {
             last_motion_time = HAL_GetTick();
+            motion_this_iter = 1;
+            APP_DBG_MSG("Alarm timer reset → %us\n", alarm_duration_s);
         }
 
         if (GET_LOGGING_BIT(deviceState)) {
@@ -603,6 +612,8 @@ void State_Alarm_Active_Loop(void)
             lis2dux12_app_update_cached_state(mlc_out);
             if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN) {
                 last_motion_time = HAL_GetTick();
+                motion_this_iter = 1;
+                APP_DBG_MSG("Alarm timer reset → %us\n", alarm_duration_s);
             }
         }
 
@@ -610,6 +621,8 @@ void State_Alarm_Active_Loop(void)
         lis2dux12_app_check_fsm_events(&impact, &freefall);
         if (impact || freefall) {
             last_motion_time = HAL_GetTick();
+            motion_this_iter = 1;
+            APP_DBG_MSG("Alarm timer reset → %us\n", alarm_duration_s);
             if (GET_LOGGING_BIT(deviceState)) {
                 MotionType_t mt = impact ? MOTION_TYPE_IMPACT : MOTION_TYPE_FREEFALL;
                 MotionLogger_LogEvent(mt);
@@ -618,10 +631,18 @@ void State_Alarm_Active_Loop(void)
         }
     }
 
-    if ((HAL_GetTick() - last_motion_time) >= melody_duration_ms) {
+    // Final gate: the cached MLC state. INT-driven and 500 ms poll updates
+    // can leave gaps where motion is physically continuous but no fresh
+    // event was seen this iteration. Without this check, duration = 0 +
+    // sustained motion would chatter between LOCKED and ALARM_ACTIVE every
+    // few ms. Cached states 2/3 = IN_MOTION/SHAKEN.
+    uint8_t cached_mlc = lis2dux12_app_get_cached_mlc_state();
+    uint8_t still_in_motion = (cached_mlc == 2 || cached_mlc == 3);
+
+    if (!motion_this_iter && !still_in_motion
+        && (HAL_GetTick() - last_motion_time) >= alarm_duration_ms) {
         BUZZER_Stop();
         alarm_started = 0;
-        melody_duration_ms = 0;
         StateMachine_ChangeState(STATE_LOCKED);
         return;
     }

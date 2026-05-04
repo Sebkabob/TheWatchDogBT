@@ -10,6 +10,7 @@
 #define INC_SOUND_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef struct {
     uint16_t frequency_hz;   // 0 = silent rest
@@ -45,5 +46,41 @@ void BUZZER_StartFindMe(void);
 
 // Single-frequency tone that loops forever until BUZZER_Stop() (drain mode).
 void BUZZER_StartContinuousTone(uint16_t frequency_hz);
+
+/***************************************************************************
+ * Persisted alarm settings — both EEPROM-backed, both apply to the buzzer
+ * (the alarm subsystem owned by this file).
+ *
+ *   alarm_duration_seconds (0..30, default 10) — how long the alarm keeps
+ *     sounding after motion stops while ALARM_ACTIVE. Stored at EEPROM 0x18.
+ *
+ *   alarm_disabled (default false) — when true, BUZZER_SetFrequency forces
+ *     every non-zero request to 0, so no caller (alarm, find-my, drain
+ *     mode, one-shot tones) can drive TIM16. Stored at EEPROM 0x1C.
+ *
+ * Init for both is invoked once from main() after Loyalty_Init().
+ ***************************************************************************/
+
+#define ALARM_DURATION_DEFAULT_S    10u
+#define ALARM_DURATION_MAX_S        30u
+#define EEPROM_ALARM_DURATION_ADDR  0x18
+#define EEPROM_ALARM_DURATION_LEN   2
+#define EEPROM_ALARM_DURATION_MAGIC 0xC3
+
+void    AlarmDuration_Init(void);
+uint8_t AlarmDuration_Get(void);
+// Clamps to [0, 30] and persists. Returns the stored value. Skips the
+// EEPROM write when unchanged.
+uint8_t AlarmDuration_Set(uint8_t seconds);
+
+#define EEPROM_ALARM_DISABLED_ADDR  0x1C
+#define EEPROM_ALARM_DISABLED_LEN   2
+#define EEPROM_ALARM_DISABLED_MAGIC 0xC5
+
+void AlarmDisabled_Init(void);
+bool AlarmDisabled_Get(void);
+// Persists if changed. When transitioning to true, calls BUZZER_Stop()
+// before persisting so any in-flight tone is killed immediately.
+bool AlarmDisabled_Set(bool disabled);
 
 #endif /* INC_SOUND_H_ */

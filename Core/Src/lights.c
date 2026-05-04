@@ -16,10 +16,15 @@
 
 #include "main.h"
 #include "lights.h"
+#include "power_management.h"
+#include "motion_logger.h"   // EEPROM_I2C_ADDRESS
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+
+#define M24CXX_MODEL 0
+#include "m24cxx.h"
 
 extern TIM_HandleTypeDef htim2;
 
@@ -433,4 +438,80 @@ void LED_PlugOut_Tick(void)
     SetRed(r);
     SetGreen(g);
     SetBlue(b);
+}
+
+/***************************************************************************
+ * LED brightness — EEPROM-backed user scalar (1..255, default 255).
+ *   Cached in RAM after Init so the LED render path reads it without I2C
+ *   traffic. Blank EEPROM (wrong magic) seeds the default in place.
+ ***************************************************************************/
+
+extern I2C_HandleTypeDef hi2c1;
+
+static M24CXX_HandleTypeDef s_led_eeprom;
+static uint8_t s_led_brightness = LED_BRIGHTNESS_DEFAULT;
+
+static uint8_t led_brightness_clamp(uint8_t v)
+{
+    if (v < LED_BRIGHTNESS_MIN) return LED_BRIGHTNESS_MIN;   // 0 -> 1
+    if (v > LED_BRIGHTNESS_MAX) return LED_BRIGHTNESS_MAX;
+    return v;
+}
+
+void LedBrightness_Init(void)
+{
+    s_led_brightness = LED_BRIGHTNESS_DEFAULT;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_led_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) != M24CXX_Ok) {
+        PowerMgmt_EEPROM_PowerOff();
+        return;
+    }
+
+    uint8_t buf[EEPROM_LED_BRIGHTNESS_LEN] = {0};
+    if (m24cxx_read(&s_led_eeprom, EEPROM_LED_BRIGHTNESS_ADDR, buf,
+                    EEPROM_LED_BRIGHTNESS_LEN) == M24CXX_Ok) {
+        if (buf[0] == EEPROM_LED_BRIGHTNESS_MAGIC) {
+            s_led_brightness = led_brightness_clamp(buf[1]);
+        } else {
+            uint8_t fresh[EEPROM_LED_BRIGHTNESS_LEN];
+            fresh[0] = EEPROM_LED_BRIGHTNESS_MAGIC;
+            fresh[1] = LED_BRIGHTNESS_DEFAULT;
+            (void)m24cxx_write(&s_led_eeprom, EEPROM_LED_BRIGHTNESS_ADDR,
+                               fresh, EEPROM_LED_BRIGHTNESS_LEN);
+        }
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+}
+
+uint8_t LedBrightness_Get(void)
+{
+    return s_led_brightness;
+}
+
+uint8_t LedBrightness_Set(uint8_t value)
+{
+    uint8_t clamped = led_brightness_clamp(value);
+    if (clamped == s_led_brightness) {
+        return clamped;
+    }
+
+    s_led_brightness = clamped;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_led_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) == M24CXX_Ok) {
+        uint8_t buf[EEPROM_LED_BRIGHTNESS_LEN];
+        buf[0] = EEPROM_LED_BRIGHTNESS_MAGIC;
+        buf[1] = clamped;
+        (void)m24cxx_write(&s_led_eeprom, EEPROM_LED_BRIGHTNESS_ADDR, buf,
+                           EEPROM_LED_BRIGHTNESS_LEN);
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+    return clamped;
 }

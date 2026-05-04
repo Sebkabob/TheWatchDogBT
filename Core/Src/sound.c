@@ -15,8 +15,13 @@
 
 #include "main.h"
 #include "sound.h"
+#include "power_management.h"
+#include "motion_logger.h"   // EEPROM_I2C_ADDRESS
 #include <stdint.h>
 #include <string.h>
+
+#define M24CXX_MODEL 0
+#include "m24cxx.h"
 
 #define BUZZER_TIMER_CLK  (1000000UL)   // TIM16 tick after PSC=31
 
@@ -105,9 +110,17 @@ static void BUZZER_PinEnableAF(void)
 
 /***************************************************************************
  * BUZZER_SetFrequency — retune TIM16 (frequency_hz = 0 silences the buzzer)
+ *   When AlarmDisabled_Get() is set, every non-zero request is forced to
+ *   zero. This is the single chokepoint to TIM16, so the gate here makes
+ *   it physically impossible for any caller — alarm, find-my, drain mode,
+ *   one-shot tones — to drive the buzzer while the flag is on.
  ***************************************************************************/
 static void BUZZER_SetFrequency(uint32_t frequency_hz)
 {
+    if (frequency_hz != 0 && AlarmDisabled_Get()) {
+        frequency_hz = 0;
+    }
+
     if (frequency_hz == 0) {
         __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 0);
         HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
@@ -150,6 +163,13 @@ void BUZZER_Init(void)
 void BUZZER_PlaySequence(const Note_t* sequence, uint8_t num_notes, uint8_t loop)
 {
     if (sequence == NULL || num_notes == 0) return;
+
+    // Defence-in-depth: refuse to even arm the sequencer when disabled, so
+    // BUZZER_Update never has a queue to tick through.
+    if (AlarmDisabled_Get()) {
+        BUZZER_Stop();
+        return;
+    }
 
     buzzer_state.sequence     = sequence;
     buzzer_state.num_notes    = num_notes;
@@ -291,6 +311,7 @@ void BUZZER_StartContinuousTone(uint16_t frequency_hz)
 void BUZZER_Tone(uint32_t frequency_hz, uint32_t duration_ms)
 {
     if (frequency_hz == 0 || duration_ms == 0) return;
+    if (AlarmDisabled_Get()) return;
 
     BUZZER_SetFrequency(frequency_hz);
     HAL_Delay(duration_ms);
@@ -313,4 +334,142 @@ void SOUND_Disconnected(void)
     BUZZER_Tone(280, 12);
     HAL_Delay(10);
     BUZZER_Tone(100, 15);
+}
+
+/***************************************************************************
+ * Persisted alarm settings — both EEPROM-backed.
+ *   alarm_duration_seconds (0..30, default 10)
+ *   alarm_disabled         (default false)
+ ***************************************************************************/
+
+extern I2C_HandleTypeDef hi2c1;
+
+static M24CXX_HandleTypeDef s_sound_eeprom;
+static uint8_t s_alarm_duration_s = ALARM_DURATION_DEFAULT_S;
+static bool    s_alarm_disabled   = false;
+
+static uint8_t alarm_duration_clamp(uint8_t v)
+{
+    return (v > ALARM_DURATION_MAX_S) ? ALARM_DURATION_MAX_S : v;
+}
+
+void AlarmDuration_Init(void)
+{
+    s_alarm_duration_s = ALARM_DURATION_DEFAULT_S;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_sound_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) != M24CXX_Ok) {
+        PowerMgmt_EEPROM_PowerOff();
+        return;
+    }
+
+    uint8_t buf[EEPROM_ALARM_DURATION_LEN] = {0};
+    if (m24cxx_read(&s_sound_eeprom, EEPROM_ALARM_DURATION_ADDR, buf,
+                    EEPROM_ALARM_DURATION_LEN) == M24CXX_Ok) {
+        if (buf[0] == EEPROM_ALARM_DURATION_MAGIC) {
+            s_alarm_duration_s = alarm_duration_clamp(buf[1]);
+        } else {
+            uint8_t fresh[EEPROM_ALARM_DURATION_LEN];
+            fresh[0] = EEPROM_ALARM_DURATION_MAGIC;
+            fresh[1] = ALARM_DURATION_DEFAULT_S;
+            (void)m24cxx_write(&s_sound_eeprom, EEPROM_ALARM_DURATION_ADDR,
+                               fresh, EEPROM_ALARM_DURATION_LEN);
+        }
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+}
+
+uint8_t AlarmDuration_Get(void)
+{
+    return s_alarm_duration_s;
+}
+
+uint8_t AlarmDuration_Set(uint8_t seconds)
+{
+    uint8_t clamped = alarm_duration_clamp(seconds);
+    if (clamped == s_alarm_duration_s) {
+        return clamped;
+    }
+
+    s_alarm_duration_s = clamped;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_sound_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) == M24CXX_Ok) {
+        uint8_t buf[EEPROM_ALARM_DURATION_LEN];
+        buf[0] = EEPROM_ALARM_DURATION_MAGIC;
+        buf[1] = clamped;
+        (void)m24cxx_write(&s_sound_eeprom, EEPROM_ALARM_DURATION_ADDR, buf,
+                           EEPROM_ALARM_DURATION_LEN);
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+    return clamped;
+}
+
+void AlarmDisabled_Init(void)
+{
+    s_alarm_disabled = false;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_sound_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) != M24CXX_Ok) {
+        PowerMgmt_EEPROM_PowerOff();
+        return;
+    }
+
+    uint8_t buf[EEPROM_ALARM_DISABLED_LEN] = {0};
+    if (m24cxx_read(&s_sound_eeprom, EEPROM_ALARM_DISABLED_ADDR, buf,
+                    EEPROM_ALARM_DISABLED_LEN) == M24CXX_Ok) {
+        if (buf[0] == EEPROM_ALARM_DISABLED_MAGIC) {
+            s_alarm_disabled = (buf[1] != 0);
+        } else {
+            uint8_t fresh[EEPROM_ALARM_DISABLED_LEN];
+            fresh[0] = EEPROM_ALARM_DISABLED_MAGIC;
+            fresh[1] = 0;
+            (void)m24cxx_write(&s_sound_eeprom, EEPROM_ALARM_DISABLED_ADDR,
+                               fresh, EEPROM_ALARM_DISABLED_LEN);
+        }
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+}
+
+bool AlarmDisabled_Get(void)
+{
+    return s_alarm_disabled;
+}
+
+bool AlarmDisabled_Set(bool disabled)
+{
+    if (disabled == s_alarm_disabled) {
+        return s_alarm_disabled;
+    }
+
+    s_alarm_disabled = disabled;
+
+    // Update the cache before kicking the buzzer down so any racing
+    // BUZZER_Update tick sees the new state.
+    if (disabled) {
+        BUZZER_Stop();
+    }
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_sound_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) == M24CXX_Ok) {
+        uint8_t buf[EEPROM_ALARM_DISABLED_LEN];
+        buf[0] = EEPROM_ALARM_DISABLED_MAGIC;
+        buf[1] = disabled ? 1 : 0;
+        (void)m24cxx_write(&s_sound_eeprom, EEPROM_ALARM_DISABLED_ADDR, buf,
+                           EEPROM_ALARM_DISABLED_LEN);
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+    return s_alarm_disabled;
 }

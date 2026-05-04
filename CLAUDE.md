@@ -6,7 +6,7 @@ ONLY EDIT CODE WITHIN THE USER EDITABLE SECTIONS!!!
 
 ## Firmware Version
 
-**Current: V1.9.24**  (last reconciled at commit `303299e`)
+**Current: V1.9.28**  (last reconciled at commit `6b1d433`)
 
 Format: `V<MAJOR>.<MAIN>.<V2>` — single source of truth lives in `Core/Inc/firmware_version.h` (`FW_VERSION_MAJOR/MAIN/V2`, plus `FW_VERSION_STRING`). This line in CLAUDE.md and the macros in the header **must stay in sync**.
 
@@ -146,7 +146,10 @@ The `deviceState` byte packs all user-configurable settings:
 | 6 | LOGGING | 0/1 |
 | 7 | SILENCE | 0/1 |
 
-`deviceInfo` bit 0 is `HIGH_PERF`: when set, BLE status updates run at 50 Hz (20 ms) instead of 2 Hz (500 ms).
+`deviceInfo` bit layout:
+- Bit 0 `HIGH_PERF`: when set, BLE status updates run at 50 Hz (20 ms) instead of 2 Hz (500 ms).
+- Bit 1 `alarmDisabled`: when set, `StateMachine_ChangeState(STATE_ALARM_ACTIVE)` is gated off — alarm LED never runs, motion logging + BLE motion alerts still fire. EEPROM-persisted via `alarm_disabled.c`. **Buzzer is hard-gated at the TIM16 chokepoint** (`BUZZER_SetFrequency`): every non-zero frequency request is forced to zero while the flag is set, so find-my, drain mode, one-shot tones, and any other path are also silent. `AlarmDisabled_Set(true)` calls `BUZZER_Stop()` before persisting so any in-flight tone is killed immediately. Safe-boot tones (recovery hatch in `main()`) run before `AlarmDisabled_Init()` and are therefore unaffected by the persisted flag.
+- Bits 2..7 reserved (masked to 0 on receive and on echo).
 
 A short **motion-grace window** is started on every BLE connect (`StateMachine_StartMotionGrace(2000)`): RestoreAll reloads the UCF, INT1 glitches, and the user is invariably handling the device while pairing — without the grace window every connect would fire the alarm. While active, `LOCKED` drains MLC/FSM events and suppresses transitions to `ALARM_ACTIVE`.
 
@@ -169,7 +172,7 @@ iOS opcodes (`lockservice_app.h`) — these run **after** the 4-byte loyalty tok
 | `0xFB` | `CMD_RESET_DEVICE` | none — calls `NVIC_SystemReset()` |
 | `0xFC` | `CMD_DRAIN_MODE` | byte[1] bit 0: 1=start drain, 0=stop |
 
-Anything not matching an opcode is interpreted as a settings write: `cmd_data[0] → deviceState`, `cmd_data[1] → deviceInfo`, optional `cmd_data[2] → alarm_duration_seconds` (clamped to 0..30, EEPROM-persisted via `alarm_duration.c`), then a forced status notification. The settings core can be 1, 2, or 3 bytes; the dispatcher computes its length as `cmd_length - 6` when the trailing 6-byte timestamp is present (`cmd_length >= 7`).
+Anything not matching an opcode is interpreted as a settings write: `cmd_data[0] → deviceState`, `cmd_data[1] → deviceInfo` (bit 0 HIGH_PERF + bit 1 → `AlarmDisabled_Set()`, upper bits masked), optional `cmd_data[2] → alarm_duration_seconds` (clamped to 0..30, EEPROM-persisted via `alarm_duration.c`), optional `cmd_data[3] → led_brightness` (clamped to 1..255, EEPROM-persisted via `led_brightness.c`), then a forced status notification. The settings core can be 1, 2, 3, or 4 bytes; the dispatcher computes its length as `cmd_length - 6` when the trailing 6-byte timestamp is present (`cmd_length >= 7`). Status LED calls (armed/stabilizing/alarm/find-my/connected-rainbow) multiply by `LedBrightness_Get()`; the charging-status path and the drain-mode diagnostic bypass the scalar. The DEVICESTATUS byte 13 echoes `(deviceInfo & 0x01) | (AlarmDisabled_Get() ? 0x02 : 0)` so iOS sees the persisted alarmDisabled state across boots.
 
 `app_ble.c` handles GAP/GATT stack init and connection events; `lockservice.c` is the auto-generated GATT server (with hand-added BATTERYDIAG inside USER CODE blocks); `lockservice_app.c` contains all application logic for processing writes and sending notifications. `g_bd_address[6]` is published in `app_ble.c` and `bd_address_override` in `main.c` controls whether the code-defined BD address overwrites EEPROM at boot.
 
@@ -297,6 +300,6 @@ The dispatcher in `lockservice_app.c::LOCKSERVICE_Notification()` validates the 
 
 These are the files you should edit / clean up. Vendor (`Drivers/`, `Middlewares/`) and CubeMX-generated infrastructure (`main.c`, `app_entry.c`, `stm32wb0x_*`, `system_*`, `syscalls.c`, `sysmem.c`) are off-limits unless explicitly requested.
 
-**`Core/Src` + `Core/Inc`:** `accelerometer`, `alarm_duration`, `battery`, `lights`, `lis2dux12_app`, `motion_logger`, `power_management`, `sound`, `state_machine`, `wd_system`
+**`Core/Src` + `Core/Inc`:** `accelerometer`, `battery`, `lights` (RGB driver + persisted user brightness), `lis2dux12_app`, `motion_logger`, `power_management`, `sound` (buzzer driver + persisted alarm-duration and alarm-disabled), `state_machine`, `wd_system`
 
 **`STM32_BLE/App` (CubeMX-generated, edit only inside `USER CODE` blocks):** `lockservice_app`, plus the fully-user-authored `loyalty.{c,h}`

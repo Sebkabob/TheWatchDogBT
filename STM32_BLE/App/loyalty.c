@@ -15,8 +15,10 @@
  *   0x07..0x0F   reserved
  *   0x10..0x15   loyalty record (this file)
  *   0x16..0x17   reserved
- *   0x18..0x19   alarm-duration record (alarm_duration.{c,h})
- *   0x1A..0x3F   reserved
+ *   0x18..0x19   alarm-duration record (sound.{c,h})
+ *   0x1A..0x1B   led-brightness record (lights.{c,h})
+ *   0x1C..0x1D   alarm-disabled record (sound.{c,h})
+ *   0x1E..0x3F   reserved
  *   0x40..0x47   motion-log header (motion_logger.h)
  *   0x48..0x3FF  motion-log event data
  ***************************************************************************/

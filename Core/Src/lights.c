@@ -2,32 +2,34 @@
  * lights.c
  * created by Sebastian Forenza 2026
  *
- * Functions in charge of interfacing with the onboard LEDs
+ * Onboard RGB LED control. All channels are driven by hardware PWM on TIM2.
  *
- * Pin mapping (V2 PCB):
- *   LED1 (Red)   = PB3  -> TIM2_CH4  (hardware PWM, active LOW)
- *   LED2 (Green) = PB2  -> TIM2_CH3  (hardware PWM, active LOW)
- *   LED3 (Blue)  = PB7  -> TIM2_CH2  (hardware PWM, active LOW)
+ *   LED1 (Red)   = PB3  → TIM2_CH4
+ *   LED2 (Green) = PB2  → TIM2_CH3
+ *   LED3 (Blue)  = PB7  → TIM2_CH2
  *
- * All LEDs are active-LOW: driving the pin LOW turns the LED ON.
- * For hardware PWM: CCR = 999 -> fully OFF, CCR = 0 -> fully ON.
+ * LEDs are active-LOW. PWM range is inverted: CCR=999 → fully OFF,
+ * CCR=0 → fully ON. Animation routines (Rainbow/Armed/Alarm/Pulse) are
+ * non-blocking and rely on a 500 ms idle timeout to reset their internal
+ * state when the caller stops invoking them.
  ***************************************************************************/
 
 #include "main.h"
 #include "lights.h"
+#include "power_management.h"
+#include "motion_logger.h"   // EEPROM_I2C_ADDRESS
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
 
+#define M24CXX_MODEL 0
+#include "m24cxx.h"
+
 extern TIM_HandleTypeDef htim2;
 
-/* Set by LED_Pulse_Reset(); LED_Pulse clears it on next call. */
+// Set by LED_Pulse_Reset(); LED_Pulse clears it on next call.
 static volatile uint8_t pulse_force_reset = 0;
-
-/* =========================================================================
- * HELPER: start / stop hardware PWM channels
- * ========================================================================= */
 
 static void StartRedPWM(void)   { HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4); }
 static void StartGreenPWM(void) { HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3); }
@@ -41,18 +43,18 @@ static inline void SetRed(uint32_t pwm)   { __HAL_TIM_SET_COMPARE(&htim2, TIM_CH
 static inline void SetGreen(uint32_t pwm) { __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pwm); }
 static inline void SetBlue(uint32_t pwm)  { __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, pwm); }
 
-/* =========================================================================
- * PUBLIC API
- * ========================================================================= */
-
+/***************************************************************************
+ * LED_Rainbow — non-blocking color-cycle animation
+ *   Cycles 6 hue phases with linear ramping. State auto-resets after a
+ *   500 ms idle window so back-to-back calls from different states don't
+ *   stitch onto a half-finished animation.
+ ***************************************************************************/
 void LED_Rainbow(int ms_delay, uint8_t intensity)
 {
     static uint8_t color_phase = 0;
     static uint8_t fade_step = 0;
     static uint32_t last_update = 0;
     static uint32_t last_call = 0;
-
-    if (intensity > 255) intensity = 255;
 
     uint32_t current_time = HAL_GetTick();
 
@@ -88,7 +90,7 @@ void LED_Rainbow(int ms_delay, uint8_t intensity)
     green = (green * intensity) / 255;
     blue  = (blue  * intensity) / 255;
 
-    /* Convert RGB 0-255 to active-low PWM 0-999 */
+    // Convert RGB 0..255 to active-low PWM 0..999
     SetRed(  999 - ((red   * 999) / 255));
     SetGreen(999 - ((green * 999) / 255));
     SetBlue( 999 - ((blue  * 999) / 255));
@@ -101,6 +103,9 @@ void LED_Rainbow(int ms_delay, uint8_t intensity)
     }
 }
 
+/***************************************************************************
+ * LED_Armed — slow red breathing pulse for armed/locked states
+ ***************************************************************************/
 void LED_Armed(int ms_delay, uint8_t intensity)
 {
     StartRedPWM();
@@ -111,8 +116,6 @@ void LED_Armed(int ms_delay, uint8_t intensity)
     static uint8_t pulse_direction = 1;
     static uint32_t last_update = 0;
     static uint32_t last_call = 0;
-
-    if (intensity > 255) intensity = 255;
 
     uint32_t current_time = HAL_GetTick();
 
@@ -152,6 +155,9 @@ void LED_Off(void)
     StopBluePWM();
 }
 
+/***************************************************************************
+ * LED_Solid — set a static color. No internal state; safe to call repeatedly.
+ ***************************************************************************/
 void LED_Solid(uint8_t r, uint8_t g, uint8_t b, uint8_t intensity)
 {
     if (r > 0) { StartRedPWM(); }   else { StopRedPWM(); }
@@ -163,6 +169,10 @@ void LED_Solid(uint8_t r, uint8_t g, uint8_t b, uint8_t intensity)
     if (b > 0) { uint16_t sb = (b * intensity) / 255; SetBlue( 999 - ((sb * 999) / 255)); }
 }
 
+/***************************************************************************
+ * LED_Alarm — flash custom color at <flash_interval_ms> cadence (non-blocking)
+ *   Re-arms whenever the requested colour changes or after a 500 ms idle.
+ ***************************************************************************/
 void LED_Alarm(int flash_interval_ms, uint8_t red, uint8_t green, uint8_t blue, uint8_t intensity)
 {
     static uint8_t led_state = 0;
@@ -199,7 +209,6 @@ void LED_Alarm(int flash_interval_ms, uint8_t red, uint8_t green, uint8_t blue, 
     }
 
     if (led_state) {
-        if (intensity > 255) intensity = 255;
         if (red > 0)   { uint16_t sr = (red   * intensity) / 255; SetRed(  999 - ((sr * 999) / 255)); }
         if (green > 0) { uint16_t sg = (green * intensity) / 255; SetGreen(999 - ((sg * 999) / 255)); }
         if (blue > 0)  { uint16_t sb = (blue  * intensity) / 255; SetBlue( 999 - ((sb * 999) / 255)); }
@@ -210,6 +219,11 @@ void LED_Alarm(int flash_interval_ms, uint8_t red, uint8_t green, uint8_t blue, 
     }
 }
 
+/***************************************************************************
+ * LED_Pulse — soft breathing pulse over <duration> ms
+ *   <duration> covers a full 0→255→0 sweep. LED_Pulse_Reset() forces the
+ *   next call to start from dark even if PULSE_RESET_TIMEOUT hasn't elapsed.
+ ***************************************************************************/
 void LED_Pulse(int duration, uint8_t r, uint8_t g, uint8_t b, uint8_t intensity)
 {
     static uint16_t pulse_value = 0;
@@ -221,7 +235,6 @@ void LED_Pulse(int duration, uint8_t r, uint8_t g, uint8_t b, uint8_t intensity)
 
     uint32_t now = HAL_GetTick();
 
-    if (intensity > 255) intensity = 255;
     if (duration < 20) duration = 20;
 
     #define PULSE_RESET_TIMEOUT 500
@@ -270,12 +283,12 @@ void LED_Pulse_Reset(void)
     pulse_force_reset = 1;
 }
 
-/* =========================================================================
- * CABLE PLUG-IN TRANSITION
- *   Phase 1 (500 ms): fade whatever was on the LEDs to black
- *   Phase 2 (250 ms): all LEDs off
- *   Phase 3        : hand back to caller; charging LED will start from dark
- * ========================================================================= */
+/***************************************************************************
+ * Cable plug-in transition
+ *   Phase 1 (500 ms): fade current LED colour to black
+ *   Phase 2 (250 ms): hold off
+ *   Phase 3        : LED_Pulse_Reset() so the charging pulse starts dark
+ ***************************************************************************/
 
 #define PLUG_IN_FADE_MS  500u
 #define PLUG_IN_GAP_MS   250u
@@ -294,15 +307,13 @@ static uint16_t plugInStartCCR_B = 999;
 
 void LED_PlugIn_Start(void)
 {
-    /* Snapshot whatever the LEDs are showing right now. CCR=999 means OFF
-     * (active-low PWM), CCR=0 means full ON. Channels that were stopped will
-     * have CCR=999 (StopXxxPWM sets it before stopping), so the fade is a
-     * no-op for those — exactly what we want. */
+    // Snapshot whatever the LEDs are showing right now. Channels that were
+    // stopped have CCR=999 (StopXxxPWM sets it before stopping), so the fade
+    // is a no-op for those — exactly what we want.
     plugInStartCCR_R = (uint16_t)htim2.Instance->CCR4;
     plugInStartCCR_G = (uint16_t)htim2.Instance->CCR3;
     plugInStartCCR_B = (uint16_t)htim2.Instance->CCR2;
 
-    /* Make sure all 3 channels are running so the fade is actually visible. */
     StartRedPWM();
     StartGreenPWM();
     StartBluePWM();
@@ -320,6 +331,9 @@ bool LED_PlugIn_InProgress(void)
     return plugInPhase != PLUG_IN_IDLE;
 }
 
+/***************************************************************************
+ * LED_PlugIn_Tick — drive the plug-in fade/hold state machine (non-blocking)
+ ***************************************************************************/
 void LED_PlugIn_Tick(void)
 {
     if (plugInPhase == PLUG_IN_IDLE) return;
@@ -334,8 +348,7 @@ void LED_PlugIn_Tick(void)
             return;
         }
 
-        /* Linear interpolate each captured CCR -> 999 (OFF) over PLUG_IN_FADE_MS */
-        uint32_t frac = (elapsed * 1000u) / PLUG_IN_FADE_MS;  /* 0..999 */
+        uint32_t frac = (elapsed * 1000u) / PLUG_IN_FADE_MS;  // 0..999
 
         uint32_t r = plugInStartCCR_R + ((999u - plugInStartCCR_R) * frac) / 1000u;
         uint32_t g = plugInStartCCR_G + ((999u - plugInStartCCR_G) * frac) / 1000u;
@@ -354,23 +367,20 @@ void LED_PlugIn_Tick(void)
     if (plugInPhase == PLUG_IN_GAP) {
         if (elapsed >= PLUG_IN_GAP_MS) {
             plugInPhase = PLUG_IN_IDLE;
-            /* Force the next LED_Pulse() call to restart from dark, so the
-             * charging pulse fades in from black even if it was running
-             * less than PULSE_RESET_TIMEOUT ago. */
+            // Force the next LED_Pulse() to start from dark even if the pulse
+            // was running less than PULSE_RESET_TIMEOUT ago.
             LED_Pulse_Reset();
             return;
         }
-        /* Hold OFF for the duration of the gap. LED_Off() was already
-         * called when we entered this phase. */
         return;
     }
 }
 
-/* =========================================================================
- * CABLE UNPLUG TRANSITION
- *   Phase 1 (100 ms): fade whatever was on the LEDs to black
+/***************************************************************************
+ * Cable unplug transition
+ *   Phase 1 (100 ms): fade current LED colour to black
  *   Phase 2        : hand back to caller; natural LED routine resumes
- * ========================================================================= */
+ ***************************************************************************/
 
 #define PLUG_OUT_FADE_MS 100u
 
@@ -415,7 +425,7 @@ void LED_PlugOut_Tick(void)
         return;
     }
 
-    uint32_t frac = (elapsed * 1000u) / PLUG_OUT_FADE_MS;  /* 0..999 */
+    uint32_t frac = (elapsed * 1000u) / PLUG_OUT_FADE_MS;  // 0..999
 
     uint32_t r = plugOutStartCCR_R + ((999u - plugOutStartCCR_R) * frac) / 1000u;
     uint32_t g = plugOutStartCCR_G + ((999u - plugOutStartCCR_G) * frac) / 1000u;
@@ -428,4 +438,80 @@ void LED_PlugOut_Tick(void)
     SetRed(r);
     SetGreen(g);
     SetBlue(b);
+}
+
+/***************************************************************************
+ * LED brightness — EEPROM-backed user scalar (1..255, default 255).
+ *   Cached in RAM after Init so the LED render path reads it without I2C
+ *   traffic. Blank EEPROM (wrong magic) seeds the default in place.
+ ***************************************************************************/
+
+extern I2C_HandleTypeDef hi2c1;
+
+static M24CXX_HandleTypeDef s_led_eeprom;
+static uint8_t s_led_brightness = LED_BRIGHTNESS_DEFAULT;
+
+static uint8_t led_brightness_clamp(uint8_t v)
+{
+    if (v < LED_BRIGHTNESS_MIN) return LED_BRIGHTNESS_MIN;   // 0 -> 1
+    if (v > LED_BRIGHTNESS_MAX) return LED_BRIGHTNESS_MAX;
+    return v;
+}
+
+void LedBrightness_Init(void)
+{
+    s_led_brightness = LED_BRIGHTNESS_DEFAULT;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_led_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) != M24CXX_Ok) {
+        PowerMgmt_EEPROM_PowerOff();
+        return;
+    }
+
+    uint8_t buf[EEPROM_LED_BRIGHTNESS_LEN] = {0};
+    if (m24cxx_read(&s_led_eeprom, EEPROM_LED_BRIGHTNESS_ADDR, buf,
+                    EEPROM_LED_BRIGHTNESS_LEN) == M24CXX_Ok) {
+        if (buf[0] == EEPROM_LED_BRIGHTNESS_MAGIC) {
+            s_led_brightness = led_brightness_clamp(buf[1]);
+        } else {
+            uint8_t fresh[EEPROM_LED_BRIGHTNESS_LEN];
+            fresh[0] = EEPROM_LED_BRIGHTNESS_MAGIC;
+            fresh[1] = LED_BRIGHTNESS_DEFAULT;
+            (void)m24cxx_write(&s_led_eeprom, EEPROM_LED_BRIGHTNESS_ADDR,
+                               fresh, EEPROM_LED_BRIGHTNESS_LEN);
+        }
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+}
+
+uint8_t LedBrightness_Get(void)
+{
+    return s_led_brightness;
+}
+
+uint8_t LedBrightness_Set(uint8_t value)
+{
+    uint8_t clamped = led_brightness_clamp(value);
+    if (clamped == s_led_brightness) {
+        return clamped;
+    }
+
+    s_led_brightness = clamped;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_led_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) == M24CXX_Ok) {
+        uint8_t buf[EEPROM_LED_BRIGHTNESS_LEN];
+        buf[0] = EEPROM_LED_BRIGHTNESS_MAGIC;
+        buf[1] = clamped;
+        (void)m24cxx_write(&s_led_eeprom, EEPROM_LED_BRIGHTNESS_ADDR, buf,
+                           EEPROM_LED_BRIGHTNESS_LEN);
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+    return clamped;
 }

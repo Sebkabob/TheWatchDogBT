@@ -2,24 +2,18 @@
  * state_machine.c
  * created by Sebastian Forenza 2026
  *
- * Main code loop with melody-duration-based alarm timeout
+ * Central control loop. Drives the system through:
  *
- * V2 PCB:
- *   - Charging detect: STAT       (PA11) LOW = charging
- *   - Cable detect:    BQ251_PG   (PB4)  LOW = cable plugged in
- *   - Accel interrupt: ACCEL_INT  (PB15)
- *   - Debug hold:      DEBUG_GPIO (PB5)  HIGH = stay awake
+ *   DISCONNECTED_IDLE → (BLE connect) → CONNECTED_IDLE
+ *   CONNECTED_IDLE    → (armed)       → STABILIZING
+ *   STABILIZING       → (3 s still)   → LOCKED
+ *   LOCKED            → (motion)      → ALARM_ACTIVE
+ *   ALARM_ACTIVE      → (melody done + no motion) → LOCKED
  *
- * LOW POWER FIX:
- *   - Enter PowerMgmt_EnterLowPower_Idle when disconnected + no cable
- *   - Enter PowerMgmt_EnterLowPower_Armed when locked + disconnected
- *   - Restore peripherals on reconnection or cable plug-in
- *
- * CABLE PLUG INTERRUPT:
- *   - PB4 is now EXTI falling-edge: fires when cable is plugged in
- *   - ISR sets cablePlugFlag + stayAwakeFlag
- *   - After cable is removed, device stays awake for CABLE_UNPLUG_AWAKE_MS
- *     then returns to low power
+ * Cable plug / unplug events are handled in this file too:
+ *   PB4 (BQ251_PG, falling-edge EXTI) sets cablePlugFlag + stayAwakeFlag.
+ *   On unplug, stayAwakeFlag is held for CABLE_UNPLUG_AWAKE_MS before the
+ *   device is allowed back to deep sleep.
  ***************************************************************************/
 
 #include "state_machine.h"
@@ -29,12 +23,16 @@
 #include "lockservice_app.h"
 #include "accelerometer.h"
 #include "lis2dux12_app.h"
-#include "door_detector.h"
 #include "motion_logger.h"
 #include "power_management.h"
 #include "app_ble.h"
+#include "app_common.h"
 
-/* Global state variables */
+#define M24CXX_MODEL 0
+#include "m24cxx.h"
+
+extern I2C_HandleTypeDef hi2c1;
+
 volatile SystemState_t currentState = STATE_CONNECTED_IDLE;
 volatile SystemState_t previousState = STATE_CONNECTED_IDLE;
 volatile uint8_t deviceState = 0;
@@ -42,26 +40,38 @@ volatile uint8_t deviceInfo = 0;
 volatile uint8_t deviceBattery = 100;
 volatile uint8_t connectionStatus = 0;
 
-/* Static variables for timing */
 static uint32_t stateEntryTime = 0;
-static uint32_t lastActivityTime = 0;
 
 volatile uint8_t stayAwakeFlag = 0;
 
-/* Cable plug detection */
+// Tick at which the post-connect motion-grace window expires. While the
+// current tick is below this, LOCKED suppresses motion-triggered alarm
+// transitions so the UCF reload from RestoreAll doesn't fire the alarm
+// the moment the user picks the device up to pair it.
+static volatile uint32_t motion_grace_until = 0;
+
+void StateMachine_StartMotionGrace(uint32_t ms)
+{
+    uint32_t until = HAL_GetTick() + ms;
+    if ((int32_t)(until - motion_grace_until) > 0) {
+        motion_grace_until = until;
+    }
+}
+
+static uint8_t MotionGrace_Active(void)
+{
+    return (int32_t)(motion_grace_until - HAL_GetTick()) > 0;
+}
+
 volatile uint8_t cablePlugFlag = 0;
-static uint32_t cableUnplugTime = 0;      /* tick when cable was last seen removed */
-static uint8_t  cableWasPlugged = 0;       /* tracks previous cable state for edge detect */
+static uint32_t cableUnplugTime = 0;
+static uint8_t  cableWasPlugged = 0;
 
 static volatile uint8_t findMyActive = 0;
-static uint32_t lastBLEActivityTime = 0;
-#define BLE_INACTIVITY_TIMEOUT_MS  10000  /* 10 seconds */
 
 /***************************************************************************
- * CHARGING LED COLOR — smooth red→yellow→green gradient based on SOC
- *   0%  = pure red    (255, 0,   0)
- *  50%  = yellow      (255, 255, 0)
- * 100%  = pure green  (0,   255, 0)
+ * LED_ChargingPulse — red→yellow→green pulse based on cached SOC
+ *   0 % = pure red, 50 % = yellow, 100 % = pure green.
  ***************************************************************************/
 static void LED_ChargingPulse(void)
 {
@@ -79,13 +89,10 @@ static void LED_ChargingPulse(void)
     LED_Pulse(4000, r, g, 0, 255);
 }
 
-void StateMachine_UpdateBLEActivity(void) {
-    lastBLEActivityTime = HAL_GetTick();
-}
-
 /***************************************************************************
- * CABLE PLUG ISR CALLBACK
- * Called from GPIOB_IRQHandler when PB4 fires (falling edge = cable in)
+ * CablePlug_IRQCallback — called from GPIOB IRQ when PB4 falls (cable in)
+ *   Safe from interrupt context. Sets cablePlugFlag + stayAwakeFlag so the
+ *   main loop can restore peripherals and show charging status.
  ***************************************************************************/
 void CablePlug_IRQCallback(void)
 {
@@ -93,6 +100,9 @@ void CablePlug_IRQCallback(void)
     stayAwakeFlag = 1;
 }
 
+/***************************************************************************
+ * StateMachine_Init — set defaults: LOW sens, CALM alarm, lights+logging on
+ ***************************************************************************/
 void StateMachine_Init(void)
 {
     currentState = STATE_DISCONNECTED_IDLE;
@@ -108,108 +118,70 @@ void StateMachine_Init(void)
 
     deviceInfo = 0;
 
-    DoorDetector_Init();
-
-    /* Initialise cable state tracking */
     cableWasPlugged = IS_CABLE_PLUGGED() ? 1 : 0;
     cableUnplugTime = 0;
 }
 
-void StateMachine_UpdateActivity(void) {
-    lastActivityTime = HAL_GetTick();
-}
-
-void StateMachine_CheckInactivityTimeout(void) {
-    if (currentState == STATE_ALARM_ACTIVE) {
-        return;
-    }
-
-    /* If cable is plugged in, reset timeout */
-    if (IS_CABLE_PLUGGED()) {
-        lastActivityTime = HAL_GetTick();
-        return;
-    }
-
-    if ((HAL_GetTick() - lastActivityTime) >= BLE_INACTIVITY_TIMEOUT_MS) {
-        StateMachine_ChangeState(STATE_SLEEP);
-    }
-}
-
 /***************************************************************************
- * CABLE PLUG MANAGEMENT
- * Handles the post-unplug awake window so the device doesn't slam
- * straight back to deep sleep.
+ * CablePlug_UpdateState — edge-detect cable + manage post-unplug awake window
  ***************************************************************************/
 static void CablePlug_UpdateState(void)
 {
     uint8_t pluggedNow = IS_CABLE_PLUGGED() ? 1 : 0;
 
     if (pluggedNow) {
-        /* Rising edge: cable just plugged in. Kick off the LED fade-out
-         * transition before any state-loop LED routine runs. */
         if (!cableWasPlugged) {
             LED_PlugIn_Start();
         }
-        /* Cable is in — stay awake, clear unplug timer */
         stayAwakeFlag = 1;
         cableUnplugTime = 0;
         cableWasPlugged = 1;
         return;
     }
 
-    /* Cable is NOT plugged in */
     if (cableWasPlugged) {
-        /* Just unplugged — start the awake window and the LED fade-out */
         cableUnplugTime = HAL_GetTick();
         cableWasPlugged = 0;
         LED_PlugOut_Start();
     }
 
-    /* If we're in the post-unplug awake window, keep stayAwakeFlag set */
     if (cableUnplugTime != 0) {
         if ((HAL_GetTick() - cableUnplugTime) < CABLE_UNPLUG_AWAKE_MS) {
             stayAwakeFlag = 1;
         } else {
-            /* Window expired — let the state machine decide */
+            // Window expired. Don't touch stayAwakeFlag — the state loop
+            // will re-decide based on the current state.
             cableUnplugTime = 0;
-            /* Don't clear stayAwakeFlag here — the state loop will
-             * set it appropriately based on the current state */
         }
     }
 
-    /* Clear the ISR flag after we've handled it */
     cablePlugFlag = 0;
 }
 
 void State_Disconnected_Idle_Loop(void)
 {
-    /* === Cable plugged in: stay awake, show charging status === */
     if (IS_CABLE_PLUGGED()) {
-        /* Restore peripherals if we were in low power */
         if (PowerMgmt_IsLowPower()) {
             PowerMgmt_RestoreAll();
         }
         stayAwakeFlag = 1;
 
         if (LED_PlugIn_InProgress()) {
-            LED_PlugIn_Tick();                  /* fade-to-black + 250 ms gap */
+            LED_PlugIn_Tick();
         } else if (IS_CHARGING_NOW() && !BATTERY_IsFullCached()) {
-            LED_ChargingPulse();                /* SOC gradient: red→green */
+            LED_ChargingPulse();
         } else if (BATTERY_IsFullCached()) {
-            LED_Solid(0, 255, 0, 255);          /* green solid - charged */
+            LED_Solid(0, 255, 0, 255);
         } else {
-            LED_Off();                          /* cable in, charger not started yet */
+            LED_Off();
         }
     } else {
-        /* === No cable, no connection: enter low power === */
-
-        /* Only clear stayAwakeFlag if the post-unplug window has expired */
         if (cableUnplugTime == 0) {
             stayAwakeFlag = 0;
         }
 
         if (LED_PlugOut_InProgress()) {
-            LED_PlugOut_Tick();                 /* fade-to-black after unplug */
+            LED_PlugOut_Tick();
         } else {
             LED_Off();
         }
@@ -219,9 +191,7 @@ void State_Disconnected_Idle_Loop(void)
         }
     }
 
-    /* State Switch */
     if (connectionStatus) {
-        /* Restore everything before entering connected state */
         if (PowerMgmt_IsLowPower()) {
             PowerMgmt_RestoreAll();
         }
@@ -233,60 +203,52 @@ void State_Connected_Idle_Loop(void)
 {
     stayAwakeFlag = 1;
 
-    /* Lights — skip while find-my is active so it gets clean LED control */
     if (!findMyActive) {
         if (IS_CABLE_PLUGGED()) {
             if (LED_PlugIn_InProgress()) {
-                LED_PlugIn_Tick();                  /* fade-to-black + 250 ms gap */
+                LED_PlugIn_Tick();
             } else if (IS_CHARGING_NOW() && !BATTERY_IsFullCached()) {
-                LED_ChargingPulse();                /* SOC gradient: red→green */
+                LED_ChargingPulse();
             } else if (BATTERY_IsFullCached()) {
-                LED_Solid(0, 255, 0, 255);          /* green solid - charged */
+                LED_Solid(0, 255, 0, 255);
             } else {
-                LED_Off();                          /* cable in, charger not started yet */
+                LED_Off();
             }
         } else if (LED_PlugOut_InProgress()) {
-            LED_PlugOut_Tick();                 /* fade-to-black after unplug */
+            LED_PlugOut_Tick();
         } else if (GET_LIGHTS_BIT(deviceState)) {
-            LED_Rainbow(10, 255);  /* rainbow - normal */
+            LED_Rainbow(10, LedBrightness_Get());
         } else {
             LED_Off();
         }
     }
 
-    /* State Switch - DISCONNECTED */
     if (!connectionStatus) {
         StateMachine_ChangeState(STATE_DISCONNECTED_IDLE);
     }
 
-    /* State Switch - STABILIZING (wait for stillness before locking) */
     if (GET_ARMED_BIT(deviceState)) {
         LIS2DUX12_ClearMotion();
-        DoorDetector_SetSensitivity(GET_SENSITIVITY(deviceState));
-        lis2dux12_app_set_door_state(CACHED_STATE_STABILIZING);
         StateMachine_ChangeState(STATE_STABILIZING);
     }
 }
 
+/***************************************************************************
+ * State_Stabilizing_Loop — wait for 3 s of stillness before locking
+ *   Pulsing blue LED while waiting; both the MLC interrupt and a 10 Hz
+ *   poll reset the still-timer when motion is detected.
+ ***************************************************************************/
 void State_Stabilizing_Loop(void)
 {
-    /* Disarmed — cancel stabilizing */
     if (!GET_ARMED_BIT(deviceState)) {
-        lis2dux12_app_set_door_state(0);
         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
         LED_Off();
         return;
     }
 
-    /* Disconnected while stabilizing — keep going, we're still armed */
-    if (!connectionStatus) {
-        /* but don't sleep yet, we need the sensor */
-    }
-
-    /* Pulsing blue LED = stabilizing (skip during find-my) */
     if (!findMyActive) {
         if (GET_LIGHTS_BIT(deviceState)) {
-            LED_Pulse(1000, 0, 0, 255, 255);
+            LED_Pulse(1000, 0, 0, 255, LedBrightness_Get());
         } else {
             LED_Off();
         }
@@ -295,23 +257,20 @@ void State_Stabilizing_Loop(void)
     static uint32_t last_still_time = 0;
     static uint8_t  stabilize_started = 0;
 
-    /* First call after entering this state — reset timer */
     if (!stabilize_started) {
         last_still_time = HAL_GetTick();
         stabilize_started = 1;
         LIS2DUX12_ClearMotion();
     }
 
-    /* Check MLC interrupt for motion */
     if (LIS2DUX12_IsMotionDetected()) {
         uint8_t mlc_out;
         lis2dux12_app_get_mlc_output(&mlc_out);
         if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN) {
-            last_still_time = HAL_GetTick();  /* reset timer */
+            last_still_time = HAL_GetTick();
         }
     }
 
-    /* Poll MLC at 10 Hz to catch motion the interrupt might miss */
     static uint32_t last_poll = 0;
     if (HAL_GetTick() - last_poll >= 100) {
         last_poll = HAL_GetTick();
@@ -323,23 +282,38 @@ void State_Stabilizing_Loop(void)
         }
     }
 
-    /* 3 seconds of no motion — capture reference and lock */
     if (HAL_GetTick() - last_still_time >= 3000) {
-        DoorDetector_CaptureReference();
-        lis2dux12_app_set_door_state(0);
         stabilize_started = 0;
         StateMachine_ChangeState(STATE_LOCKED);
     }
 }
 
+/***************************************************************************
+ * State_Locked_Loop — main armed loop, including LP wake-from-motion path
+ *
+ * Wake-from-LP behaviour (HIGH-sens path keeps MLC alive across sleep):
+ *   - INT alone never fires the alarm.
+ *   - Read MLC + FSM first; if MLC says IN_MOTION/SHAKEN seed the deferred
+ *     alert and transition to ALARM_ACTIVE.
+ *   - If MLC still says STATIONARY (a "breeze" wake), motion_assessing
+ *     keeps peripherals up for ~10 s while the regular MLC/FSM loop
+ *     watches for an escalation.
+ *
+ * Deferred alert: when MLC says IN_MOTION/SHAKEN we trigger the alarm
+ * immediately but DEFER the log/alert until MLC settles, so the door
+ * detector can override IN_MOTION with DOOR_OPENED if rotation crossed
+ * the threshold. Impact and freefall (FSM) always fire immediately.
+ ***************************************************************************/
 void State_Locked_Loop(void)
 {
-    /* Motion assessment state for wake-from-LP */
     static uint8_t  motion_assessing = 0;
     static uint32_t motion_assess_start = 0;
     #define MOTION_ASSESS_TIMEOUT_MS 10000
 
-    /* State Switch - UNLOCKED */
+    static uint8_t      motion_pending = 0;
+    static MotionType_t pending_type   = MOTION_TYPE_NONE;
+    static uint32_t     motion_pending_tick = 0;
+
     if (!GET_ARMED_BIT(deviceState)) {
         motion_assessing = 0;
         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
@@ -347,57 +321,93 @@ void State_Locked_Loop(void)
         return;
     }
 
-    /*--------------------------------------------------------------
-     * Wake from armed LP on motion interrupt.
-     * Restore I2C + reload MLC so we can classify the motion.
-     * Stay awake for up to 10 seconds for assessment.
-     *--------------------------------------------------------------*/
     if (PowerMgmt_IsLowPower() && LIS2DUX12_PeekMotionStatus()) {
-        PowerMgmt_RestoreAll();
+        PowerMgmt_RestoreForMotion();
         LIS2DUX12_ClearMotion();
         stayAwakeFlag = 1;
         motion_assessing = 1;
         motion_assess_start = HAL_GetTick();
 
-        /* Log the ULP wake event immediately.  The MLC isn't loaded
-         * until PowerMgmt_RestoreAll() finishes, so brief motions that
-         * triggered the ULP threshold but stopped before MLC can
-         * classify them would otherwise go unrecorded. */
+        // Log the wake event up-front so brief motions that stop before any
+        // further classification still get recorded.
         if (GET_LOGGING_BIT(deviceState)) {
             MotionLogger_LogEvent(MOTION_TYPE_IN_MOTION);
+        }
+
+        // Significant-motion fast-path (MEDIUM + HIGH only): if |a| deviates
+        // from 1 g by more than 250 mg, fire the alarm without waiting for
+        // MLC. Compared in mg² to avoid a sqrt.
+        uint8_t fast_fired = 0;
+        if (GET_SENSITIVITY(deviceState) != SENSITIVITY_LOW) {
+            int16_t ax_mg = 0, ay_mg = 0, az_mg = 0;
+            if (lis2dux12_app_read_accel_mg(&ax_mg, &ay_mg, &az_mg) == 0) {
+                int32_t mag2 = (int32_t)ax_mg * ax_mg
+                             + (int32_t)ay_mg * ay_mg
+                             + (int32_t)az_mg * az_mg;
+                const int32_t hi2 = 1250L * 1250L;   // 1 g + 250 mg
+                const int32_t lo2 =  750L *  750L;   // 1 g - 250 mg
+                if (mag2 > hi2 || mag2 < lo2) {
+                    if (!motion_pending) {
+                        motion_pending      = 1;
+                        pending_type        = MOTION_TYPE_IN_MOTION;
+                        motion_pending_tick = HAL_GetTick();
+                    }
+                    motion_assessing = 0;
+                    if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
+                        StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+                    }
+                    fast_fired = 1;
+                }
+            }
+        }
+
+        uint8_t mlc_out;
+        if (!fast_fired && lis2dux12_app_get_mlc_output(&mlc_out) == 0) {
+            lis2dux12_app_update_cached_state(mlc_out);
+
+            uint8_t impact = 0, freefall = 0;
+            lis2dux12_app_check_fsm_events(&impact, &freefall);
+            if (impact || freefall) {
+                MotionType_t mt = impact ? MOTION_TYPE_IMPACT : MOTION_TYPE_FREEFALL;
+                motion_assessing = 0;
+                if (GET_LOGGING_BIT(deviceState)) {
+                    MotionLogger_LogEvent(mt);
+                    LOCKSERVICE_SendMotionAlert(mt);
+                }
+                if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
+                    StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+                }
+            } else if (mlc_out == MLC_STATE_IN_MOTION ||
+                       mlc_out == MLC_STATE_SHAKEN) {
+                if (!motion_pending) {
+                    motion_pending      = 1;
+                    pending_type = (mlc_out == MLC_STATE_SHAKEN)
+                        ? MOTION_TYPE_SHAKEN : MOTION_TYPE_IN_MOTION;
+                    motion_pending_tick = HAL_GetTick();
+                }
+                motion_assessing = 0;
+                if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
+                    StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+                }
+            }
         }
     }
 
     if (!findMyActive) {
         if (GET_LIGHTS_BIT(deviceState) && !PowerMgmt_IsLowPower()) {
-            LED_Armed(10, 255);
+            LED_Armed(10, LedBrightness_Get());
         } else {
             LED_Off();
         }
     }
 
-    /*--------------------------------------------------------------
-     * Deferred motion alert.
-     * When MLC says "in motion" we trigger the alarm immediately
-     * but DEFER the log/alert.  When it settles we check the door:
-     *   - door moved  → log DOOR_OPENED  (suppress in-motion)
-     *   - door same   → log the pending motion type
-     * Impact/freefall are always sent immediately (discrete events).
-     *--------------------------------------------------------------*/
-    static uint8_t      motion_pending = 0;
-    static MotionType_t pending_type   = MOTION_TYPE_NONE;
-    static uint32_t     motion_pending_tick = 0;
+    if (!PowerMgmt_IsLowPower() && !MotionGrace_Active()) {
 
-    /* Only run MLC/FSM processing when peripherals are up */
-    if (!PowerMgmt_IsLowPower()) {
-
-        /* MLC interrupt fired — read classification */
         if (LIS2DUX12_IsMotionDetected()) {
             uint8_t mlc_out;
             lis2dux12_app_get_mlc_output(&mlc_out);
             lis2dux12_app_update_cached_state(mlc_out);
 
-            /* Impact / freefall — always send immediately */
             uint8_t impact, freefall;
             lis2dux12_app_check_fsm_events(&impact, &freefall);
             if (impact || freefall) {
@@ -413,7 +423,6 @@ void State_Locked_Loop(void)
                 }
             }
 
-            /* Motion started — defer the alert, but trigger alarm now */
             if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN) {
                 if (!motion_pending) {
                     motion_pending = 1;
@@ -428,40 +437,19 @@ void State_Locked_Loop(void)
                 }
             }
 
-            /* MLC returned to stationary — resolve the pending motion */
             if (mlc_out == MLC_STATE_STATIONARY_UPRIGHT ||
                 mlc_out == MLC_STATE_STATIONARY_NOT_UPRIGHT) {
-                uint8_t door_evt = DoorDetector_Check();
-                if (door_evt == DOOR_EVENT_OPENED) {
-                    motion_pending = 0;
-                    stayAwakeFlag = 1;
-                    motion_assessing = 0;
-                    if (GET_LOGGING_BIT(deviceState)) {
-                        MotionLogger_LogEvent((MotionType_t)door_evt);
-                        LOCKSERVICE_SendMotionAlert(door_evt);
-                    }
-                    if (!GET_SILENCE_BIT(deviceState)) {
-                        StateMachine_ChangeState(STATE_ALARM_ACTIVE);
-                    }
-                } else if (door_evt == DOOR_EVENT_CLOSED) {
-                    motion_pending = 0;
-                    if (GET_LOGGING_BIT(deviceState)) {
-                        MotionLogger_LogEvent((MotionType_t)door_evt);
-                        LOCKSERVICE_SendMotionAlert(door_evt);
-                    }
-                } else if (motion_pending) {
+                if (motion_pending) {
                     if (GET_LOGGING_BIT(deviceState)) {
                         MotionLogger_LogEvent(pending_type);
                         LOCKSERVICE_SendMotionAlert(pending_type);
                     }
                     motion_pending = 0;
                 }
-                lis2dux12_app_set_door_state(
-                    DoorDetector_IsOpen() ? CACHED_STATE_DOOR_OPEN : 0);
             }
         }
 
-        /* Timeout: if motion pending >3s without settling, send it anyway */
+        // 3 s safety timeout — flush a deferred alert that never settled.
         if (motion_pending && (HAL_GetTick() - motion_pending_tick > 3000)) {
             if (GET_LOGGING_BIT(deviceState)) {
                 MotionLogger_LogEvent(pending_type);
@@ -470,7 +458,6 @@ void State_Locked_Loop(void)
             motion_pending = 0;
         }
 
-        /* 100 ms poll (~10 Hz) — FSM + door position */
         static uint32_t last_poll = 0;
         if (HAL_GetTick() - last_poll >= 100) {
             last_poll = HAL_GetTick();
@@ -489,48 +476,32 @@ void State_Locked_Loop(void)
                     StateMachine_ChangeState(STATE_ALARM_ACTIVE);
                 }
             }
-
-            uint8_t cached = lis2dux12_app_get_cached_mlc_state();
-            if (cached == CACHED_STATE_STATIONARY ||
-                cached == CACHED_STATE_DOOR_OPEN) {
-                uint8_t door_evt = DoorDetector_Check();
-                if (door_evt == DOOR_EVENT_OPENED) {
-                    motion_pending = 0;
-                    stayAwakeFlag = 1;
-                    motion_assessing = 0;
-                    if (GET_LOGGING_BIT(deviceState)) {
-                        MotionLogger_LogEvent((MotionType_t)door_evt);
-                        LOCKSERVICE_SendMotionAlert(door_evt);
-                    }
-                    if (!GET_SILENCE_BIT(deviceState)) {
-                        StateMachine_ChangeState(STATE_ALARM_ACTIVE);
-                    }
-                } else if (door_evt == DOOR_EVENT_CLOSED) {
-                    motion_pending = 0;
-                    if (GET_LOGGING_BIT(deviceState)) {
-                        MotionLogger_LogEvent((MotionType_t)door_evt);
-                        LOCKSERVICE_SendMotionAlert(door_evt);
-                    }
-                }
-                lis2dux12_app_set_door_state(
-                    DoorDetector_IsOpen() ? CACHED_STATE_DOOR_OPEN : 0);
-            }
         }
 
-    } /* end if (!PowerMgmt_IsLowPower()) */
+    } else if (!PowerMgmt_IsLowPower() && MotionGrace_Active()) {
+        // During the post-connect grace window, drain any motion the UCF
+        // reload + user handling produced so it doesn't latch and fire the
+        // alarm the instant grace ends.
+        if (LIS2DUX12_IsMotionDetected()) {
+            uint8_t mlc_out;
+            lis2dux12_app_get_mlc_output(&mlc_out);
+            lis2dux12_app_update_cached_state(mlc_out);
+        }
+        uint8_t impact = 0, freefall = 0;
+        lis2dux12_app_check_fsm_events(&impact, &freefall);
+        (void)impact; (void)freefall;
+        motion_pending = 0;
+    }
 
-    /* === If not connected while locked === */
     if (!connectionStatus) {
         LED_Off();
 
         if (motion_assessing) {
-            /* Assessment timeout: no classifiable motion in 10s → sleep */
             if (HAL_GetTick() - motion_assess_start >= MOTION_ASSESS_TIMEOUT_MS) {
                 motion_assessing = 0;
                 stayAwakeFlag = 0;
             }
         } else {
-            /* Only clear stayAwakeFlag if the post-unplug window is done */
             if (cableUnplugTime == 0 && !IS_CABLE_PLUGGED()) {
                 stayAwakeFlag = 0;
             }
@@ -541,7 +512,6 @@ void State_Locked_Loop(void)
             PowerMgmt_EnterLowPower_Armed();
         }
     } else {
-        /* Connected: make sure peripherals are restored */
         if (PowerMgmt_IsLowPower()) {
             PowerMgmt_RestoreAll();
         }
@@ -549,66 +519,69 @@ void State_Locked_Loop(void)
     }
 }
 
-void State_Sleep_Loop(void)
-{
-    /* Placeholder for deep sleep entry */
-}
-
+/***************************************************************************
+ * State_Alarm_Active_Loop — drive alarm sound/lights, exit when motion stops
+ *   Sounds the looping alarm pattern until alarm_duration_seconds elapses
+ *   with no motion. Every qualifying motion event (MLC IN_MOTION/SHAKEN,
+ *   FSM impact/freefall) HARD-RESETS the countdown to the full duration —
+ *   the timer never extends, never partially drains. Duration 0 means stop
+ *   the instant motion stops; a fresh motion event re-triggers from LOCKED.
+ *   MLC INTs only fire on state changes, so MLC+FSM are also polled at 2 Hz.
+ ***************************************************************************/
 void State_Alarm_Active_Loop(void)
 {
     stayAwakeFlag = 1;
 
-    /* Make sure peripherals are up for alarm */
     if (PowerMgmt_IsLowPower()) {
         PowerMgmt_RestoreAll();
     }
 
     static uint32_t last_motion_time = 0;
-    static uint8_t alarm_started = 0;
-    static uint32_t melody_duration_ms = 0;
+    static uint8_t  alarm_started    = 0;
+    uint8_t motion_this_iter = 0;
 
-    /* Check if disarmed - EXIT INSTANTLY */
     if (!GET_ARMED_BIT(deviceState)) {
         BUZZER_Stop();
         alarm_started = 0;
-        melody_duration_ms = 0;
         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
         return;
     }
 
-    /* Start the appropriate alarm if not already playing */
+    // Read once per iteration so a mid-alarm setting change from iOS takes
+    // effect immediately and the log line never lags the actual countdown.
+    uint8_t  alarm_duration_s  = AlarmDuration_Get();
+    uint32_t alarm_duration_ms = (uint32_t)alarm_duration_s * 1000u;
+
     if (!alarm_started) {
-        uint8_t alarmType = GET_ALARM_TYPE(deviceState);
+        uint8_t alarmType  = GET_ALARM_TYPE(deviceState);
         uint8_t showLights = GET_LIGHTS_BIT(deviceState);
+        uint8_t led_b      = LedBrightness_Get();
         switch (alarmType) {
             case ALARM_NONE:
-                melody_duration_ms = 1000;
                 break;
             case ALARM_CALM:
-                if (showLights) LED_Alarm(300, 255, 0, 0, 255);
+                if (showLights) LED_Alarm(300, 255, 0, 0, led_b);
                 BUZZER_StartCalmAlarm();
-                melody_duration_ms = BUZZER_GetCalmAlarmDuration();
                 break;
             case ALARM_NORMAL:
-                if (showLights) LED_Alarm(300, 255, 0, 0, 255);
+                if (showLights) LED_Alarm(300, 255, 0, 0, led_b);
                 BUZZER_StartNormalAlarm();
-                melody_duration_ms = BUZZER_GetNormalAlarmDuration();
                 break;
             case ALARM_LOUD:
-                if (showLights) LED_Alarm(125, 255, 225, 0, 255);
+                if (showLights) LED_Alarm(125, 255, 225, 0, led_b);
                 BUZZER_StartLaCucaracha();
-                melody_duration_ms = BUZZER_GetLaCucarachaDuration();
                 break;
             default:
-                melody_duration_ms = 1000;
                 break;
         }
 
-        alarm_started = 1;
-        last_motion_time = HAL_GetTick();
+        alarm_started     = 1;
+        last_motion_time  = HAL_GetTick();
+        // Treat the entry tick as "fresh motion" so a duration-of-0 alarm
+        // doesn't immediately satisfy the exit check on its first iteration.
+        motion_this_iter  = 1;
     }
 
-    /* Check for new motion via MLC interrupt — RESET TIMER */
     if (LIS2DUX12_IsMotionDetected()) {
         uint8_t mlc_out;
         lis2dux12_app_get_mlc_output(&mlc_out);
@@ -622,10 +595,11 @@ void State_Alarm_Active_Loop(void)
         if (impact)   motionType = MOTION_TYPE_IMPACT;
         if (freefall) motionType = MOTION_TYPE_FREEFALL;
 
-        /* Only reset alarm timer on active motion states */
         if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN
             || impact || freefall) {
             last_motion_time = HAL_GetTick();
+            motion_this_iter = 1;
+            APP_DBG_MSG("Alarm timer reset → %us\n", alarm_duration_s);
         }
 
         if (GET_LOGGING_BIT(deviceState)) {
@@ -634,11 +608,6 @@ void State_Alarm_Active_Loop(void)
         }
     }
 
-    /* Poll MLC + door detector to keep alarm alive during continued motion.
-     * The MLC interrupt only fires on STATE CHANGES, so continuous motion
-     * won't re-trigger it. Polling catches this. */
-
-    /* MLC + FSM + door — 500 ms */
     static uint32_t last_mlc_poll = 0;
     if (HAL_GetTick() - last_mlc_poll > 500) {
         last_mlc_poll = HAL_GetTick();
@@ -648,39 +617,58 @@ void State_Alarm_Active_Loop(void)
             lis2dux12_app_update_cached_state(mlc_out);
             if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN) {
                 last_motion_time = HAL_GetTick();
+                motion_this_iter = 1;
+                APP_DBG_MSG("Alarm timer reset → %us\n", alarm_duration_s);
             }
         }
 
-        /* Also poll FSM */
         uint8_t impact, freefall;
         lis2dux12_app_check_fsm_events(&impact, &freefall);
         if (impact || freefall) {
             last_motion_time = HAL_GetTick();
+            motion_this_iter = 1;
+            APP_DBG_MSG("Alarm timer reset → %us\n", alarm_duration_s);
             if (GET_LOGGING_BIT(deviceState)) {
                 MotionType_t mt = impact ? MOTION_TYPE_IMPACT : MOTION_TYPE_FREEFALL;
                 MotionLogger_LogEvent(mt);
                 LOCKSERVICE_SendMotionAlert(mt);
             }
         }
-
-        /* Door still open? Keep alarm alive. */
-        if (DoorDetector_IsOpen()) {
-            last_motion_time = HAL_GetTick();
-        }
     }
 
-    /* Exit alarm only after at least one full melody duration with no motion */
-    if ((HAL_GetTick() - last_motion_time) >= melody_duration_ms) {
+    // Final gate: the cached MLC state. INT-driven and 500 ms poll updates
+    // can leave gaps where motion is physically continuous but no fresh
+    // event was seen this iteration. Without this check, duration = 0 +
+    // sustained motion would chatter between LOCKED and ALARM_ACTIVE every
+    // few ms. Cached states 2/3 = IN_MOTION/SHAKEN.
+    uint8_t cached_mlc = lis2dux12_app_get_cached_mlc_state();
+    uint8_t still_in_motion = (cached_mlc == 2 || cached_mlc == 3);
+
+    if (!motion_this_iter && !still_in_motion
+        && (HAL_GetTick() - last_motion_time) >= alarm_duration_ms) {
         BUZZER_Stop();
         alarm_started = 0;
-        melody_duration_ms = 0;
         StateMachine_ChangeState(STATE_LOCKED);
         return;
     }
 }
 
+/***************************************************************************
+ * StateMachine_ChangeState — set ARMED bit, push BLE notify, record entry
+ *   Status byte 6 carries CACHED_STATE_STABILIZING (0xFE) while the device
+ *   is settling so the iOS app can show "Stabilizing…". Centrally enforces
+ *   the alarmDisabled gate: any incoming STATE_ALARM_ACTIVE is dropped when
+ *   the persisted flag is set, so every motion-trigger site is covered
+ *   without per-site changes.
+ ***************************************************************************/
 void StateMachine_ChangeState(SystemState_t newState)
 {
+    if (newState == STATE_ALARM_ACTIVE && AlarmDisabled_Get()) {
+        // Suppress at the trigger. Motion logging + BLE motion alerts have
+        // already run in the caller; only the alarm path itself is gated.
+        return;
+    }
+
     if (newState != currentState) {
         previousState = currentState;
         currentState = newState;
@@ -691,6 +679,8 @@ void StateMachine_ChangeState(SystemState_t newState)
         } else {
             SET_ARMED_BIT(deviceState, 0);
         }
+
+        lis2dux12_app_set_stabilizing(newState == STATE_STABILIZING ? 1 : 0);
 
         LOCKSERVICE_SendStatusUpdate();
     }
@@ -712,7 +702,7 @@ void ChargingCheck(void)
 }
 
 /***************************************************************************
- * FIND MY DEVICE — non-blocking ping with synced green LED
+ * Find My Device — non-blocking ping with a green LED synced to each tone
  ***************************************************************************/
 
 void FindMyDevice_Start(void)
@@ -726,15 +716,13 @@ void FindMyDevice_Update(void)
     if (!findMyActive) return;
 
     if (!BUZZER_IsPlaying()) {
-        /* Sequence finished — clean up */
         LED_Off();
         findMyActive = 0;
         return;
     }
 
-    /* Green LED on during each tone, off during gaps */
     if (BUZZER_IsToneActive()) {
-        LED_Solid(0, 255, 0, 255);
+        LED_Solid(0, 255, 0, LedBrightness_Get());
     } else {
         LED_Off();
     }
@@ -742,7 +730,6 @@ void FindMyDevice_Update(void)
 
 void StateMachine_Run(void)
 {
-    /* Handle cable plug/unplug events (ISR flag + debounce + timeout) */
     CablePlug_UpdateState();
 
     ChargingCheck();
@@ -762,9 +749,6 @@ void StateMachine_Run(void)
         case STATE_LOCKED:
             State_Locked_Loop();
             break;
-        case STATE_SLEEP:
-            State_Sleep_Loop();
-            break;
         case STATE_ALARM_ACTIVE:
             State_Alarm_Active_Loop();
             break;
@@ -772,4 +756,97 @@ void StateMachine_Run(void)
             StateMachine_ChangeState(STATE_DISCONNECTED_IDLE);
             break;
     }
+}
+
+/***************************************************************************
+ * Persisted device-state record — EEPROM-backed mirror of the user-facing
+ * settings byte (alarm type, sensitivity, lights, logging, silence) plus
+ * deviceInfo bit 0 (HIGH_PERF). The ARMED bit is intentionally NOT
+ * persisted: boot always comes up disarmed so a power glitch can't leave a
+ * stolen device armed without the owner re-arming it from the app.
+ *
+ * EEPROM record (3 bytes at 0x1E):
+ *   [0] magic = 0xC6
+ *   [1] deviceState (ARMED bit forced to 0 on save)
+ *   [2] deviceInfo HIGH_PERF (bit 0 only; bit 1 alarmDisabled lives in its
+ *       own record at 0x1C, owned by sound.c)
+ ***************************************************************************/
+
+#define EEPROM_DEVICE_SETTINGS_ADDR  0x1E
+#define EEPROM_DEVICE_SETTINGS_LEN   3
+#define EEPROM_DEVICE_SETTINGS_MAGIC 0xC6
+
+static M24CXX_HandleTypeDef s_sm_eeprom;
+
+void DeviceSettings_Init(void)
+{
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_sm_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) != M24CXX_Ok) {
+        PowerMgmt_EEPROM_PowerOff();
+        return;
+    }
+
+    uint8_t buf[EEPROM_DEVICE_SETTINGS_LEN] = {0};
+    if (m24cxx_read(&s_sm_eeprom, EEPROM_DEVICE_SETTINGS_ADDR, buf,
+                    EEPROM_DEVICE_SETTINGS_LEN) == M24CXX_Ok) {
+        if (buf[0] == EEPROM_DEVICE_SETTINGS_MAGIC) {
+            // Apply persisted bits, force ARMED clear.
+            deviceState = buf[1];
+            SET_ARMED_BIT(deviceState, 0);
+            // Preserve any deviceInfo bits already loaded by other inits
+            // (alarmDisabled doesn't touch the RAM byte at boot, so this
+            // is mostly defensive for future bits).
+            deviceInfo = (deviceInfo & ~0x01) | (buf[2] & 0x01);
+        } else {
+            // Blank EEPROM / wrong magic — seed from the StateMachine_Init
+            // defaults that already populated deviceState/deviceInfo.
+            uint8_t fresh[EEPROM_DEVICE_SETTINGS_LEN];
+            fresh[0] = EEPROM_DEVICE_SETTINGS_MAGIC;
+            fresh[1] = deviceState & ~0x01;   // ARMED off
+            fresh[2] = deviceInfo  &  0x01;
+            (void)m24cxx_write(&s_sm_eeprom, EEPROM_DEVICE_SETTINGS_ADDR,
+                               fresh, EEPROM_DEVICE_SETTINGS_LEN);
+        }
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+}
+
+/***************************************************************************
+ * DeviceSettings_Persist — write the current deviceState/deviceInfo to
+ *   EEPROM. Called after the iOS settings dispatcher applies a write.
+ *   Skips the I2C transaction when the persisted-relevant bits are
+ *   unchanged, to avoid wear on settings notifications that don't actually
+ *   modify any user-facing flag.
+ ***************************************************************************/
+void DeviceSettings_Persist(void)
+{
+    static uint8_t cached_state = 0xFF;   // forces first write
+    static uint8_t cached_info  = 0xFF;
+
+    uint8_t to_save_state = deviceState & ~0x01;   // never persist ARMED
+    uint8_t to_save_info  = deviceInfo  &  0x01;
+
+    if (to_save_state == cached_state && to_save_info == cached_info) {
+        return;
+    }
+
+    cached_state = to_save_state;
+    cached_info  = to_save_info;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_sm_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) == M24CXX_Ok) {
+        uint8_t buf[EEPROM_DEVICE_SETTINGS_LEN];
+        buf[0] = EEPROM_DEVICE_SETTINGS_MAGIC;
+        buf[1] = to_save_state;
+        buf[2] = to_save_info;
+        (void)m24cxx_write(&s_sm_eeprom, EEPROM_DEVICE_SETTINGS_ADDR, buf,
+                           EEPROM_DEVICE_SETTINGS_LEN);
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
 }

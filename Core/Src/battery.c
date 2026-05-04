@@ -1,21 +1,18 @@
+/***************************************************************************
+ * battery.c
+ * created by Sebastian Forenza 2026
+ *
+ * BQ27427 fuel-gauge wrapper. Cached state is updated once per second
+ * via BATTERY_UpdateState(); accessors return that cache so the state
+ * machine never blocks on I2C. BATTERY_Init() handles a self-healing
+ * CC-Gain restore + one-shot reconfigure of design capacity, terminate
+ * voltage, taper rate, and SLEEP-disable.
+ ***************************************************************************/
+
 #include "battery.h"
 #include "bq27427_reg.h"
-#include <stdio.h>
 #include "main.h"
 
-// Debug info structure
-typedef struct {
-    uint16_t device_type;
-    uint16_t flags;
-    uint16_t control_status;
-    uint16_t voltage_mV;
-    int16_t current_mA;
-    uint16_t soc_percent;
-    uint16_t design_capacity_mAh;
-    uint16_t remaining_capacity_mAh;
-} bq27427_debug_info_t;
-
-// Global battery state
 typedef struct {
     uint16_t voltage_mV;
     int16_t current_mA;
@@ -26,7 +23,6 @@ typedef struct {
     bool is_critical;
     uint32_t last_update;
 
-    // Diagnostic / learning telemetry
     uint8_t  soc_unfiltered;
     uint16_t flags_raw;
     uint16_t control_status_raw;
@@ -42,66 +38,56 @@ typedef struct {
     bool bat_detected;       // FLAG bit 3
     bool itpor;              // FLAG bit 5
 
-    // v3 telemetry — config readback (refreshed only via BATTERY_RefreshConfigCache)
+    // Refreshed only via BATTERY_RefreshConfigCache (CFGUPMODE entry).
     uint16_t design_capacity_mAh;
     uint16_t terminate_voltage_mV;
     uint16_t taper_rate;
     uint16_t op_config_raw;
     int8_t   board_offset;
     uint8_t  deadband_mA;
-    // dynamic — refreshed every BATTERY_UpdateState
     int16_t  average_power_mW;
 } BatteryState_t;
 
 static BatteryState_t battery_state = {0};
 static uint16_t cached_design_capacity = 0;
 
-// v9 one-shot diagnostic: 16 raw bytes from Subclass 104 (Calibration).
+// Subclass 104 (Calibration) raw dump — diagnostic surface for CC Gain trim.
 static uint8_t s_calib_bytes[16] = {0};
 const uint8_t *BATTERY_GetCalibBytes(void) { return s_calib_bytes; }
 
-// v10 one-shot diagnostic: track exactly where BATTERY_Init() failed (if at all)
-// after the CC-Gain self-heal RESET fires. Stages:
-//   0  = success / not yet
-//   1  = bq27427_init() failed
-//   2  = device_type wrong
-//   3  = initial INITCOMP timeout
-//   4  = post-RESET INITCOMP timeout
-//   5  = enter_config failed
-//   6  = set_current_polarity failed
-//   7  = set_capacity failed
-//   8  = set_design_energy failed
-//   9  = set_terminate_voltage failed
-//   10 = set_taper_rate failed
-//   11 = disable_sleep failed
-//   12 = exit_config failed
+// init_fail_stage codes:
+//   0  success / not yet
+//   1  bq27427_init() failed
+//   2  device_type wrong
+//   3  initial INITCOMP timeout
+//   4  post-RESET INITCOMP timeout
+//   5  enter_config failed
+//   6  set_current_polarity failed
+//   7  set_capacity failed
+//   8  set_design_energy failed
+//   9  set_terminate_voltage failed
+//   10 set_taper_rate failed
+//   11 disable_sleep failed
+//   12 exit_config failed
 static uint8_t s_init_fail_stage = 0;
 static uint8_t s_init_completed  = 0;
 static uint8_t s_post_reset_fired = 0;
-static uint16_t s_chem_id_read = 0;   // v11: snapshot the chem_id we read
+static uint16_t s_chem_id_read = 0;
 uint8_t  BATTERY_GetInitFailStage(void)  { return s_init_fail_stage; }
 uint8_t  BATTERY_GetInitCompleted(void)  { return s_init_completed; }
 uint8_t  BATTERY_GetPostResetFired(void) { return s_post_reset_fired; }
 uint16_t BATTERY_GetChemIdRead(void)     { return s_chem_id_read; }
 
-// Forward declaration for static function
-static uint8_t BATTERY_EstimateSOC_FromVoltage(uint16_t voltage_mV);
-
-bool BATTERY_TestCapacityRead(uint16_t *design_cap)
-{
-    *design_cap = cached_design_capacity;
-    return (*design_cap != 0);
-}
-
-/**
- * @brief Initialize the BQ27427 fuel gauge
- * @return true if initialization successful, false otherwise
- */
+/***************************************************************************
+ * BATTERY_Init — bring up gauge, self-heal CC-Gain, write static config
+ *   Idempotent: PowerMgmt_RestoreAll() and the BLE-connect path both call
+ *   this. The full reconfigure is skipped when ITPOR is clear and we've
+ *   already succeeded once this boot.
+ *   Returns true on success, false on any failure (s_init_fail_stage tells
+ *   exactly which step bailed).
+ ***************************************************************************/
 bool BATTERY_Init(void)
 {
-    // Idempotent guard: PowerMgmt_RestoreAll() and BLE-connect both invoke this
-    // function. Skip the full reconfigure (which writes flash) if a prior call
-    // succeeded this boot and the gauge hasn't lost its config (ITPOR clear).
     static bool s_initialized = false;
     if (s_initialized && !bq27427_itpor_flag()) {
         return true;
@@ -126,17 +112,14 @@ bool BATTERY_Init(void)
         HAL_Delay(10);
     }
 
-    // Extra settle window: data in the field shows CFGUPMODE never asserts when
-    // SET_CFGUPDATE is issued too soon after INITCOMP.
+    // CFGUPMODE never asserts when SET_CFGUPDATE is issued too soon after
+    // INITCOMP — observed in field units.
     HAL_Delay(250);
 
-    // Self-healing: if CC Gain (Subclass 104, offsets 0..3) is all zero, the
-    // factory current-scaling trim has been clobbered (causes Current() to read
-    // ~10x low). Issue CONTROL_RESET to restore data flash to ROM defaults
-    // (which includes the factory CC Gain), then fall through to the normal
-    // configure path, which will re-write DesignCapacity/TerminateVoltage/
-    // TaperRate/SLEEP-disable. Once CC Gain is non-zero this branch is skipped
-    // on every subsequent boot, so this is self-limiting.
+    // Self-heal: if CC Gain (Subclass 104, offsets 0..3) reads all zero, the
+    // factory current-scaling trim has been clobbered (Current() reads ~10x
+    // low). CONTROL_RESET restores data flash to ROM defaults including the
+    // factory CC Gain. Self-limiting — once non-zero, this branch is skipped.
     {
         uint8_t g0 = bq27427_read_extended_data(BQ27427_ID_CALIB_DATA, 0);
         uint8_t g1 = bq27427_read_extended_data(BQ27427_ID_CALIB_DATA, 1);
@@ -144,9 +127,8 @@ bool BATTERY_Init(void)
         uint8_t g3 = bq27427_read_extended_data(BQ27427_ID_CALIB_DATA, 3);
         if ((g0 | g1 | g2 | g3) == 0) {
             s_post_reset_fired = 1;
-            // Issue CONTROL_RESET directly with no CFGUPMODE wrapping — the
-            // bq27427_reset() helper enters/exits CFGUPMODE around the reset,
-            // which appears to leave the chip in a state where INITCOMP never
+            // Issue CONTROL_RESET directly without CFGUPMODE wrapping —
+            // wrapping leaves the chip in a state where INITCOMP never
             // re-asserts after RESET.
             bq27427_execute_control_word(BQ27427_CONTROL_RESET);
             HAL_Delay(500);
@@ -170,7 +152,7 @@ bool BATTERY_Init(void)
     s_chem_id_read = (uint16_t)bq27427_chem_id();
     if (s_chem_id_read != BQ27427_CHEM_B) {
         bq27427_set_chem_id(BQ27427_CHEM_B);
-        s_chem_id_read = (uint16_t)bq27427_chem_id();  // re-read after set
+        s_chem_id_read = (uint16_t)bq27427_chem_id();
     }
 
     uint16_t current_capacity = bq27427_capacity(BQ27427_CAPACITY_DESIGN);
@@ -198,9 +180,8 @@ bool BATTERY_Init(void)
         HAL_Delay(1000);
     }
 
-    // Settle window after the config-write exit_config — back-to-back CFGUPMODE
-    // sessions following a flash write race INITCOMP and cause subclass reads
-    // (incl. OpConfig at REGISTERS/0) to return 0x0000.
+    // Settle window: back-to-back CFGUPMODE sessions following a flash write
+    // race INITCOMP and cause subclass reads to return 0x0000.
     HAL_Delay(500);
 
     BATTERY_RefreshConfigCache();
@@ -212,15 +193,14 @@ bool BATTERY_Init(void)
     return true;
 }
 
-/**
- * @brief Snapshot all "static" gauge-config values into the cache in a single
- *        user-controlled CONFIG UPDATE session (one enter/exit instead of six).
- */
+/***************************************************************************
+ * BATTERY_RefreshConfigCache — snapshot static config in one CFGUPMODE pass
+ *   One enter/exit covers Design Capacity / Terminate Voltage / Taper /
+ *   OpConfig / Deadband / Subclass-104 dump. Retries CFGUPMODE entry up to
+ *   three times to ride out transient INITCOMP races.
+ ***************************************************************************/
 void BATTERY_RefreshConfigCache(void)
 {
-    // The gauge can need a moment between consecutive config sessions; retry
-    // a few times before giving up so a transient INITCOMP race doesn't poison
-    // the cache.
     bool entered = false;
     for (int attempt = 0; attempt < 3; attempt++) {
         if (bq27427_enter_config(true)) {
@@ -245,17 +225,12 @@ void BATTERY_RefreshConfigCache(void)
     battery_state.terminate_voltage_mV  = bq27427_terminate_voltage();
     battery_state.taper_rate            = bq27427_taper_rate();
     battery_state.op_config_raw         = bq27427_op_config();
-    // Board Offset read removed: this previously read Subclass 104 / offset 0,
-    // which is actually CC Gain byte 0 (factory-trimmed current scale). Reading
-    // it was harmless on its own but the BlockData/checksum dance around the
-    // read path appears to have clobbered CC Gain to all-zero on at least one
-    // unit, causing Current() to under-report ~10x. The value was never used.
+    // Board Offset read intentionally skipped: the BlockData/checksum dance
+    // around Subclass 104 / offset 0 (which is CC Gain byte 0) clobbered CC
+    // Gain to all-zero on at least one unit. The value was never used.
     battery_state.board_offset          = 0;
     battery_state.deadband_mA           = bq27427_read_extended_data(BQ27427_ID_CURRENT, 1);
 
-    // v9 diagnostic: dump first 16 bytes of Calibration subclass so we can see
-    // CC Gain / CC Delta / CC Offset / Board Offset and confirm CC Gain is
-    // restored after the factory-reset recovery path.
     for (uint8_t i = 0; i < 16; i++) {
         s_calib_bytes[i] = bq27427_read_extended_data(BQ27427_ID_CALIB_DATA, i);
     }
@@ -265,10 +240,12 @@ void BATTERY_RefreshConfigCache(void)
     cached_design_capacity = battery_state.design_capacity_mAh;
 }
 
-/**
- * @brief Update all battery parameters (call once per second max)
- * @return true if update successful
- */
+/***************************************************************************
+ * BATTERY_UpdateState — refresh cache (rate-limited to once per second)
+ *   ITPOR is recorded as a flag here rather than triggering a re-init —
+ *   that decision is left to the state machine so re-init storms don't
+ *   mask diagnostics.
+ ***************************************************************************/
 bool BATTERY_UpdateState(void)
 {
     uint32_t now = HAL_GetTick();
@@ -279,10 +256,6 @@ bool BATTERY_UpdateState(void)
 
     uint16_t flags = bq27427_flags();
 
-    // ITPOR set means gauge lost its config. Recording it as a flag here
-    // (instead of recursing into BATTERY_Init) avoids re-init storms that
-    // mask diagnostics; the main loop / state machine can decide when to
-    // re-init based on this status.
     if (flags & BQ27427_FLAG_ITPOR) {
         battery_state.itpor = true;
     }
@@ -312,10 +285,9 @@ bool BATTERY_UpdateState(void)
     battery_state.bat_detected = (flags & BQ27427_FLAG_BAT_DET) != 0;
     battery_state.itpor        = (flags & BQ27427_FLAG_ITPOR) != 0;
 
-    // AveragePower() at 0x18 — standard command, no config-mode penalty.
     battery_state.average_power_mW = bq27427_power();
 
-    // If fuel gauge reports Full Charge (FC flag), ensure SOC shows 100%
+    // FC asserted but SOC < 100 — pin to 100 so the UI doesn't show 99%.
     if (battery_state.is_full && battery_state.soc_percent < 100) {
         battery_state.soc_percent = 100;
     }
@@ -324,61 +296,13 @@ bool BATTERY_UpdateState(void)
     return true;
 }
 
-/**
- * @brief Get cached voltage (call BATTERY_UpdateState first)
- */
-uint16_t BATTERY_GetVoltage(void)
-{
-    return battery_state.voltage_mV;
-}
-
-/**
- * @brief Get cached current (call BATTERY_UpdateState first)
- */
-int16_t BATTERY_GetCurrent(void)
-{
-    return battery_state.current_mA;
-}
-
-/**
- * @brief Get cached SOC (call BATTERY_UpdateState first)
- */
-uint16_t BATTERY_GetSOC(void)
-{
-    return battery_state.soc_percent;
-}
-
-/**
- * @brief Get cached charging status (call BATTERY_UpdateState first)
- */
-bool BATTERY_IsCharging(void)
-{
-    return battery_state.is_charging;
-}
-
-/**
- * @brief Get cached full status (call BATTERY_UpdateState first)
- */
-bool BATTERY_IsFullCached(void)
-{
-    return battery_state.is_full;
-}
-
-/**
- * @brief Get cached low battery status (call BATTERY_UpdateState first)
- */
-bool BATTERY_IsLowCached(void)
-{
-    return battery_state.is_low;
-}
-
-/**
- * @brief Get cached critical battery status (call BATTERY_UpdateState first)
- */
-bool BATTERY_IsCriticallyCached(void)
-{
-    return battery_state.is_critical;
-}
+uint16_t BATTERY_GetVoltage(void)         { return battery_state.voltage_mV; }
+int16_t  BATTERY_GetCurrent(void)         { return battery_state.current_mA; }
+uint16_t BATTERY_GetSOC(void)             { return battery_state.soc_percent; }
+bool     BATTERY_IsCharging(void)         { return battery_state.is_charging; }
+bool     BATTERY_IsFullCached(void)       { return battery_state.is_full; }
+bool     BATTERY_IsLowCached(void)        { return battery_state.is_low; }
+bool     BATTERY_IsCriticallyCached(void) { return battery_state.is_critical; }
 
 uint8_t  BATTERY_GetSOC_Unfiltered(void)     { return battery_state.soc_unfiltered; }
 uint16_t BATTERY_GetFlags(void)              { return battery_state.flags_raw; }
@@ -402,251 +326,3 @@ uint16_t BATTERY_GetOpConfig(void)           { return battery_state.op_config_ra
 int16_t  BATTERY_GetAveragePower(void)       { return battery_state.average_power_mW; }
 int8_t   BATTERY_GetBoardOffset(void)        { return battery_state.board_offset; }
 uint8_t  BATTERY_GetDeadband(void)           { return battery_state.deadband_mA; }
-
-/**
- * @brief Get the current State of Charge (SOC) - LEGACY, use BATTERY_GetSOC instead
- * @return State of charge in percent (0-100), or 0 if read fails
- */
-uint16_t BATTERY_SOC(void)
-{
-    return bq27427_soc(BQ27427_SOC_FILTERED);
-}
-
-/**
- * @brief Get the instantaneous current draw - LEGACY, use BATTERY_GetCurrent instead
- * @return Current in mA (positive = charging, negative = discharging), or 0 if read fails
- */
-int16_t BATTERY_Current(void)
-{
-    return bq27427_current(BQ27427_CURRENT_AVG);
-}
-
-/**
- * @brief Get the battery voltage - LEGACY, use BATTERY_GetVoltage instead
- * @return Voltage in mV, or 0 if read fails
- */
-uint16_t BATTERY_Voltage(void)
-{
-    return bq27427_voltage();
-}
-
-/**
- * @brief Verify BQ27427 operation and read all status
- * @param info Pointer to debug info structure to populate
- * @return true if all reads successful, false otherwise
- */
-bool BATTERY_VerifyOperation(bq27427_debug_info_t *info)
-{
-    // Read device identification
-    info->device_type = bq27427_device_type();
-    if (info->device_type == 0) {
-        return false;
-    }
-
-    // Read status registers
-    info->flags = bq27427_flags();
-    info->control_status = bq27427_status();
-
-    // Read battery measurements
-    info->voltage_mV = bq27427_voltage();
-    info->current_mA = bq27427_current(BQ27427_CURRENT_AVG);
-    info->soc_percent = bq27427_soc(BQ27427_SOC_FILTERED);
-    info->design_capacity_mAh = cached_design_capacity;
-    info->remaining_capacity_mAh = bq27427_capacity(BQ27427_CAPACITY_REMAIN);
-
-    return true;
-}
-
-/**
- * @brief Print detailed BQ27427 status (for debugging)
- * @param info Pointer to debug info structure
- */
-void BATTERY_PrintStatus(bq27427_debug_info_t *info)
-{
-    printf("\n=== BQ27427 Status ===\n");
-    printf("Device Type: 0x%04X (should be 0x0427)\n", info->device_type);
-
-    printf("\nFlags Register: 0x%04X\n", info->flags);
-    printf("  CFGUPMODE: %s\n", (info->flags & BQ27427_FLAG_CFGUPMODE) ? "SET (ERROR!)" : "Clear (OK)");
-    printf("  ITPOR:     %s\n", (info->flags & BQ27427_FLAG_ITPOR) ? "SET" : "Clear");
-    printf("  BAT_DET:   %s\n", (info->flags & BQ27427_FLAG_BAT_DET) ? "Detected" : "Not Detected");
-    printf("  FC:        %s\n", (info->flags & BQ27427_FLAG_FC) ? "Full" : "Not Full");
-    printf("  DSG:       %s\n", (info->flags & BQ27427_FLAG_DSG) ? "Discharging" : "Not Discharging");
-
-    printf("\nControl Status: 0x%04X\n", info->control_status);
-    printf("  INITCOMP:  %s\n", (info->control_status & BQ27427_STATUS_INITCOMP) ? "Complete (OK)" : "NOT Complete (ERROR!)");
-
-    printf("\nBattery Measurements:\n");
-    printf("  Voltage:            %u mV\n", info->voltage_mV);
-    printf("  Current:            %d mA\n", info->current_mA);
-    printf("  State of Charge:    %u %%\n", info->soc_percent);
-    printf("  Design Capacity:    %u mAh\n", info->design_capacity_mAh);
-    printf("  Remaining Capacity: %u mAh\n", info->remaining_capacity_mAh);
-
-    // Overall health check
-    printf("\n=== Health Check ===\n");
-    bool healthy = true;
-
-    if (info->device_type != 0x0427) {
-        printf("ERROR: Wrong device type!\n");
-        healthy = false;
-    }
-
-    if (info->flags & BQ27427_FLAG_CFGUPMODE) {
-        printf("ERROR: Still in CONFIG UPDATE mode!\n");
-        healthy = false;
-    }
-
-    if (!(info->control_status & BQ27427_STATUS_INITCOMP)) {
-        printf("ERROR: Initialization not complete!\n");
-        healthy = false;
-    }
-
-    if (!(info->flags & BQ27427_FLAG_BAT_DET)) {
-        printf("WARNING: Battery not detected\n");
-    }
-
-    if (info->voltage_mV < 2500) {
-        printf("WARNING: Battery voltage very low (< 2.5V)\n");
-    }
-
-    if (healthy) {
-        printf("SUCCESS: BQ27427 operating normally!\n");
-    } else {
-        printf("ERROR: BQ27427 has errors - check above\n");
-    }
-    printf("\n");
-}
-
-/**
- * @brief Run BQ27427 self-test and print results
- * @return true if gauge is operating normally, false if errors detected
- * @note This function uses printf for debugging output
- */
-bool BATTERY_SelfTest(void)
-{
-    bq27427_debug_info_t info;
-
-    if (!BATTERY_VerifyOperation(&info)) {
-        return false;
-    }
-
-    BATTERY_PrintStatus(&info);
-
-    // Return true only if all critical checks pass
-    bool healthy = true;
-
-    if (info.device_type != 0x0427) {
-        healthy = false;
-    }
-
-    if (info.flags & BQ27427_FLAG_CFGUPMODE) {
-        healthy = false;
-    }
-
-    if (!(info.control_status & BQ27427_STATUS_INITCOMP)) {
-        healthy = false;
-    }
-
-    return healthy;
-}
-
-/**
- * @brief Estimate SOC percentage from battery voltage (LiPo curve)
- * @param voltage_mV Battery voltage in millivolts
- * @return Estimated SOC in percent (0-100)
- * @note This is an approximation based on typical LiPo discharge curve
- */
-static uint8_t BATTERY_EstimateSOC_FromVoltage(uint16_t voltage_mV)
-{
-    if (voltage_mV >= 4200) {
-        return 100;
-    } else if (voltage_mV >= 4100) {
-        return 90;
-    } else if (voltage_mV >= 4000) {
-        return 80;
-    } else if (voltage_mV >= 3950) {
-        return 75;
-    } else if (voltage_mV >= 3900) {
-        return 70;
-    } else if (voltage_mV >= 3850) {
-        return 65;
-    } else if (voltage_mV >= 3800) {
-        return 60;
-    } else if (voltage_mV >= 3750) {
-        return 55;
-    } else if (voltage_mV >= 3700) {
-        return 50;
-    } else if (voltage_mV >= 3650) {
-        return 40;
-    } else if (voltage_mV >= 3600) {
-        return 30;
-    } else if (voltage_mV >= 3500) {
-        return 20;
-    } else if (voltage_mV >= 3400) {
-        return 10;
-    } else if (voltage_mV >= 3300) {
-        return 5;
-    } else if (voltage_mV >= 3200) {
-        return 2;
-    } else {
-        return 1;
-    }
-}
-
-/**
- * @brief Get quick status check (no printf)
- * @param voltage_mV Output: battery voltage in mV
- * @param soc_percent Output: state of charge in percent
- * @param is_charging Output: true if battery is charging
- * @return true if read successful, false otherwise
- */
-bool BATTERY_GetStatus(uint16_t *voltage_mV, uint16_t *soc_percent, bool *is_charging)
-{
-    *voltage_mV = bq27427_voltage();
-    *soc_percent = bq27427_soc(BQ27427_SOC_FILTERED);
-    *is_charging = bq27427_chg_flag();
-
-    // If gauge is uncalibrated (SOC = 0), estimate from voltage
-    if (*soc_percent == 0 && *voltage_mV > 0) {
-        *soc_percent = BATTERY_EstimateSOC_FromVoltage(*voltage_mV);
-    }
-
-    return (*voltage_mV > 0);
-}
-
-/**
- * @brief Check if battery is charging - LEGACY, use BATTERY_IsCharging instead
- * @return true if charging, false otherwise
- */
-bool BATTERY_Charging(void)
-{
-    return bq27427_chg_flag();
-}
-
-/**
- * @brief Check if battery is critically low - LEGACY, use BATTERY_IsCriticallyCached instead
- * @return true if battery is critically low, false otherwise
- */
-bool BATTERY_IsCriticallyLow(void)
-{
-    return bq27427_socf_flag();
-}
-
-/**
- * @brief Check if battery is low - LEGACY, use BATTERY_IsLowCached instead
- * @return true if battery is low, false otherwise
- */
-bool BATTERY_IsLow(void)
-{
-    return bq27427_soc_flag();
-}
-
-/**
- * @brief Check if battery is fully charged - LEGACY, use BATTERY_IsFullCached instead
- * @return true if battery is full, false otherwise
- */
-bool BATTERY_IsFull(void)
-{
-    return bq27427_fc_flag();
-}

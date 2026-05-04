@@ -1,8 +1,6 @@
-/*
+/***************************************************************************
  * wd_system.c
+ * created by Sebastian Forenza 2026
  *
- *  Created on: Oct 30, 2025
- *      Author: sebkabob
- */
-
-
+ * Reserved for future system-level glue. Currently empty.
+ ***************************************************************************/

@@ -2,38 +2,30 @@
  * sound.c
  * created by Sebastian Forenza 2026
  *
- * Functions in charge of interfacing with the onboard magnetic transducers
+ * Magnetic-buzzer driver. PB0 = TIM16_CH1 hardware PWM into an N-channel
+ * MOSFET. ARR sets frequency; CCR = (ARR+1)/2 for 50 % duty.
  *
- * V2 PCB BUZZER HARDWARE:
- *   PB0 = TIM16_CH1 alternate-function output (hardware PWM).
- *   Frequency is set by changing TIM16 ARR.
- *   50% duty cycle via CCR = (ARR+1)/2.
- *   Gate HIGH = N-channel MOSFET ON (current through buzzer).
+ * TIM16 input clock = 32 MHz HSE; with prescaler 31 the tick is 1 MHz, so
+ * for tone frequency F: ARR = (1 000 000 / F) - 1.
  *
- *   TIM16 clock = 32 MHz HSE.
- *   With prescaler 31 the TIM16 tick is 1 MHz (1 µs).
- *   For frequency F: period = 1 000 000 / F, ARR = period - 1.
+ * The pin is held LOW as a regular GPIO when idle and only switched to AF
+ * during an active tone — keeps mains-frequency noise from coupling
+ * through the gate when the buzzer should be silent.
  ***************************************************************************/
 
 #include "main.h"
 #include "sound.h"
+#include "power_management.h"
+#include "motion_logger.h"   // EEPROM_I2C_ADDRESS
 #include <stdint.h>
 #include <string.h>
 
-/***************************************************************************
- * PRIVATE DEFINES
- ***************************************************************************/
-/* TIM16 input clock after PSC = 31 → 1 MHz */
-#define BUZZER_TIMER_CLK  (1000000UL)
+#define M24CXX_MODEL 0
+#include "m24cxx.h"
 
-/***************************************************************************
- * EXTERN — TIM16 handle (declared in main.c, initialised by MX_TIM16_Init)
- ***************************************************************************/
+#define BUZZER_TIMER_CLK  (1000000UL)   // TIM16 tick after PSC=31
+
 extern TIM_HandleTypeDef htim16;
-
-/***************************************************************************
- * ALARM PATTERN DEFINITIONS
- ***************************************************************************/
 
 static const Note_t CALM_ALARM_PATTERN[] = {
     {415, 20, 15},
@@ -51,16 +43,8 @@ static const Note_t NORMAL_ALARM_PATTERN[] = {
     {880,  150, 15},
 };
 
-static const Note_t LOUD_ALARM_PATTERN[] = {
-    {2186, 300, 15},
-    {3520, 300, 15},
-    {2186, 300, 15},
-    {3520, 300, 15},
-};
-
-/* 3-tone ascending chirp × 3 repetitions — Apple "Find My" style ping */
+// Apple "Find My" style ping — 3-tone ascending chirp.
 static const Note_t FIND_MY_PATTERN[] = {
-    /* Rep 1 */
     {987, 120, 50},
     {987, 120, 300},
     {987, 240, 50},
@@ -87,10 +71,6 @@ static const Note_t LA_CUCARACHA_PATTERN[] = {
     {523, 500, 500},
 };
 
-/***************************************************************************
- * BUZZER STATE MACHINE
- ***************************************************************************/
-
 typedef struct {
     const Note_t* sequence;
     uint8_t  num_notes;
@@ -102,19 +82,9 @@ typedef struct {
 } BuzzerState_t;
 
 static BuzzerState_t buzzer_state = {0};
-
-/* Flag: is TIM16 currently generating a tone? */
 static volatile uint8_t buzzer_tone_active = 0;
 
-/***************************************************************************
- * PRIVATE: Pin mode helpers — clamp PB0 LOW as GPIO when idle,
- *          switch to AF only while actively producing a tone.
- *          Prevents grid noise from coupling through the MOSFET gate.
- ***************************************************************************/
-
-/**
- * @brief  Drive PB0 LOW as a regular GPIO output (MOSFET hard-off).
- */
+// PB0 idle = GPIO LOW (MOSFET gate hard-off, no leakage).
 static void BUZZER_PinClampLow(void)
 {
     GPIO_InitTypeDef gpio = {0};
@@ -126,9 +96,7 @@ static void BUZZER_PinClampLow(void)
     HAL_GPIO_WritePin(GPIOB, BUZZ_Pin, GPIO_PIN_RESET);
 }
 
-/**
- * @brief  Switch PB0 back to TIM16_CH1 alternate-function for PWM output.
- */
+// PB0 active = AF2 (TIM16_CH1) for hardware PWM.
 static void BUZZER_PinEnableAF(void)
 {
     GPIO_InitTypeDef gpio = {0};
@@ -141,17 +109,19 @@ static void BUZZER_PinEnableAF(void)
 }
 
 /***************************************************************************
- * PRIVATE: Start / stop the hardware PWM on PB0 via TIM16_CH1
+ * BUZZER_SetFrequency — retune TIM16 (frequency_hz = 0 silences the buzzer)
+ *   When AlarmDisabled_Get() is set, every non-zero request is forced to
+ *   zero. This is the single chokepoint to TIM16, so the gate here makes
+ *   it physically impossible for any caller — alarm, find-my, drain mode,
+ *   one-shot tones — to drive the buzzer while the flag is on.
  ***************************************************************************/
-
-/**
- * @brief  Set buzzer frequency (0 = silence).
- *         Reconfigures TIM16 ARR and CCR for 50% duty HW PWM.
- */
 static void BUZZER_SetFrequency(uint32_t frequency_hz)
 {
+    if (frequency_hz != 0 && AlarmDisabled_Get()) {
+        frequency_hz = 0;
+    }
+
     if (frequency_hz == 0) {
-        /* Stop PWM and clamp the MOSFET gate LOW via GPIO */
         __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 0);
         HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
         BUZZER_PinClampLow();
@@ -159,7 +129,6 @@ static void BUZZER_SetFrequency(uint32_t frequency_hz)
         return;
     }
 
-    /* Full period in 1 µs ticks */
     uint32_t period = BUZZER_TIMER_CLK / frequency_hz;
     if (period < 2)  period = 2;
     if (period > 65535) period = 65535;
@@ -169,7 +138,6 @@ static void BUZZER_SetFrequency(uint32_t frequency_hz)
     __HAL_TIM_SET_COUNTER(&htim16, 0);
 
     if (!buzzer_tone_active) {
-        /* Switch PB0 to AF before starting PWM */
         BUZZER_PinEnableAF();
         HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1);
         buzzer_tone_active = 1;
@@ -177,11 +145,11 @@ static void BUZZER_SetFrequency(uint32_t frequency_hz)
 }
 
 /***************************************************************************
- * BUZZER_Init — call once in main() after MX_GPIO_Init / MX_TIM16_Init
+ * BUZZER_Init — call once after MX_GPIO_Init() / MX_TIM16_Init()
+ *   Stops PWM and clamps the gate LOW so no current flows until a tone.
  ***************************************************************************/
 void BUZZER_Init(void)
 {
-    /* Ensure PWM is stopped and MOSFET gate is clamped LOW */
     __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, 0);
     HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
     BUZZER_PinClampLow();
@@ -189,12 +157,19 @@ void BUZZER_Init(void)
 }
 
 /***************************************************************************
- * PUBLIC NON-BLOCKING API
+ * BUZZER_PlaySequence — start a non-blocking note sequence
+ *   loop=1 restarts at index 0 forever; loop=0 stops after the last note.
  ***************************************************************************/
-
 void BUZZER_PlaySequence(const Note_t* sequence, uint8_t num_notes, uint8_t loop)
 {
     if (sequence == NULL || num_notes == 0) return;
+
+    // Defence-in-depth: refuse to even arm the sequencer when disabled, so
+    // BUZZER_Update never has a queue to tick through.
+    if (AlarmDisabled_Get()) {
+        BUZZER_Stop();
+        return;
+    }
 
     buzzer_state.sequence     = sequence;
     buzzer_state.num_notes    = num_notes;
@@ -207,6 +182,9 @@ void BUZZER_PlaySequence(const Note_t* sequence, uint8_t num_notes, uint8_t loop
     BUZZER_SetFrequency(sequence[0].frequency_hz);
 }
 
+/***************************************************************************
+ * BUZZER_Update — drive the playing-sequence state machine. Call from main.
+ ***************************************************************************/
 void BUZZER_Update(void)
 {
     if (!buzzer_state.is_playing) return;
@@ -268,10 +246,6 @@ uint32_t BUZZER_GetSequenceDuration(const Note_t* sequence, uint8_t num_notes)
     return total;
 }
 
-/***************************************************************************
- * ALARM SEQUENCE STARTERS
- ***************************************************************************/
-
 void BUZZER_StartCalmAlarm(void)
 {
     BUZZER_PlaySequence(CALM_ALARM_PATTERN,
@@ -296,18 +270,6 @@ uint32_t BUZZER_GetNormalAlarmDuration(void)
         sizeof(NORMAL_ALARM_PATTERN) / sizeof(Note_t));
 }
 
-void BUZZER_StartLoudAlarm(void)
-{
-    BUZZER_PlaySequence(LOUD_ALARM_PATTERN,
-        sizeof(LOUD_ALARM_PATTERN) / sizeof(Note_t), 1);
-}
-
-uint32_t BUZZER_GetLoudAlarmDuration(void)
-{
-    return BUZZER_GetSequenceDuration(LOUD_ALARM_PATTERN,
-        sizeof(LOUD_ALARM_PATTERN) / sizeof(Note_t));
-}
-
 void BUZZER_StartLaCucaracha(void)
 {
     BUZZER_PlaySequence(LA_CUCARACHA_PATTERN,
@@ -326,8 +288,8 @@ void BUZZER_StartFindMe(void)
         sizeof(FIND_MY_PATTERN) / sizeof(Note_t), 0);
 }
 
-/* Storage for the active continuous-tone "sequence" — single note, no gap.
- * The state machine loops it forever (loop=1) so the tone never breaks. */
+// Single-note "sequence" used by the continuous-tone driver (drain mode).
+// The state machine loops it forever (loop=1) so the tone never breaks.
 static Note_t continuous_tone_note = {0, 60000, 0};
 
 void BUZZER_StartContinuousTone(uint16_t frequency_hz)
@@ -343,12 +305,13 @@ void BUZZER_StartContinuousTone(uint16_t frequency_hz)
 }
 
 /***************************************************************************
- * LEGACY BLOCKING FUNCTIONS (boot tones, etc.)
+ * Blocking helpers — boot tones / connection chimes
  ***************************************************************************/
 
 void BUZZER_Tone(uint32_t frequency_hz, uint32_t duration_ms)
 {
     if (frequency_hz == 0 || duration_ms == 0) return;
+    if (AlarmDisabled_Get()) return;
 
     BUZZER_SetFrequency(frequency_hz);
     HAL_Delay(duration_ms);
@@ -371,4 +334,142 @@ void SOUND_Disconnected(void)
     BUZZER_Tone(280, 12);
     HAL_Delay(10);
     BUZZER_Tone(100, 15);
+}
+
+/***************************************************************************
+ * Persisted alarm settings — both EEPROM-backed.
+ *   alarm_duration_seconds (0..30, default 10)
+ *   alarm_disabled         (default false)
+ ***************************************************************************/
+
+extern I2C_HandleTypeDef hi2c1;
+
+static M24CXX_HandleTypeDef s_sound_eeprom;
+static uint8_t s_alarm_duration_s = ALARM_DURATION_DEFAULT_S;
+static bool    s_alarm_disabled   = false;
+
+static uint8_t alarm_duration_clamp(uint8_t v)
+{
+    return (v > ALARM_DURATION_MAX_S) ? ALARM_DURATION_MAX_S : v;
+}
+
+void AlarmDuration_Init(void)
+{
+    s_alarm_duration_s = ALARM_DURATION_DEFAULT_S;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_sound_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) != M24CXX_Ok) {
+        PowerMgmt_EEPROM_PowerOff();
+        return;
+    }
+
+    uint8_t buf[EEPROM_ALARM_DURATION_LEN] = {0};
+    if (m24cxx_read(&s_sound_eeprom, EEPROM_ALARM_DURATION_ADDR, buf,
+                    EEPROM_ALARM_DURATION_LEN) == M24CXX_Ok) {
+        if (buf[0] == EEPROM_ALARM_DURATION_MAGIC) {
+            s_alarm_duration_s = alarm_duration_clamp(buf[1]);
+        } else {
+            uint8_t fresh[EEPROM_ALARM_DURATION_LEN];
+            fresh[0] = EEPROM_ALARM_DURATION_MAGIC;
+            fresh[1] = ALARM_DURATION_DEFAULT_S;
+            (void)m24cxx_write(&s_sound_eeprom, EEPROM_ALARM_DURATION_ADDR,
+                               fresh, EEPROM_ALARM_DURATION_LEN);
+        }
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+}
+
+uint8_t AlarmDuration_Get(void)
+{
+    return s_alarm_duration_s;
+}
+
+uint8_t AlarmDuration_Set(uint8_t seconds)
+{
+    uint8_t clamped = alarm_duration_clamp(seconds);
+    if (clamped == s_alarm_duration_s) {
+        return clamped;
+    }
+
+    s_alarm_duration_s = clamped;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_sound_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) == M24CXX_Ok) {
+        uint8_t buf[EEPROM_ALARM_DURATION_LEN];
+        buf[0] = EEPROM_ALARM_DURATION_MAGIC;
+        buf[1] = clamped;
+        (void)m24cxx_write(&s_sound_eeprom, EEPROM_ALARM_DURATION_ADDR, buf,
+                           EEPROM_ALARM_DURATION_LEN);
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+    return clamped;
+}
+
+void AlarmDisabled_Init(void)
+{
+    s_alarm_disabled = false;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_sound_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) != M24CXX_Ok) {
+        PowerMgmt_EEPROM_PowerOff();
+        return;
+    }
+
+    uint8_t buf[EEPROM_ALARM_DISABLED_LEN] = {0};
+    if (m24cxx_read(&s_sound_eeprom, EEPROM_ALARM_DISABLED_ADDR, buf,
+                    EEPROM_ALARM_DISABLED_LEN) == M24CXX_Ok) {
+        if (buf[0] == EEPROM_ALARM_DISABLED_MAGIC) {
+            s_alarm_disabled = (buf[1] != 0);
+        } else {
+            uint8_t fresh[EEPROM_ALARM_DISABLED_LEN];
+            fresh[0] = EEPROM_ALARM_DISABLED_MAGIC;
+            fresh[1] = 0;
+            (void)m24cxx_write(&s_sound_eeprom, EEPROM_ALARM_DISABLED_ADDR,
+                               fresh, EEPROM_ALARM_DISABLED_LEN);
+        }
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+}
+
+bool AlarmDisabled_Get(void)
+{
+    return s_alarm_disabled;
+}
+
+bool AlarmDisabled_Set(bool disabled)
+{
+    if (disabled == s_alarm_disabled) {
+        return s_alarm_disabled;
+    }
+
+    s_alarm_disabled = disabled;
+
+    // Update the cache before kicking the buzzer down so any racing
+    // BUZZER_Update tick sees the new state.
+    if (disabled) {
+        BUZZER_Stop();
+    }
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_sound_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) == M24CXX_Ok) {
+        uint8_t buf[EEPROM_ALARM_DISABLED_LEN];
+        buf[0] = EEPROM_ALARM_DISABLED_MAGIC;
+        buf[1] = disabled ? 1 : 0;
+        (void)m24cxx_write(&s_sound_eeprom, EEPROM_ALARM_DISABLED_ADDR, buf,
+                           EEPROM_ALARM_DISABLED_LEN);
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+    return s_alarm_disabled;
 }

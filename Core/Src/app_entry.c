@@ -183,7 +183,7 @@ void UTIL_SEQ_Idle( void )
 #if (CFG_LPM_SUPPORTED == 1)
 
   /* Need to consume some CSTACK on WB05, due to bootloader CSTACK usage. */
-  volatile uint32_t dummy[15];
+  volatile uint32_t dummy[15] __attribute__((unused));
   uint8_t i;
   for (i=0; i<10; i++)
   {

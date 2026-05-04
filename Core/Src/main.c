@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "lockservice_app.h"
+#include "loyalty.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -44,7 +45,7 @@
 /* Set to 1 to force the code-defined CFG_PUBLIC_BD_ADDRESS to overwrite
  * whatever is stored in EEPROM. Leave 0 for normal boots — EEPROM wins.
  * Consumed by app_ble.c via the extern below. */
-#define BD_ADDRESS_OVERRIDE 1
+#define BD_ADDRESS_OVERRIDE 0
 const uint8_t bd_address_override = BD_ADDRESS_OVERRIDE;
 
 stmdev_ctx_t dev_ctx;
@@ -179,12 +180,12 @@ int main(void)
   LIS2DUX12_Init();
   BATTERY_Init();
 
-  /* Safe boot mode: hold while cable plugged in */
+
   if (IS_CABLE_PLUGGED()) {
       BUZZER_Tone(300, 50);
       BUZZER_Tone(200, 30);
       BUZZER_Tone(100, 20);
-      while (IS_CABLE_PLUGGED());
+      HAL_Delay(20000);
   }
   /* USER CODE END 2 */
 
@@ -197,6 +198,26 @@ int main(void)
 
   firstBootTone();
   StateMachine_Init();
+
+  /* Application-layer loyalty token: load from EEPROM after BLE_Init
+   * has touched the BD-address region, so the two operations don't race
+   * on the EEPROM power rail. */
+  Loyalty_Init();
+
+  /* Persisted alarm post-motion duration. Same EEPROM, same power rail —
+   * runs after Loyalty_Init for the same race-avoidance reason. */
+  AlarmDuration_Init();
+
+  /* Persisted user LED brightness scalar. */
+  LedBrightness_Init();
+
+  /* Persisted alarm-suppression flag (deviceInfo bit 1). */
+  AlarmDisabled_Init();
+
+  /* Persisted deviceState bits (alarm type / sensitivity / lights / logging /
+   * silence) and deviceInfo HIGH_PERF. ARMED is never persisted — boot
+   * always comes up disarmed. */
+  DeviceSettings_Init();
 
   /* Belt-and-braces: clear any pending GPIOB IRQs and force stayAwakeFlag
    * = 0 so nothing pinned during boot blocks DEEPSTOP. */
@@ -218,9 +239,8 @@ int main(void)
         }
     }
 
-    /* BLE status update: 20ms (~50Hz) in high-perf mode, 500ms otherwise */
     static uint32_t last_status_send = 0;
-    uint32_t status_interval = GET_HIGHPERF_BIT(deviceInfo) ? 20 : 500;
+    uint32_t status_interval = 40;
     if (HAL_GetTick() - last_status_send >= status_interval) {
         last_status_send = HAL_GetTick();
         if (!PowerMgmt_IsLowPower()) {

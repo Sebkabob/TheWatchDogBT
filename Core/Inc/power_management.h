@@ -1,22 +1,20 @@
-/*
+/***************************************************************************
  * power_management.h
+ * created by Sebastian Forenza 2026
  *
- * Low-power peripheral gating for WatchDogBT
- */
+ * Public API for low-power peripheral gating + EEPROM power control.
+ ***************************************************************************/
 
 #ifndef INC_POWER_MANAGEMENT_H_
 #define INC_POWER_MANAGEMENT_H_
 
 #include <stdint.h>
 
-/* ---- Main API ---------------------------------------------------------- */
-
-void PowerMgmt_EnterLowPower_Idle(void);
-void PowerMgmt_EnterLowPower_Armed(void);
-void PowerMgmt_RestoreAll(void);
+void PowerMgmt_EnterLowPower_Idle(void);   // disconnected idle, no motion wake
+void PowerMgmt_EnterLowPower_Armed(void);  // armed/locked, accel wakes from DEEPSTOP
+void PowerMgmt_RestoreAll(void);           // full wake (BLE connect, cable plug)
+void PowerMgmt_RestoreForMotion(void);     // lean wake — skips LEDs / BATTERY_Init
 uint8_t PowerMgmt_IsLowPower(void);
-
-/* ---- EEPROM power control (PB6) --------------------------------------- */
 
 void PowerMgmt_EEPROM_PowerOn(void);
 void PowerMgmt_EEPROM_PowerOff(void);

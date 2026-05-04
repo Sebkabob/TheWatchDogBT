@@ -34,13 +34,12 @@
 #include "battery.h"
 #include "state_machine.h"
 #include "lights.h"
-#include "battery.h"
 #include "accelerometer.h"
 #include "lis2dux12_app.h"
 #include "power_management.h"
+#include "loyalty.h"
+#include "firmware_version.h"
 #include <string.h>
-
-
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -75,7 +74,7 @@ typedef struct
 
 /* External variables --------------------------------------------------------*/
 /* USER CODE BEGIN EV */
-extern uint8_t g_bd_address[6]; /* defined in app_ble.c, populated in BLE_Init() */
+extern uint8_t g_bd_address[6];   // populated in BLE_Init() (app_ble.c)
 /* USER CODE END EV */
 
 /* Private macros ------------------------------------------------------------*/
@@ -95,7 +94,6 @@ extern volatile uint8_t deviceBattery;
 
 extern volatile uint8_t connectionStatus;
 
-// Track current transfer state
 static uint16_t currentEventIndex = 0;
 static uint8_t transferInProgress = 0;
 
@@ -106,19 +104,20 @@ static uint8_t drain_mode_active = 0;
 static void LOCKSERVICE_Devicestatus_SendNotification(void);
 
 /* USER CODE BEGIN PFP */
-/**
- * @brief Send motion alert notification to iOS
- * This triggers iOS to auto-sync
- */
+
+/***************************************************************************
+ * LOCKSERVICE_SendMotionAlert — push a 3-byte motion alert over DEVICESTATUS
+ *   Payload: [0xFF, motionType, deviceBattery]. iOS uses the 0xFF marker
+ *   to drive auto-sync on receipt.
+ ***************************************************************************/
 void LOCKSERVICE_SendMotionAlert(uint8_t motionType)
 {
     if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
         return;
     }
 
-    /* Motion alert: [0xFF, motionType, battery] — 3 bytes */
-    a_LOCKSERVICE_UpdateCharData[0] = 0xFF;          /* motion alert marker */
-    a_LOCKSERVICE_UpdateCharData[1] = motionType;    /* MLC/FSM classification */
+    a_LOCKSERVICE_UpdateCharData[0] = 0xFF;
+    a_LOCKSERVICE_UpdateCharData[1] = motionType;
     a_LOCKSERVICE_UpdateCharData[2] = deviceBattery;
 
     LOCKSERVICE_Data_t lockservice_notification_data;
@@ -129,26 +128,22 @@ void LOCKSERVICE_SendMotionAlert(uint8_t motionType)
                            LOCKSERVICE_APP_Context.ConnectionHandle);
 }
 
-/**
- * @brief Update RTC from iOS timestamp
- * @param data Pointer to timestamp data (6 bytes: year, month, day, hour, minute, second)
- */
+// timestamp_data: [year-2000, month, day, hour, minute, second].
 static void UpdateBootTimeFromiOS(uint8_t *timestamp_data)
 {
-    // Set boot time in motion logger
     MotionLogger_SetBootTime(
-        timestamp_data[0],  // Year offset from 2000
-        timestamp_data[1],  // Month
-        timestamp_data[2],  // Day
-        timestamp_data[3],  // Hour
-        timestamp_data[4],  // Minute
-        timestamp_data[5]   // Second
+        timestamp_data[0],
+        timestamp_data[1],
+        timestamp_data[2],
+        timestamp_data[3],
+        timestamp_data[4],
+        timestamp_data[5]
     );
 }
 
-/**
- * @brief Send event count to iOS
- */
+/***************************************************************************
+ * LOCKSERVICE_SendEventCount — RESP_LOG_COUNT + 16-bit BE event count
+ ***************************************************************************/
 static void LOCKSERVICE_SendEventCount(void)
 {
     if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
@@ -158,8 +153,8 @@ static void LOCKSERVICE_SendEventCount(void)
     uint16_t eventCount = MotionLogger_GetEventCount();
 
     a_LOCKSERVICE_UpdateCharData[0] = RESP_LOG_COUNT;
-    a_LOCKSERVICE_UpdateCharData[1] = (eventCount >> 8) & 0xFF;  // High byte
-    a_LOCKSERVICE_UpdateCharData[2] = eventCount & 0xFF;         // Low byte
+    a_LOCKSERVICE_UpdateCharData[1] = (eventCount >> 8) & 0xFF;
+    a_LOCKSERVICE_UpdateCharData[2] = eventCount & 0xFF;
 
     LOCKSERVICE_Data_t lockservice_notification_data;
     lockservice_notification_data.p_Payload = (uint8_t*)a_LOCKSERVICE_UpdateCharData;
@@ -169,6 +164,11 @@ static void LOCKSERVICE_SendEventCount(void)
                            LOCKSERVICE_APP_Context.ConnectionHandle);
 }
 
+/***************************************************************************
+ * LOCKSERVICE_SendEvent — pack one event for iOS (or RESP_NO_MORE_EVENTS)
+ *   Wire format on hit (11 bytes):
+ *     [RESP_EVENT_DATA, idx_hi, idx_lo, YY, MM, DD, hh, mm, ss, type, batt]
+ ***************************************************************************/
 static void LOCKSERVICE_SendEvent(uint16_t index)
 {
     if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
@@ -178,7 +178,6 @@ static void LOCKSERVICE_SendEvent(uint16_t index)
     MotionEvent_t *event = MotionLogger_GetEvent(index);
 
     if (event == NULL) {
-        // No event at this index
         a_LOCKSERVICE_UpdateCharData[0] = RESP_NO_MORE_EVENTS;
         a_LOCKSERVICE_UpdateCharData[1] = (index >> 8) & 0xFF;
         a_LOCKSERVICE_UpdateCharData[2] = index & 0xFF;
@@ -192,15 +191,13 @@ static void LOCKSERVICE_SendEvent(uint16_t index)
         return;
     }
 
-    // Convert tick timestamp to real date/time
     uint8_t year, month, day, hour, minute, second;
     MotionLogger_TickToDateTime(event->timestamp_ms, &year, &month, &day, &hour, &minute, &second);
 
-    // Pack event data
     uint8_t dataIdx = 0;
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = RESP_EVENT_DATA;
-    a_LOCKSERVICE_UpdateCharData[dataIdx++] = (index >> 8) & 0xFF;  // Index high byte
-    a_LOCKSERVICE_UpdateCharData[dataIdx++] = index & 0xFF;         // Index low byte
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = (index >> 8) & 0xFF;
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = index & 0xFF;
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = year;
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = month;
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = day;
@@ -208,21 +205,16 @@ static void LOCKSERVICE_SendEvent(uint16_t index)
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = minute;
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = second;
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = event->motionType;
-
-    // Add deviceBattery to match your status update format
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = deviceBattery;
 
     LOCKSERVICE_Data_t lockservice_notification_data;
     lockservice_notification_data.p_Payload = (uint8_t*)a_LOCKSERVICE_UpdateCharData;
-    lockservice_notification_data.Length = dataIdx;  // Should be 11 now
+    lockservice_notification_data.Length = dataIdx;
 
     LOCKSERVICE_NotifyValue(LOCKSERVICE_DEVICESTATUS, &lockservice_notification_data,
                            LOCKSERVICE_APP_Context.ConnectionHandle);
 }
 
-/**
- * @brief Send log cleared confirmation
- */
 static void LOCKSERVICE_SendLogCleared(void)
 {
     if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
@@ -237,6 +229,33 @@ static void LOCKSERVICE_SendLogCleared(void)
 
     LOCKSERVICE_NotifyValue(LOCKSERVICE_DEVICESTATUS, &lockservice_notification_data,
                            LOCKSERVICE_APP_Context.ConnectionHandle);
+}
+
+/***************************************************************************
+ * Loyalty_SendResponse — 2-byte CLAIM/VERIFY/UNBOND/REJECT response
+ *   disconnect_after = 1 leaves a 50 ms gap so the radio can TX the notify
+ *   before aci_gap_terminate() tears down the link.
+ ***************************************************************************/
+static void Loyalty_SendResponse(uint8_t marker, uint8_t value, uint8_t disconnect_after)
+{
+    if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
+        return;
+    }
+
+    a_LOCKSERVICE_UpdateCharData[0] = marker;
+    a_LOCKSERVICE_UpdateCharData[1] = value;
+
+    LOCKSERVICE_Data_t resp;
+    resp.p_Payload = (uint8_t *)a_LOCKSERVICE_UpdateCharData;
+    resp.Length    = 2;
+    LOCKSERVICE_NotifyValue(LOCKSERVICE_DEVICESTATUS, &resp,
+                            LOCKSERVICE_APP_Context.ConnectionHandle);
+
+    if (disconnect_after) {
+        HAL_Delay(50);
+        (void)aci_gap_terminate(LOCKSERVICE_APP_Context.ConnectionHandle,
+                                0x13 /* REMOTE_USER_TERMINATED */);
+    }
 }
 
 /* USER CODE END PFP */
@@ -255,79 +274,184 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
 
     case LOCKSERVICE_APPTOWD_WRITE_EVT:
       /* USER CODE BEGIN Service1Char1_WRITE_EVT */
-    	StateMachine_UpdateBLEActivity();
-    	uint8_t *received_data = p_Notification->DataTransfered.p_Payload;
-    	    uint8_t data_length = p_Notification->DataTransfered.Length;
+      {
+        uint8_t *received_data = p_Notification->DataTransfered.p_Payload;
+        uint8_t  data_length   = p_Notification->DataTransfered.Length;
 
-    	    if(data_length > 0)
-    	    {
-    	        uint8_t command = received_data[0];
+        if (data_length == 0) {
+            break;
+        }
 
-    	        // Only extract timestamp if this is the initial boot time sync command
-    	        // (typically sent with the first connection or settings update)
-    	        if (data_length >= 7 && command != CMD_REQUEST_EVENT &&
-    	            command != CMD_REQUEST_LOG_COUNT && command != CMD_CLEAR_LOG &&
-    	            command != CMD_ACK_EVENT && command != CMD_FIND_MY_DEVICE &&
-    	            command != CMD_RESET_DEVICE) {
-    	            // This is a settings update with timestamp
-    	            UpdateBootTimeFromiOS(&received_data[data_length - 6]);
-    	        }
+        // If the EEPROM read at boot failed, refuse everything. A transient
+        // I2C glitch must not let any phone CLAIM (and therefore hijack) a
+        // device that is actually owned.
+        if (Loyalty_StoreUnhealthy()) {
+            Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+            break;
+        }
 
-    	        switch(command) {
-    	            case CMD_REQUEST_LOG_COUNT:
-    	                transferInProgress = 1;
-    	                currentEventIndex = 0;
-    	                LOCKSERVICE_SendEventCount();
-    	                break;
+        // Loyalty layer.
+        //   CLAIM  : [0xC1, t0, t1, t2, t3]   (5 bytes, self-contained)
+        //   VERIFY : [0xC2, t0, t1, t2, t3]   (5 bytes, self-contained)
+        //   UNBOND : [0xC0, t0, t1, t2, t3]   (5 bytes, self-contained)
+        // Everything else is token-prefixed: [t0..t3, opcode, ...payload].
+        uint8_t first_byte = received_data[0];
 
-    	            case CMD_REQUEST_EVENT:
-    	                if (data_length >= 3) {
-    	                    uint16_t requestedIndex = ((uint16_t)received_data[1] << 8) | received_data[2];
-    	                    LOCKSERVICE_SendEvent(requestedIndex);
-    	                }
-    	                break;
+        if (first_byte == CMD_CLAIM_DEVICE) {
+            if (data_length < 1 + LOYALTY_TOKEN_LEN) {
+                Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+                break;
+            }
 
-    	            case CMD_ACK_EVENT:
-    	                // iOS acknowledged receiving event
-    	                break;
+            // Already claimed: only accept a CLAIM whose token matches —
+            // that's the legitimate owner with stale local state (app
+            // reinstall, BondManager cleared, etc.). Treat it as a
+            // successful re-claim. Any other token is a different phone.
+            if (Loyalty_IsClaimed()) {
+                if (Loyalty_Verify(&received_data[1])) {
+                    Loyalty_SendResponse(RESP_CLAIM_OK, 0x01, 0);
+                } else {
+                    Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+                }
+                break;
+            }
 
-    	            case CMD_CLEAR_LOG:
-    	                MotionLogger_Clear();
-    	                transferInProgress = 0;
-    	                currentEventIndex = 0;
-    	                LOCKSERVICE_SendLogCleared();
-    	                break;
+            if (Loyalty_Claim(&received_data[1])) {
+                Loyalty_SendResponse(RESP_CLAIM_OK, 0x01, 0);
+            } else {
+                Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+            }
+            break;
+        }
 
-    	            case CMD_FIND_MY_DEVICE:
-    	                if (data_length >= 2 && (received_data[1] & 0x01)) {
-    	                    FindMyDevice_Start();
-    	                }
-    	                break;
+        if (first_byte == CMD_VERIFY_OWNER) {
+            if (data_length < 1 + LOYALTY_TOKEN_LEN ||
+                !Loyalty_IsClaimed() ||
+                !Loyalty_Verify(&received_data[1])) {
+                Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+                break;
+            }
+            Loyalty_SendResponse(RESP_VERIFY_OK, 0x01, 0);
+            break;
+        }
 
-    	            case CMD_RESET_DEVICE:
-    	                NVIC_SystemReset();
-    	                break;
+        if (first_byte == CMD_UNBOND_DEVICE) {
+            if (data_length < 1 + LOYALTY_TOKEN_LEN ||
+                !Loyalty_IsClaimed() ||
+                !Loyalty_Verify(&received_data[1])) {
+                Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+                break;
+            }
+            // Always send UNPAIR_ACK + disconnect even if the EEPROM write
+            // failed — iOS still needs to clear its local state, and
+            // Loyalty_Wipe() has already cleared s_claimed unconditionally
+            // so the next CLAIM in this session is accepted.
+            (void)Loyalty_Wipe();
+            Loyalty_SendResponse(RESP_UNPAIR_ACK, 0x01, 1);
+            break;
+        }
 
-    	            case CMD_DRAIN_MODE:
-    	                if (data_length >= 2 && (received_data[1] & 0x01)) {
-    	                    Drain_Start();
-    	                } else {
-    	                    Drain_Stop();
-    	                }
-    	                break;
+        // Regular command path — token-prefixed.
+        if (!Loyalty_IsClaimed() ||
+            data_length < LOYALTY_TOKEN_LEN + 1 ||
+            !Loyalty_Verify(received_data)) {
+            Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+            break;
+        }
 
-    	            default:
-    	                // Regular device state update
-    	                deviceState = received_data[0];
-    	                if (data_length >= 2) {
-    	                    deviceInfo = received_data[1];
-    	                }
-    	                HAL_Delay(5);
-    	                LOCKSERVICE_ForceStatusUpdate();
-    	                break;
-    	        }
-    	    }
-    	    break;
+        uint8_t *cmd_data   = &received_data[LOYALTY_TOKEN_LEN];
+        uint8_t  cmd_length = data_length - LOYALTY_TOKEN_LEN;
+        uint8_t  command    = cmd_data[0];
+
+        // Settings writes carry a trailing 6-byte timestamp; the dedicated
+        // opcodes don't.
+        if (cmd_length >= 7 && command != CMD_REQUEST_EVENT &&
+            command != CMD_REQUEST_LOG_COUNT && command != CMD_CLEAR_LOG &&
+            command != CMD_ACK_EVENT && command != CMD_FIND_MY_DEVICE &&
+            command != CMD_RESET_DEVICE) {
+            UpdateBootTimeFromiOS(&cmd_data[cmd_length - 6]);
+        }
+
+        switch (command) {
+            case CMD_REQUEST_LOG_COUNT:
+                transferInProgress = 1;
+                currentEventIndex = 0;
+                LOCKSERVICE_SendEventCount();
+                break;
+
+            case CMD_REQUEST_EVENT:
+                if (cmd_length >= 3) {
+                    uint16_t requestedIndex = ((uint16_t)cmd_data[1] << 8) | cmd_data[2];
+                    LOCKSERVICE_SendEvent(requestedIndex);
+                }
+                break;
+
+            case CMD_ACK_EVENT:
+                break;
+
+            case CMD_CLEAR_LOG:
+                MotionLogger_Clear();
+                transferInProgress = 0;
+                currentEventIndex = 0;
+                LOCKSERVICE_SendLogCleared();
+                break;
+
+            case CMD_FIND_MY_DEVICE:
+                if (cmd_length >= 2 && (cmd_data[1] & 0x01)) {
+                    FindMyDevice_Start();
+                }
+                break;
+
+            case CMD_RESET_DEVICE:
+                NVIC_SystemReset();
+                break;
+
+            case CMD_DRAIN_MODE:
+                if (cmd_length >= 2 && (cmd_data[1] & 0x01)) {
+                    Drain_Start();
+                } else {
+                    Drain_Stop();
+                }
+                break;
+
+            default: {
+                // Settings update. Post-token payload is
+                //   [settings, deviceInfo, alarmDur?, ledBright?, ts0..ts5]
+                // The 6-byte timestamp tail is stripped above when
+                // cmd_length >= 7 — discount it here so a length-2/3/4
+                // settings core is recognised correctly.
+                uint8_t settings_len = (cmd_length >= 7) ? (uint8_t)(cmd_length - 6)
+                                                         : cmd_length;
+                if (settings_len >= 1) {
+                    deviceState = cmd_data[0];
+                }
+                if (settings_len >= 2) {
+                    // Bit 0 = HIGH_PERF, bit 1 = alarmDisabled, bits 2..7
+                    // reserved (mask off so reads stay clean).
+                    deviceInfo = cmd_data[1] & 0x03;
+                    (void)AlarmDisabled_Set((cmd_data[1] >> 1) & 0x01);
+                }
+                if (settings_len >= 3) {
+                    (void)AlarmDuration_Set(cmd_data[2]);
+                }
+                if (settings_len >= 4) {
+                    (void)LedBrightness_Set(cmd_data[3]);
+                }
+                // Persist the deviceState/deviceInfo bytes (ARMED bit
+                // excluded). The other persisted records (alarm duration /
+                // LED brightness / alarm-disabled) already wrote inside
+                // their own Set() calls above.
+                DeviceSettings_Persist();
+                APP_DBG_MSG("Recv settings · 0x%02X deviceInfo 0x%02X alarmDur=%us ledBright=%u alarmDisabled=%u\n",
+                            deviceState, deviceInfo,
+                            AlarmDuration_Get(), LedBrightness_Get(),
+                            AlarmDisabled_Get() ? 1u : 0u);
+                HAL_Delay(5);
+                LOCKSERVICE_ForceStatusUpdate();
+                break;
+            }
+        }
+      }
       /* USER CODE END Service1Char1_WRITE_EVT */
       break;
 
@@ -370,12 +494,16 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification)
       LOCKSERVICE_APP_Context.ConnectionHandle = p_Notification->ConnectionHandle;
       /* USER CODE BEGIN Service1_APP_CENTR_CONN_HANDLE_EVT */
       PowerMgmt_RestoreAll();
-      StateMachine_UpdateBLEActivity();
+      // RestoreAll runs LIS2DUX12_Init() which SW-resets and reloads the
+      // UCF — INT1 glitches and the user is invariably handling the device
+      // during connect. Suppress motion-triggered alarm transitions for a
+      // short grace window so this doesn't fire the alarm.
+      LIS2DUX12_ClearMotion();
+      StateMachine_StartMotionGrace(2000);
       connectionStatus = 1;
-      LOCKSERVICE_ForceStatusUpdate();  // Force send on connection
+      LOCKSERVICE_ForceStatusUpdate();
 
-      /* If events were logged while disconnected, notify the app
-       * so it can pull them via the existing request/response protocol. */
+      // Drain any events logged while disconnected so iOS can pull them.
       if (MotionLogger_GetEventCount() > 0) {
           LOCKSERVICE_SendEventCount();
       }
@@ -417,72 +545,52 @@ void LOCKSERVICE_APP_Init(void)
 /* USER CODE BEGIN FD */
 void LOCKSERVICE_SendStatusUpdate(void)
 {
-    // Only send if the state has actually changed OR if it's the first time
-    //if (deviceInfo != lastSentDeviceInfo)
-    //{
-        LOCKSERVICE_Devicestatus_SendNotification();
-        //lastSentDeviceInfo = deviceInfo;  // Update the last sent value
-    //}
+    LOCKSERVICE_Devicestatus_SendNotification();
 }
 
 void LOCKSERVICE_ForceStatusUpdate(void)
 {
-    // Force send regardless of state change (for initial connection)
     LOCKSERVICE_Devicestatus_SendNotification();
-    //lastSentDeviceInfo = deviceInfo;
 }
 
-/**
- * @brief Build and send the BatteryDiagnostic notification.
+/***************************************************************************
+ * LOCKSERVICE_SendBatteryDiagnostic — 51-byte BATTERYDIAG payload (v11)
  *
- * Wire format (51 bytes, little-endian, version 11):
- *   bytes  0..29 — same layout as v3 (with version byte = 11)
- *   bytes 30..45 — uint8_t calib_bytes[16] from Subclass 104 (Calibration)
- *                  per BQ27427 TRM:
- *                    0..3  CC Gain    (4-byte TI custom float)
- *                    4..7  CC Delta   (4-byte TI custom float)
- *                    8..9  CC Offset  (int16)
- *                    10..11 candidate Board Offset (silicon-rev dependent)
- *                    12..15 spare/other
- *   byte  46    — uint8 init_fail_stage   (0 = ok; codes in battery.c)
- *   byte  47    — uint8 init_completed    (1 if BATTERY_Init reached the end)
- *   byte  48    — uint8 post_reset_fired  (1 if CC-Gain self-heal triggered RESET)
- *   bytes 49..50 — uint16 chem_id_read    (BQ27427 chem_id() snapshot, LE)
+ * Wire format (little-endian, packed):
+ *   uint8   version              = 11
+ *   uint8   soc_percent          (filtered, 0..100)
+ *   uint16  voltage_mV
+ *   int16   current_mA           (negative = discharging)
+ *   uint16  remaining_mAh
+ *   uint16  full_charge_mAh
+ *   int16   temperature_0_1K     (÷10 then -273.15 for °C)
+ *   uint16  flags_raw            (BQ27427 Flags() register)
+ *   uint16  control_status_raw
+ *   uint8   status_bits          (packed convenience flags, see below)
+ *   uint8   soc_unfiltered       (raw IT SOC, 0..100)
+ *   uint16  design_capacity_mAh  (expected: 300)
+ *   uint16  terminate_voltage_mV (expected: 3000)
+ *   uint16  taper_rate           (expected: 100)
+ *   uint16  op_config_raw        (expected: 0x6458 — SLEEP cleared)
+ *   int16   average_power_mW     (signed; negative = discharging)
+ *   int8    board_offset
+ *   uint8   deadband_mA          (expected: 5)
+ *   uint8   calib_bytes[16]      Subclass 104 dump (CC Gain/Delta/Offset)
+ *   uint8   init_fail_stage      0 = ok; codes documented in battery.c
+ *   uint8   init_completed       1 if BATTERY_Init reached the end
+ *   uint8   post_reset_fired     1 if the CC-Gain self-heal RESET fired
+ *   uint16  chem_id_read         BQ27427 chem_id() snapshot
  *
- * Original v3 layout:
- *   uint8_t  version             = 3
- *   uint8_t  soc_percent         (filtered, 0-100)
- *   uint16_t voltage_mV
- *   int16_t  current_mA          (negative = discharging)
- *   uint16_t remaining_mAh
- *   uint16_t full_charge_mAh
- *   int16_t  temperature_0_1K    (divide by 10, subtract 273.15 for °C)
- *   uint16_t flags_raw           (BQ27427 Flags() register)
- *   uint16_t control_status_raw  (BQ27427 CONTROL_STATUS register)
- *   uint8_t  status_bits         (packed convenience flags, see below)
- *   uint8_t  soc_unfiltered      (raw IT SOC, 0-100)
- *   --- v3 fields (config readback + power + calibration) ---
- *   uint16_t design_capacity_mAh    (expected: 300)
- *   uint16_t terminate_voltage_mV   (expected: 3000)
- *   uint16_t taper_rate             (expected: 100)
- *   uint16_t op_config_raw          (expected: 0x6458 — SLEEP cleared)
- *   int16_t  average_power_mW       (signed; negative = discharging)
- *   int8_t   board_offset           (signed counts; expected: 0)
- *   uint8_t  deadband_mA            (expected: 5)
- *
- * status_bits layout (LSB first):
- *   bit 0: is_charging   (FLAG_CHG)
- *   bit 1: is_full       (FLAG_FC)
- *   bit 2: is_low        (FLAG_SOC1)
- *   bit 3: is_critical   (FLAG_SOCF)
- *   bit 4: bat_detected  (FLAG_BAT_DET)
- *   bit 5: qmax_learned  (CTRL_STATUS bit 9)
- *   bit 6: res_learned   (CTRL_STATUS bit 8)
- *   bit 7: itpor         (FLAG_ITPOR)
- *
- * STM32 is little-endian; multi-byte fields are written via direct memcpy
- * of the packed struct, which matches the LE wire spec.
- */
+ * status_bits (LSB first):
+ *   0 is_charging   (FLAG_CHG)
+ *   1 is_full       (FLAG_FC)
+ *   2 is_low        (FLAG_SOC1)
+ *   3 is_critical   (FLAG_SOCF)
+ *   4 bat_detected  (FLAG_BAT_DET)
+ *   5 qmax_learned  (CTRL_STATUS bit 9)
+ *   6 res_learned   (CTRL_STATUS bit 8)
+ *   7 itpor         (FLAG_ITPOR)
+ ***************************************************************************/
 void LOCKSERVICE_SendBatteryDiagnostic(void)
 {
     if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
@@ -508,13 +616,10 @@ void LOCKSERVICE_SendBatteryDiagnostic(void)
         int16_t  average_power_mW;
         int8_t   board_offset;
         uint8_t  deadband_mA;
-        // --- v9 one-shot Calibration subclass dump (temporary) ---
         uint8_t  calib_bytes[16];
-        // --- v10 init-failure tracker (temporary) ---
         uint8_t  init_fail_stage;
         uint8_t  init_completed;
         uint8_t  post_reset_fired;
-        // --- v11 chem_id snapshot (temporary) ---
         uint16_t chem_id_read;
     } battery_diag_payload_t;
 
@@ -565,13 +670,12 @@ void LOCKSERVICE_SendBatteryDiagnostic(void)
                             LOCKSERVICE_APP_Context.ConnectionHandle);
 }
 
-/******************************************************************************
+/***************************************************************************
  * Drain Mode — gauge-health diagnostic
- *
- * Drives the device into a high-load state so the fuel gauge can characterise
- * the battery: white LED at full brightness + continuous 100 Hz buzzer tone.
- * Auto-stops once SOC drops to DRAIN_AUTO_STOP_SOC (5 %).
- *****************************************************************************/
+ *   White LED at full brightness + continuous DRAIN_TONE_FREQUENCY_HZ
+ *   buzzer tone. Auto-stops at DRAIN_AUTO_STOP_SOC. Drain_Tick() runs every
+ *   loop iteration so other subsystems can't override outputs while active.
+ ***************************************************************************/
 
 void Drain_Start(void)
 {
@@ -598,14 +702,11 @@ void Drain_Tick(void)
 {
     if (!drain_mode_active) return;
 
-    /* Auto-stop when battery is sufficiently drained. */
     if (BATTERY_GetSOC() <= DRAIN_AUTO_STOP_SOC) {
         Drain_Stop();
         return;
     }
 
-    /* Re-assert outputs every tick so other subsystems (state machine,
-     * alarm patterns) can't override us while drain is active. */
     LED_Solid(255, 255, 255, 255);
     if (!BUZZER_IsPlaying()) {
         BUZZER_StartContinuousTone(DRAIN_TONE_FREQUENCY_HZ);
@@ -629,27 +730,25 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
   /* USER CODE BEGIN Service1Char2_NS_1*/
   	notification_on_off = Devicestatus_NOTIFICATION_ON;
 
-    /* Use cached battery values */
     uint16_t voltage_mV = BATTERY_GetVoltage();
     int16_t current_mA = BATTERY_GetCurrent();
     uint16_t soc_percent = BATTERY_GetSOC();
 
     deviceBattery = soc_percent & 0x7F;
 
-    /* Set charging flag: cable plugged AND actually charging AND gauge not full */
     if (IS_CABLE_PLUGGED() && IS_CHARGING_NOW() && !BATTERY_IsFullCached()) {
         SET_BATTERY_CHARGING(deviceBattery);
     } else {
         CLEAR_BATTERY_CHARGING(deviceBattery);
     }
 
-    /* Read live accelerometer data */
     int16_t accel[3];
     LIS2DUX12_ReadAcceleration(accel);
 
-    /* Pack data into BLE notification — 16 bytes
-     * Bytes 14..15 carry the low 2 bytes of the BD address (LE), used by
-     * the iOS app as the user-visible "WatchDog #" identifier in Settings. */
+    // 19-byte DEVICESTATUS payload. Bytes 14..15 carry the low 2 bytes of
+    // the BD address (LE) — used by the iOS app as the user-visible
+    // "WatchDog #" identifier. Bytes 16..18 are firmware version
+    // (MAJOR, MAIN, V2) — see firmware_version.h.
     a_LOCKSERVICE_UpdateCharData[0]  = deviceState;
     a_LOCKSERVICE_UpdateCharData[1]  = deviceBattery;
     a_LOCKSERVICE_UpdateCharData[2]  = (uint8_t)(current_mA & 0xFF);
@@ -663,11 +762,17 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
     a_LOCKSERVICE_UpdateCharData[10] = (uint8_t)((accel[1] >> 8) & 0xFF);
     a_LOCKSERVICE_UpdateCharData[11] = (uint8_t)(accel[2] & 0xFF);
     a_LOCKSERVICE_UpdateCharData[12] = (uint8_t)((accel[2] >> 8) & 0xFF);
-    a_LOCKSERVICE_UpdateCharData[13] = deviceInfo;
-    a_LOCKSERVICE_UpdateCharData[14] = g_bd_address[0]; /* WatchDog # low byte  (LSB of BD addr) */
-    a_LOCKSERVICE_UpdateCharData[15] = g_bd_address[1]; /* WatchDog # high byte */
+    // Bit 0 = HIGH_PERF, bit 1 = alarmDisabled (sourced from the persisted
+    // store so the value survives boot). Bits 2..7 reserved.
+    a_LOCKSERVICE_UpdateCharData[13] = (uint8_t)((deviceInfo & 0x01)
+                                                | (AlarmDisabled_Get() ? 0x02 : 0));
+    a_LOCKSERVICE_UpdateCharData[14] = g_bd_address[0];
+    a_LOCKSERVICE_UpdateCharData[15] = g_bd_address[1];
+    a_LOCKSERVICE_UpdateCharData[16] = FW_VERSION_MAJOR;
+    a_LOCKSERVICE_UpdateCharData[17] = FW_VERSION_MAIN;
+    a_LOCKSERVICE_UpdateCharData[18] = FW_VERSION_V2;
 
-    lockservice_notification_data.Length = 16;
+    lockservice_notification_data.Length = 19;
   /* USER CODE END Service1Char2_NS_1*/
 
   if (notification_on_off != Devicestatus_NOTIFICATION_OFF && LOCKSERVICE_APP_Context.ConnectionHandle != 0xFFFF)

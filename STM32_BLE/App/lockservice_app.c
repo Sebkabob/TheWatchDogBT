@@ -39,6 +39,7 @@
 #include "power_management.h"
 #include "loyalty.h"
 #include "firmware_version.h"
+#include "alarm_duration.h"
 #include <string.h>
 /* USER CODE END Includes */
 
@@ -414,15 +415,29 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
                 }
                 break;
 
-            default:
-                // Settings update: byte 0 → deviceState, byte 1 → deviceInfo.
-                deviceState = cmd_data[0];
-                if (cmd_length >= 2) {
+            default: {
+                // Settings update. Post-token payload is
+                //   [settings, deviceInfo, alarmDur?, ts0..ts5]
+                // The 6-byte timestamp tail is stripped above when
+                // cmd_length >= 7 — discount it here so a length-2 or
+                // length-3 settings core is recognised correctly.
+                uint8_t settings_len = (cmd_length >= 7) ? (uint8_t)(cmd_length - 6)
+                                                         : cmd_length;
+                if (settings_len >= 1) {
+                    deviceState = cmd_data[0];
+                }
+                if (settings_len >= 2) {
                     deviceInfo = cmd_data[1];
                 }
+                if (settings_len >= 3) {
+                    (void)AlarmDuration_Set(cmd_data[2]);
+                }
+                APP_DBG_MSG("Recv settings · 0x%02X deviceInfo 0x%02X alarmDur=%us\n",
+                            deviceState, deviceInfo, AlarmDuration_Get());
                 HAL_Delay(5);
                 LOCKSERVICE_ForceStatusUpdate();
                 break;
+            }
         }
       }
       /* USER CODE END Service1Char1_WRITE_EVT */

@@ -48,21 +48,20 @@
 #define BD_ADDRESS_OVERRIDE 0
 const uint8_t bd_address_override = BD_ADDRESS_OVERRIDE;
 
-/* Diagnostic: 1 = put BQ27427 fuel gauge into SHUTDOWN at boot to validate
- * how much of the residual quiescent it accounts for. SHUTDOWN takes the
- * gauge to ~0.4 µA but loses all SOC state — set back to 0 for production. */
+/* Set to 1 to bypass the BQ27427 fuel gauge by sending it into SHUTDOWN
+ * at boot (~0.4 µA). Useful when running off a power profiler with no
+ * battery — without this the gauge stalls BATTERY_Init on INITCOMP and
+ * then sits in active mode forever. Set 0 for normal production with a
+ * cell present so the gauge tracks SOC.
+ *
+ * Wakes only via a VDD power cycle of the BQ27427 (gauge state is lost). */
 #define BQ27427_SHUTDOWN_AT_BOOT 0
 
-/* Diagnostic: park MCU in DEEPSTOP forever, no BLE. Removed — the naive
- * "set SLEEPDEEP + WFI" path doesn't actually enter DEEPSTOP on WB0
- * because the framework's CPUcontextSave is required. Net result was
- * WFI at run-mode clock (~1.5 mA). Don't re-enable without rewriting. */
-#define DEEPSTOP_FOREVER_DIAGNOSTIC 0
-
 stmdev_ctx_t dev_ctx;
+
 /* 1 = LSE locked at boot, 0 = LSI fallback. Read by PeriphCommonClock_Config
- * to route the BLE-wakeup clock, and by the boot-tone diagnostic so you can
- * tell which clock is in use without a debugger. */
+ * to route the BLE-wakeup clock and by MX_RADIO_TIMER_Init to skip
+ * calibration when the crystal is in use. */
 volatile uint8_t g_lse_active = 0;
 /* USER CODE END PD */
 
@@ -217,12 +216,6 @@ int main(void)
   /* === Fix unused pins for low power === */
   MX_GPIO_LowPower_Unused();
 
-  /* PWR_CR2_DBGRET defaults ON — retains PA2 SWDIO / PA3 SWCLK pin state
-   * across DEEPSTOP so the debugger doesn't lose the chip. Costs current.
-   * For production / power profiling, disable it. SWD will reconnect after
-   * a target reset; while running it will drop on first DEEPSTOP entry. */
-  LL_PWR_DisableDBGRET();
-
   /* All 3 LEDs are now TIM2 HW PWM — no software init needed */
   MotionLogger_Init();
   HAL_Delay(100);
@@ -246,27 +239,6 @@ int main(void)
   }
   /* USER CODE END 2 */
 
-#if (DEEPSTOP_FOREVER_DIAGNOSTIC == 1)
-  /* Hard-floor diagnostic. Two long high chirps so you know we're in this
-   * mode, then gate everything and park in DEEPSTOP forever. Only PB4
-   * (cable) or PB5 (debug) can wake. Whatever the profiler reads after
-   * this is the absolute board floor with NO BLE radio. */
-  BUZZER_Tone(2500, 200);
-  HAL_Delay(80);
-  BUZZER_Tone(2500, 200);
-  HAL_Delay(50);
-
-  PowerMgmt_EnterLowPower_Idle();
-
-  /* Set SLEEPDEEP, request DEEPSTOP, WFI. Loop in case any stray IRQ wakes
-   * us — we go right back to sleep. */
-  SET_BIT(SCB->SCR, SCB_SCR_SLEEPDEEP_Msk);
-  LL_PWR_SetPowerMode(LL_PWR_MODE_DEEPSTOP);
-  while (1) {
-    __WFI();
-  }
-#endif
-
   /* Init code for STM32_BLE */
   MX_APPE_Init(NULL);
 
@@ -275,16 +247,6 @@ int main(void)
 
 
   firstBootTone();
-
-  /* Sleep-clock diagnostic: one short high chirp = LSE locked,
-   * three descending chirps = LSI fallback. */
-  if (g_lse_active) {
-      BUZZER_Tone(2000, 60);
-  } else {
-      BUZZER_Tone(800, 80);
-      BUZZER_Tone(600, 80);
-      BUZZER_Tone(400, 80);
-  }
 
   StateMachine_Init();
 

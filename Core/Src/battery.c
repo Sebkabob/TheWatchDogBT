@@ -67,7 +67,7 @@ const uint8_t *BATTERY_GetCalibBytes(void) { return s_calib_bytes; }
 //   8  set_design_energy failed
 //   9  set_terminate_voltage failed
 //   10 set_taper_rate failed
-//   11 disable_sleep failed
+//   11 enable_sleep failed
 //   12 exit_config failed
 static uint8_t s_init_fail_stage = 0;
 static uint8_t s_init_completed  = 0;

@@ -606,7 +606,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  fw_version_v2;
     uint8_t  init_bitmask;
     uint8_t  last_fault_marker;
-    uint8_t  reserved[6];
+    uint8_t  reserved[5];
 } diag_system_t;
 _Static_assert(sizeof(diag_system_t) == 19, "diag_system_t must be 19 bytes");
 

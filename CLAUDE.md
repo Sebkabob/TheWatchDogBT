@@ -6,7 +6,7 @@ ONLY EDIT CODE WITHIN THE USER EDITABLE SECTIONS!!!
 
 ## Firmware Version
 
-**Current: V1.11.21**  (last reconciled at commit `0755a74`)
+**Current: V1.11.22**  (last reconciled at commit `0755a74`)
 
 Format: `V<MAJOR>.<MAIN>.<V2>` — single source of truth lives in `Core/Inc/firmware_version.h` (`FW_VERSION_MAJOR/MAIN/V2`, plus `FW_VERSION_STRING`). This line in CLAUDE.md and the macros in the header **must stay in sync**.
 
@@ -158,7 +158,7 @@ A short **motion-grace window** is started on every BLE connect (`StateMachine_S
 Custom **LockService** (16-bit UUID `0x183E`) GATT service with three characteristics:
 - `APPTOWD` (write) — iOS → device commands. First byte of the inner payload (after the 4-byte loyalty token) = opcode; remaining bytes are payload. Settings writes (no opcode match) also carry a 6-byte trailing timestamp consumed by `UpdateBootTimeFromiOS()`.
 - `DEVICESTATUS` (notify) — **19-byte** payload built by `LOCKSERVICE_Devicestatus_SendNotification()`. Pushed at 50 Hz when `HIGH_PERF` is set, 2 Hz otherwise (gated by `PowerMgmt_IsLowPower()`). Bytes 14..15 carry the low 2 bytes of the BD address (LE) — used by iOS as the user-visible "WatchDog #" identifier. Bytes 16..18 are the firmware version triplet (`FW_VERSION_MAJOR`, `FW_VERSION_MAIN`, `FW_VERSION_V2`) from `firmware_version.h`. Shorter framed responses on the same characteristic (motion alert, log-count, event-data, loyalty acks, …) are unchanged.
-- `BATTERYDIAG` (notify) — 51-byte packed gauge telemetry payload (v11), attached dynamically at init in `lockservice.c`. Sent every ~1 s from `main()`'s battery tick.
+- `BATTERYDIAG` (notify) — **on-demand** TLV diagnostic dump, attached dynamically at init in `lockservice.c` (UUID/handle unchanged for backwards compatibility, but the payload schema is now sectioned, not the old 51-byte gauge struct). Triggered by `CMD_REQUEST_DIAG` (0xF4); the firmware no longer auto-pushes this characteristic. Wire format: `[format_version, section_count, (section_id, section_len, payload)*]` with sections SYSTEM, BATTERY, BLE, SENSOR, POWER, STORAGE. Buffer is sized for 220 bytes to allow future fields to be appended inside sections without requiring iOS to rediscover the service. The full per-section layout lives in `FW_DIAGNOSTICS_PROMPT.md` and is the source of truth for the iOS parser.
 
 iOS opcodes (`lockservice_app.h`) — these run **after** the 4-byte loyalty token has been stripped:
 
@@ -171,6 +171,7 @@ iOS opcodes (`lockservice_app.h`) — these run **after** the 4-byte loyalty tok
 | `0xFA` | `CMD_FIND_MY_DEVICE` | byte[1] bit 0 = start |
 | `0xFB` | `CMD_RESET_DEVICE` | none — calls `NVIC_SystemReset()` |
 | `0xFC` | `CMD_DRAIN_MODE` | byte[1] bit 0: 1=start drain, 0=stop |
+| `0xF4` | `CMD_REQUEST_DIAG` | optional byte[1] = section bitmask (default 0xFF). Triggers one TLV notification on `BATTERYDIAG`. |
 
 Anything not matching an opcode is interpreted as a settings write: `cmd_data[0] → deviceState`, `cmd_data[1] → deviceInfo` (bit 0 HIGH_PERF + bit 1 → `AlarmDisabled_Set()`, upper bits masked), optional `cmd_data[2] → alarm_duration_seconds` (clamped to 0..30, EEPROM-persisted via `sound.c`), optional `cmd_data[3] → led_brightness` (clamped to 1..255, EEPROM-persisted via `lights.c`), then a forced status notification. The settings core can be 1, 2, 3, or 4 bytes; the dispatcher computes its length as `cmd_length - 6` when the trailing 6-byte timestamp is present (`cmd_length >= 7`). Status LED calls (armed/stabilizing/alarm/find-my/connected-rainbow) multiply by `LedBrightness_Get()`; the charging-status path and the drain-mode diagnostic bypass the scalar. The DEVICESTATUS byte 13 echoes `(deviceInfo & 0x01) | (AlarmDisabled_Get() ? 0x02 : 0)` so iOS sees the persisted alarmDisabled state across boots.
 
@@ -218,7 +219,24 @@ While `LOCKED`, ordinary IN_MOTION/SHAKEN alerts are **deferred**: the alarm its
 
 ### Battery (`Core/Src/battery.c`, `Drivers/BQ27427/`)
 
-Wraps the BQ27427 fuel gauge. Cached state is updated once a second from `main()` (`BATTERY_UpdateState()`); `BATTERY_GetSOC()` / `BATTERY_IsFullCached()` etc. read from that cache so the state machine never blocks on I2C. A long list of diagnostic getters (flags, control_status, temperature, qmax/RES learned bits, design capacity, taper rate, …) feeds the 51-byte BATTERYDIAG notification. `s_init_fail_stage` is a one-shot diagnostic that pinpoints which BATTERY_Init() step failed after the CC-Gain self-heal RESET.
+Wraps the BQ27427 fuel gauge. Cached state is updated once a second from `main()` (`BATTERY_UpdateState()`); `BATTERY_GetSOC()` / `BATTERY_IsFullCached()` etc. read from that cache so the state machine never blocks on I2C. A long list of diagnostic getters (flags, control_status, temperature, qmax/RES learned bits, design capacity, taper rate, …) feeds the BATTERY section of the on-demand diagnostic dump. `s_init_fail_stage` is a one-shot diagnostic that pinpoints which BATTERY_Init() step failed after the CC-Gain self-heal RESET.
+
+### Diagnostics (`STM32_BLE/App/lockservice_app.c::LOCKSERVICE_SendDiagnostic`)
+
+On-demand, sectioned, TLV-framed dump of every cross-cutting health signal the firmware can surface, emitted on the `BATTERYDIAG` characteristic when iOS sends `CMD_REQUEST_DIAG`. There is no auto-push — the device is silent on this characteristic until asked. Sections (per `FW_DIAGNOSTICS_PROMPT.md`):
+
+| ID | Name | Sourced from |
+|----|------|--------------|
+| 0x01 | SYSTEM | `power_management.c` (uptime/boot/reset cause), `firmware_version.h`, `Loyalty_StoreUnhealthy`, `BATTERY_GetInitCompleted` |
+| 0x02 | BATTERY | All `BATTERY_Get*` accessors — schema-compatible with the legacy 51-byte v11 BatteryDiagnostic struct |
+| 0x03 | BLE | TODO counters in `lockservice_app.c` (RSSI, conn count, last disconnect reason, MTU) — currently zero/sentinel |
+| 0x04 | SENSOR | `lis2dux12_app_get_cached_mlc_state` + TODO transition / INT1 / log counters |
+| 0x05 | POWER | `PowerMgmt_IsLowPower` + TODO wake-source counters and time-in-LP accumulator |
+| 0x06 | STORAGE | `MotionLogger_GetEventCount`, loyalty health/claimed flags + TODO peripheral fail counters |
+
+Reset cause is captured by `PowerMgmt_CaptureResetCause()` from `RCC->CSR` as the very first thing in `main()`, packed into a single byte (bits 0..4: PAD/POR/SFT/WDG/LOCKUP), then `__HAL_RCC_CLEAR_RESET_FLAGS()` is called so the next boot's flags are clean. Boot count is a uint32 LE persisted at EEPROM `0x20` (inside the existing reserved 0x000..0x03F device-info block — does not collide with motion log or loyalty); incremented once at boot by `PowerMgmt_BootCount_Init()`.
+
+Each section payload reserves trailing bytes for future fields. iOS reads exactly `section_len` bytes per section and ignores trailing reserved bytes, which is how new fields can be appended later without breaking the app.
 
 ### Drain Mode (`STM32_BLE/App/lockservice_app.c`)
 

@@ -368,7 +368,7 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
         if (cmd_length >= 7 && command != CMD_REQUEST_EVENT &&
             command != CMD_REQUEST_LOG_COUNT && command != CMD_CLEAR_LOG &&
             command != CMD_ACK_EVENT && command != CMD_FIND_MY_DEVICE &&
-            command != CMD_RESET_DEVICE) {
+            command != CMD_RESET_DEVICE && command != CMD_REQUEST_DIAG) {
             UpdateBootTimeFromiOS(&cmd_data[cmd_length - 6]);
         }
 
@@ -413,6 +413,13 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
                     Drain_Stop();
                 }
                 break;
+
+            case CMD_REQUEST_DIAG: {
+                // Optional byte[1] = section_mask. Default to all sections.
+                uint8_t mask = (cmd_length >= 2) ? cmd_data[1] : 0xFF;
+                LOCKSERVICE_SendDiagnostic(mask);
+                break;
+            }
 
             default: {
                 // Settings update. Post-token payload is
@@ -554,117 +561,292 @@ void LOCKSERVICE_ForceStatusUpdate(void)
 }
 
 /***************************************************************************
- * LOCKSERVICE_SendBatteryDiagnostic — 51-byte BATTERYDIAG payload (v11)
+ * LOCKSERVICE_SendDiagnostic — on-demand TLV diagnostic dump
  *
- * Wire format (little-endian, packed):
- *   uint8   version              = 11
- *   uint8   soc_percent          (filtered, 0..100)
- *   uint16  voltage_mV
- *   int16   current_mA           (negative = discharging)
- *   uint16  remaining_mAh
- *   uint16  full_charge_mAh
- *   int16   temperature_0_1K     (÷10 then -273.15 for °C)
- *   uint16  flags_raw            (BQ27427 Flags() register)
- *   uint16  control_status_raw
- *   uint8   status_bits          (packed convenience flags, see below)
- *   uint8   soc_unfiltered       (raw IT SOC, 0..100)
- *   uint16  design_capacity_mAh  (expected: 300)
- *   uint16  terminate_voltage_mV (expected: 3000)
- *   uint16  taper_rate           (expected: 100)
- *   uint16  op_config_raw        (expected: 0x6458 — SLEEP cleared)
- *   int16   average_power_mW     (signed; negative = discharging)
- *   int8    board_offset
- *   uint8   deadband_mA          (expected: 5)
- *   uint8   calib_bytes[16]      Subclass 104 dump (CC Gain/Delta/Offset)
- *   uint8   init_fail_stage      0 = ok; codes documented in battery.c
- *   uint8   init_completed       1 if BATTERY_Init reached the end
- *   uint8   post_reset_fired     1 if the CC-Gain self-heal RESET fired
- *   uint16  chem_id_read         BQ27427 chem_id() snapshot
+ * Replaces the old auto-1Hz BATTERYDIAG push. iOS asks for it via
+ * CMD_REQUEST_DIAG (0xF4) on APPTOWD; the response is one notification on
+ * the BATTERYDIAG characteristic (UUID unchanged for compatibility).
  *
- * status_bits (LSB first):
- *   0 is_charging   (FLAG_CHG)
- *   1 is_full       (FLAG_FC)
- *   2 is_low        (FLAG_SOC1)
- *   3 is_critical   (FLAG_SOCF)
- *   4 bat_detected  (FLAG_BAT_DET)
- *   5 qmax_learned  (CTRL_STATUS bit 9)
- *   6 res_learned   (CTRL_STATUS bit 8)
- *   7 itpor         (FLAG_ITPOR)
+ * Wire format (header + variable-length sections, all LE):
+ *   byte 0  format_version  (= DIAG_FORMAT_VERSION)
+ *   byte 1  section_count
+ *   then `section_count` repetitions of:
+ *     byte 0  section_id
+ *     byte 1  section_len  (N)
+ *     bytes 2..N+1  payload
+ *
+ * Section IDs and per-section layouts are documented authoritatively in
+ * FW_DIAGNOSTICS_PROMPT.md — keep that file in sync with any change to
+ * struct layouts below.
+ *
+ * `section_mask` selects which sections to include. Bit i = include section
+ * (i+1). 0xFF = all. The default (and what iOS sends today) is 0xFF.
  ***************************************************************************/
-void LOCKSERVICE_SendBatteryDiagnostic(void)
+
+#define DIAG_FORMAT_VERSION   1
+
+#define DIAG_SECTION_SYSTEM   0x01
+#define DIAG_SECTION_BATTERY  0x02
+#define DIAG_SECTION_BLE      0x03
+#define DIAG_SECTION_SENSOR   0x04
+#define DIAG_SECTION_POWER    0x05
+#define DIAG_SECTION_STORAGE  0x06
+
+/* Per-section payload structs — packed so the on-wire layout matches the
+ * struct field order exactly. Every reserved[] field is zero-filled and
+ * iOS is required to ignore trailing reserved bytes; that's how we add
+ * fields later without breaking the app. */
+
+typedef struct __attribute__((packed)) {
+    uint32_t uptime_seconds;
+    uint32_t boot_count;
+    uint8_t  reset_cause;
+    uint8_t  fw_version_major;
+    uint8_t  fw_version_main;
+    uint8_t  fw_version_v2;
+    uint8_t  init_bitmask;
+    uint8_t  last_fault_marker;
+    uint8_t  reserved[6];
+} diag_system_t;
+_Static_assert(sizeof(diag_system_t) == 19, "diag_system_t must be 19 bytes");
+
+typedef struct __attribute__((packed)) {
+    uint8_t  version;                  /* = 11, the existing battery-diag schema */
+    uint8_t  soc_percent;
+    uint16_t voltage_mV;
+    int16_t  current_mA;
+    uint16_t remaining_mAh;
+    uint16_t full_charge_mAh;
+    int16_t  temperature_0_1K;
+    uint16_t flags_raw;
+    uint16_t control_status_raw;
+    uint8_t  status_bits;
+    uint8_t  soc_unfiltered;
+    uint16_t design_capacity_mAh;
+    uint16_t terminate_voltage_mV;
+    uint16_t taper_rate;
+    uint16_t op_config_raw;
+    int16_t  average_power_mW;
+    int8_t   board_offset;
+    uint8_t  deadband_mA;
+    uint8_t  calib_bytes[16];
+    uint8_t  init_fail_stage;
+    uint8_t  init_completed;
+    uint8_t  post_reset_fired;
+    uint16_t chem_id_read;
+} diag_battery_t;
+_Static_assert(sizeof(diag_battery_t) == 51, "diag_battery_t must be 51 bytes");
+
+typedef struct __attribute__((packed)) {
+    int8_t   current_rssi_dBm;          /* 0x7F = not measured */
+    uint16_t connection_count_since_boot;
+    uint8_t  last_disconnect_reason;
+    uint16_t mtu_negotiated;
+    uint16_t connection_interval_units; /* 0 = not measured */
+    uint8_t  reserved[6];
+} diag_ble_t;
+_Static_assert(sizeof(diag_ble_t) == 14, "diag_ble_t must be 14 bytes");
+
+typedef struct __attribute__((packed)) {
+    uint8_t  cached_mlc_state;
+    uint8_t  last_fsm_event;
+    uint32_t mlc_transitions_since_boot;
+    uint32_t int1_fires_since_boot;
+    uint32_t motion_events_logged_since_boot;
+    uint8_t  reserved[4];
+} diag_sensor_t;
+_Static_assert(sizeof(diag_sensor_t) == 18, "diag_sensor_t must be 18 bytes");
+
+typedef struct __attribute__((packed)) {
+    uint32_t wakes_motion;
+    uint32_t wakes_cable;
+    uint32_t wakes_debug;
+    uint32_t wakes_tick;
+    uint32_t time_in_lp_seconds;
+    uint8_t  current_power_state;
+    uint8_t  reserved[3];
+} diag_power_t;
+_Static_assert(sizeof(diag_power_t) == 24, "diag_power_t must be 24 bytes");
+
+typedef struct __attribute__((packed)) {
+    uint16_t motion_log_count;
+    uint16_t motion_log_max;
+    uint8_t  loyalty_store_healthy;
+    uint8_t  loyalty_claimed;
+    uint32_t i2c_errors_since_boot;
+    uint32_t eeprom_fail_count;
+    uint32_t bq27427_fail_count;
+    uint32_t lis2dux12_fail_count;
+    uint8_t  reserved[4];
+} diag_storage_t;
+_Static_assert(sizeof(diag_storage_t) == 26, "diag_storage_t must be 26 bytes");
+
+/* Append `len` bytes of section `id` payload `src` to `dst[*offset]`,
+ * including the 2-byte TLV header. Caller bumps the section count.
+ * Bounds-checked against BATTERYDIAG_SIZE-equivalent caller-supplied cap. */
+static void diag_append_section(uint8_t *dst, uint16_t cap, uint16_t *offset,
+                                uint8_t id, const void *src, uint8_t len)
+{
+    if ((uint16_t)(*offset + 2u + len) > cap) {
+        return; /* Silently drop — caller will report a smaller section_count */
+    }
+    dst[(*offset)++] = id;
+    dst[(*offset)++] = len;
+    memcpy(&dst[*offset], src, len);
+    *offset += len;
+}
+
+void LOCKSERVICE_SendDiagnostic(uint8_t section_mask)
 {
     if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
         return;
     }
 
-    typedef struct __attribute__((packed)) {
-        uint8_t  version;
-        uint8_t  soc_percent;
-        uint16_t voltage_mV;
-        int16_t  current_mA;
-        uint16_t remaining_mAh;
-        uint16_t full_charge_mAh;
-        int16_t  temperature_0_1K;
-        uint16_t flags_raw;
-        uint16_t control_status_raw;
-        uint8_t  status_bits;
-        uint8_t  soc_unfiltered;
-        uint16_t design_capacity_mAh;
-        uint16_t terminate_voltage_mV;
-        uint16_t taper_rate;
-        uint16_t op_config_raw;
-        int16_t  average_power_mW;
-        int8_t   board_offset;
-        uint8_t  deadband_mA;
-        uint8_t  calib_bytes[16];
-        uint8_t  init_fail_stage;
-        uint8_t  init_completed;
-        uint8_t  post_reset_fired;
-        uint16_t chem_id_read;
-    } battery_diag_payload_t;
+    /* Local staging buffer — sized to the GATT characteristic value buffer
+     * so we can never overrun it. iOS / the BLE stack copies out before we
+     * return, so a stack-allocated buffer is fine. */
+    uint8_t  buf[200];
+    uint16_t offset = 0;
+    uint8_t  count  = 0;
 
-    _Static_assert(sizeof(battery_diag_payload_t) == 51,
-                   "BatteryDiagnostic payload must be exactly 51 bytes");
+    /* Reserve header — fill in count once we know it. */
+    buf[offset++] = DIAG_FORMAT_VERSION;
+    uint16_t count_offset = offset++;
 
-    battery_diag_payload_t payload;
-    payload.version              = 11;
-    payload.soc_percent          = (uint8_t)(BATTERY_GetSOC() & 0xFF);
-    payload.voltage_mV           = BATTERY_GetVoltage();
-    payload.current_mA           = BATTERY_GetCurrent();
-    payload.remaining_mAh        = BATTERY_GetRemainingCapacity();
-    payload.full_charge_mAh      = BATTERY_GetFullChargeCapacity();
-    payload.temperature_0_1K     = BATTERY_GetTemperature_0_1K();
-    payload.flags_raw            = BATTERY_GetFlags();
-    payload.control_status_raw   = BATTERY_GetControlStatus();
+    /* SYSTEM */
+    if (section_mask & (1u << 0)) {
+        diag_system_t sys = {0};
+        sys.uptime_seconds    = PowerMgmt_GetUptimeSeconds();
+        sys.boot_count        = PowerMgmt_GetBootCount();
+        sys.reset_cause       = PowerMgmt_GetResetCause();
+        sys.fw_version_major  = FW_VERSION_MAJOR;
+        sys.fw_version_main   = FW_VERSION_MAIN;
+        sys.fw_version_v2     = FW_VERSION_V2;
+        /* init_bitmask: until each subsystem reports its own status, the
+         * one signal we have is the battery init stage. Treat any other
+         * subsystem as "we got far enough to be running" = 1, and let
+         * iOS surface battery-init failure via the BATTERY section's
+         * init_fail_stage field for now. Future revisions will replace
+         * this with per-subsystem flip-on-success bits. */
+        sys.init_bitmask = 0x7F; /* bits 0..6 all "ok" placeholder */
+        if (BATTERY_GetInitCompleted() == 0) {
+            sys.init_bitmask &= ~(1u << 1); /* battery */
+        }
+        if (Loyalty_StoreUnhealthy()) {
+            sys.init_bitmask &= ~(1u << 4); /* loyalty */
+        }
+        sys.last_fault_marker = 0; /* reserved for hardfault-handler write */
+        diag_append_section(buf, sizeof(buf), &offset, DIAG_SECTION_SYSTEM,
+                            &sys, sizeof(sys));
+        count++;
+    }
 
-    uint8_t bits = 0;
-    if (BATTERY_IsCharging())          bits |= (1u << 0);
-    if (BATTERY_IsFullCached())        bits |= (1u << 1);
-    if (BATTERY_IsLowCached())         bits |= (1u << 2);
-    if (BATTERY_IsCriticallyCached())  bits |= (1u << 3);
-    if (BATTERY_IsBatteryDetected())   bits |= (1u << 4);
-    if (BATTERY_IsQmaxLearned())       bits |= (1u << 5);
-    if (BATTERY_IsResistanceLearned()) bits |= (1u << 6);
-    if (BATTERY_IsItpor())             bits |= (1u << 7);
-    payload.status_bits          = bits;
-    payload.soc_unfiltered       = BATTERY_GetSOC_Unfiltered();
+    /* BATTERY */
+    if (section_mask & (1u << 1)) {
+        diag_battery_t bat = {0};
+        bat.version              = 11;
+        bat.soc_percent          = (uint8_t)(BATTERY_GetSOC() & 0xFF);
+        bat.voltage_mV           = BATTERY_GetVoltage();
+        bat.current_mA           = BATTERY_GetCurrent();
+        bat.remaining_mAh        = BATTERY_GetRemainingCapacity();
+        bat.full_charge_mAh      = BATTERY_GetFullChargeCapacity();
+        bat.temperature_0_1K     = BATTERY_GetTemperature_0_1K();
+        bat.flags_raw            = BATTERY_GetFlags();
+        bat.control_status_raw   = BATTERY_GetControlStatus();
 
-    payload.design_capacity_mAh  = BATTERY_GetDesignCapacity();
-    payload.terminate_voltage_mV = BATTERY_GetTerminateVoltage();
-    payload.taper_rate           = BATTERY_GetTaperRate();
-    payload.op_config_raw        = BATTERY_GetOpConfig();
-    payload.average_power_mW     = BATTERY_GetAveragePower();
-    payload.board_offset         = BATTERY_GetBoardOffset();
-    payload.deadband_mA          = BATTERY_GetDeadband();
-    memcpy(payload.calib_bytes, BATTERY_GetCalibBytes(), 16);
-    payload.init_fail_stage      = BATTERY_GetInitFailStage();
-    payload.init_completed       = BATTERY_GetInitCompleted();
-    payload.post_reset_fired     = BATTERY_GetPostResetFired();
-    payload.chem_id_read         = BATTERY_GetChemIdRead();
+        uint8_t bits = 0;
+        if (BATTERY_IsCharging())          bits |= (1u << 0);
+        if (BATTERY_IsFullCached())        bits |= (1u << 1);
+        if (BATTERY_IsLowCached())         bits |= (1u << 2);
+        if (BATTERY_IsCriticallyCached())  bits |= (1u << 3);
+        if (BATTERY_IsBatteryDetected())   bits |= (1u << 4);
+        if (BATTERY_IsQmaxLearned())       bits |= (1u << 5);
+        if (BATTERY_IsResistanceLearned()) bits |= (1u << 6);
+        if (BATTERY_IsItpor())             bits |= (1u << 7);
+        bat.status_bits          = bits;
+        bat.soc_unfiltered       = BATTERY_GetSOC_Unfiltered();
+        bat.design_capacity_mAh  = BATTERY_GetDesignCapacity();
+        bat.terminate_voltage_mV = BATTERY_GetTerminateVoltage();
+        bat.taper_rate           = BATTERY_GetTaperRate();
+        bat.op_config_raw        = BATTERY_GetOpConfig();
+        bat.average_power_mW     = BATTERY_GetAveragePower();
+        bat.board_offset         = BATTERY_GetBoardOffset();
+        bat.deadband_mA          = BATTERY_GetDeadband();
+        memcpy(bat.calib_bytes, BATTERY_GetCalibBytes(), 16);
+        bat.init_fail_stage      = BATTERY_GetInitFailStage();
+        bat.init_completed       = BATTERY_GetInitCompleted();
+        bat.post_reset_fired     = BATTERY_GetPostResetFired();
+        bat.chem_id_read         = BATTERY_GetChemIdRead();
+        diag_append_section(buf, sizeof(buf), &offset, DIAG_SECTION_BATTERY,
+                            &bat, sizeof(bat));
+        count++;
+    }
+
+    /* BLE — counters not yet wired; emit zeros + sentinel RSSI. iOS will
+     * render "—". Adding counters in lockservice_app.c later just fills
+     * these fields. */
+    if (section_mask & (1u << 2)) {
+        diag_ble_t ble = {0};
+        ble.current_rssi_dBm           = 0x7F;
+        ble.connection_count_since_boot = 0;
+        ble.last_disconnect_reason     = 0;
+        ble.mtu_negotiated             = 0;
+        ble.connection_interval_units  = 0;
+        diag_append_section(buf, sizeof(buf), &offset, DIAG_SECTION_BLE,
+                            &ble, sizeof(ble));
+        count++;
+    }
+
+    /* SENSOR — current MLC state is already cached. The other counters
+     * are TODO; emit 0 for now. */
+    if (section_mask & (1u << 3)) {
+        diag_sensor_t sen = {0};
+        sen.cached_mlc_state                 = lis2dux12_app_get_cached_mlc_state();
+        sen.last_fsm_event                   = 0;
+        sen.mlc_transitions_since_boot       = 0;
+        sen.int1_fires_since_boot            = 0;
+        sen.motion_events_logged_since_boot  = 0;
+        diag_append_section(buf, sizeof(buf), &offset, DIAG_SECTION_SENSOR,
+                            &sen, sizeof(sen));
+        count++;
+    }
+
+    /* POWER — wake-source attribution counters are TODO. We can at least
+     * surface current_power_state from PowerMgmt_IsLowPower(). */
+    if (section_mask & (1u << 4)) {
+        diag_power_t pwr = {0};
+        pwr.wakes_motion       = 0;
+        pwr.wakes_cable        = 0;
+        pwr.wakes_debug        = 0;
+        pwr.wakes_tick         = 0;
+        pwr.time_in_lp_seconds = 0;
+        pwr.current_power_state = PowerMgmt_IsLowPower() ? 1u : 0u;
+        diag_append_section(buf, sizeof(buf), &offset, DIAG_SECTION_POWER,
+                            &pwr, sizeof(pwr));
+        count++;
+    }
+
+    /* STORAGE */
+    if (section_mask & (1u << 5)) {
+        diag_storage_t sto = {0};
+        sto.motion_log_count      = MotionLogger_GetEventCount();
+        sto.motion_log_max        = MAX_MOTION_EVENTS;
+        sto.loyalty_store_healthy = Loyalty_StoreUnhealthy() ? 0u : 1u;
+        sto.loyalty_claimed       = Loyalty_IsClaimed() ? 1u : 0u;
+        sto.i2c_errors_since_boot = 0;
+        sto.eeprom_fail_count     = 0;
+        sto.bq27427_fail_count    = 0;
+        sto.lis2dux12_fail_count  = 0;
+        diag_append_section(buf, sizeof(buf), &offset, DIAG_SECTION_STORAGE,
+                            &sto, sizeof(sto));
+        count++;
+    }
+
+    buf[count_offset] = count;
 
     LOCKSERVICE_Data_t notification_data;
-    notification_data.p_Payload = (uint8_t *)&payload;
-    notification_data.Length    = sizeof(payload);
+    notification_data.p_Payload = buf;
+    notification_data.Length    = offset;
 
     LOCKSERVICE_NotifyValue(LOCKSERVICE_BATTERYDIAG, &notification_data,
                             LOCKSERVICE_APP_Context.ConnectionHandle);

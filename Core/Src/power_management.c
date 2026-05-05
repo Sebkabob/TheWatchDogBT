@@ -26,6 +26,8 @@
 #include "sound.h"
 #include "motion_logger.h"
 #include "state_machine.h"
+#include "m24cxx.h"
+#include <string.h>
 
 extern I2C_HandleTypeDef  hi2c1;
 extern TIM_HandleTypeDef  htim2;
@@ -402,4 +404,101 @@ void PowerMgmt_EEPROM_PowerOn(void)
 void PowerMgmt_EEPROM_PowerOff(void)
 {
     HAL_GPIO_WritePin(EEPROM_POW_GPIO_Port, EEPROM_POW_Pin, GPIO_PIN_RESET);
+}
+
+/* ----------------------------- Boot diagnostics ---------------------------
+ * Reset-cause snapshot + EEPROM-persisted boot counter, surfaced to iOS via
+ * the SYSTEM section of the on-demand diagnostic dump. EEPROM offset 0x20
+ * (4 bytes, LE) is inside the existing 0x000..0x03F reserved device-info
+ * region (motion_logger.h), so it cannot collide with motion-log storage.
+ ***************************************************************************/
+
+#define EEPROM_BOOT_COUNT_ADDR  0x20
+#define EEPROM_BOOT_COUNT_LEN   4
+
+static uint8_t  s_reset_cause_packed = 0;
+static uint8_t  s_reset_cause_captured = 0;
+static uint32_t s_boot_count = 0;
+
+/***************************************************************************
+ * PowerMgmt_CaptureResetCause — must be called as the FIRST thing in main()
+ *   Reads RCC->CSR's latched reset flags, packs them into a single byte
+ *   (bit 0 PAD, 1 POR, 2 SFT, 3 WDG, 4 LOCKUP), then clears them so the
+ *   next boot's flags are clean. Idempotent — extra calls do nothing.
+ ***************************************************************************/
+void PowerMgmt_CaptureResetCause(void)
+{
+    if (s_reset_cause_captured) return;
+    s_reset_cause_captured = 1;
+
+    uint32_t csr = RCC->CSR;
+    uint8_t cause = 0;
+    if (csr & RCC_CSR_PADRSTF)    cause |= (1u << 0);
+    if (csr & RCC_CSR_PORRSTF)    cause |= (1u << 1);
+    if (csr & RCC_CSR_SFTRSTF)    cause |= (1u << 2);
+    if (csr & RCC_CSR_WDGRSTF)    cause |= (1u << 3);
+    if (csr & RCC_CSR_LOCKUPRSTF) cause |= (1u << 4);
+    s_reset_cause_packed = cause;
+
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+}
+
+uint8_t PowerMgmt_GetResetCause(void)
+{
+    return s_reset_cause_packed;
+}
+
+/***************************************************************************
+ * PowerMgmt_BootCount_Init — read, increment, write back the boot counter
+ *   Call after the EEPROM is reachable (i.e. same point where Loyalty_Init
+ *   runs). Failure to read or write leaves s_boot_count = 0 — iOS will see
+ *   "0" and can flag it. Brackets its own EEPROM power-on/off because boot
+ *   count is independent of any other persistent record.
+ ***************************************************************************/
+void PowerMgmt_BootCount_Init(void)
+{
+    M24CXX_HandleTypeDef eeprom;
+    uint8_t buf[EEPROM_BOOT_COUNT_LEN] = {0};
+    uint32_t value = 0;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&eeprom, &hi2c1, EEPROM_I2C_ADDRESS) != M24CXX_Ok) {
+        PowerMgmt_EEPROM_PowerOff();
+        return;
+    }
+
+    if (m24cxx_read(&eeprom, EEPROM_BOOT_COUNT_ADDR, buf, EEPROM_BOOT_COUNT_LEN)
+            == M24CXX_Ok) {
+        value = ((uint32_t)buf[0])       |
+                ((uint32_t)buf[1] <<  8) |
+                ((uint32_t)buf[2] << 16) |
+                ((uint32_t)buf[3] << 24);
+        // Treat 0xFFFFFFFF (erased EEPROM) as zero so first-ever boot ticks
+        // 0 → 1 instead of wrapping.
+        if (value == 0xFFFFFFFFu) value = 0;
+    }
+
+    value++;
+
+    buf[0] = (uint8_t)(value      );
+    buf[1] = (uint8_t)(value >>  8);
+    buf[2] = (uint8_t)(value >> 16);
+    buf[3] = (uint8_t)(value >> 24);
+    (void)m24cxx_write(&eeprom, EEPROM_BOOT_COUNT_ADDR, buf, EEPROM_BOOT_COUNT_LEN);
+
+    s_boot_count = value;
+
+    PowerMgmt_EEPROM_PowerOff();
+}
+
+uint32_t PowerMgmt_GetBootCount(void)
+{
+    return s_boot_count;
+}
+
+uint32_t PowerMgmt_GetUptimeSeconds(void)
+{
+    return HAL_GetTick() / 1000u;
 }

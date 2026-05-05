@@ -29,14 +29,15 @@
 /* USER CODE END Includes */
 
 /**
- * Define to 1 if LSE is used, otherwise set it to 0.
+ * 0 = BLE stack uses LSI for sleep clock (SCA = 500 ppm, periodic
+ * calibration enabled). 1 = LSE (SCA = 100 ppm, no cal).
  *
- * Auto-flips CFG_BLE_SLEEP_CLOCK_ACCURACY (500→100 ppm) so the BLE
- * stack matches the actual crystal accuracy. If LSE fails to start at
- * boot, main.c falls back to LSI at runtime — the SCA mismatch hurts
- * adv timing margins slightly but BLE still works.
+ * Held at 0: LSE on this hardware is unreliable and the stack has no
+ * way to recover if LSE fails to lock at boot — it would announce
+ * 100 ppm to the central while actually drifting on LSI, breaking
+ * connections. LSI with cal is days-stable and worth the few extra µA.
  */
-#define CFG_LSCLK_LSE                       (1)
+#define CFG_LSCLK_LSE                       (0)
 
 /******************************************************************************
  * Application Config

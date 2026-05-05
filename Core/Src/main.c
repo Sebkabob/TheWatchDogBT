@@ -120,21 +120,21 @@ static void MX_GPIO_LowPower_Unused(void)
     gpio.Pin = GPIO_PIN_14;
     HAL_GPIO_Init(GPIOB, &gpio);
 
-    /* PA3 SWCLK — set analog and disable DEEPSTOP pulls. SWDIO retention is
-     * already disabled via LL_PWR_DisableDBGRET below. */
-    gpio.Pin = GPIO_PIN_3;
-    HAL_GPIO_Init(GPIOA, &gpio);
+    /* SWD left enabled: PA2 (SWDIO) and PA3 (SWCLK) keep their AF default
+     * so the debugger can attach. Costs ~µA across DEEPSTOP — acceptable
+     * during development. */
 
     /* On STM32WB0 the DEEPSTOP pull-up/down state is controlled by the PWR
      * controller, NOT the GPIO PUPDR register. Any pin not explicitly cleared
      * may keep a default pull active during sleep, leaking through floating
-     * traces. Force-clear pulls on every unused pin (and SWCLK) here. */
+     * traces. Force-clear pulls on every unused pin here (PA3 omitted — it's
+     * SWCLK and needs its default pull-down to remain debuggable). */
     HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A,
-        PWR_GPIO_BIT_3 | PWR_GPIO_BIT_4 | PWR_GPIO_BIT_5 | PWR_GPIO_BIT_6 |
+        PWR_GPIO_BIT_4 | PWR_GPIO_BIT_5 | PWR_GPIO_BIT_6 |
         PWR_GPIO_BIT_7 | PWR_GPIO_BIT_12 | PWR_GPIO_BIT_13 | PWR_GPIO_BIT_14 |
         PWR_GPIO_BIT_15);
     HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A,
-        PWR_GPIO_BIT_3 | PWR_GPIO_BIT_4 | PWR_GPIO_BIT_5 | PWR_GPIO_BIT_6 |
+        PWR_GPIO_BIT_4 | PWR_GPIO_BIT_5 | PWR_GPIO_BIT_6 |
         PWR_GPIO_BIT_7 | PWR_GPIO_BIT_12 | PWR_GPIO_BIT_13 | PWR_GPIO_BIT_14 |
         PWR_GPIO_BIT_15);
 

@@ -59,9 +59,10 @@ const uint8_t bd_address_override = BD_ADDRESS_OVERRIDE;
 
 stmdev_ctx_t dev_ctx;
 
-/* 1 = LSE locked at boot, 0 = LSI fallback. Read by PeriphCommonClock_Config
- * to route the BLE-wakeup clock and by MX_RADIO_TIMER_Init to skip
- * calibration when the crystal is in use. */
+/* Sleep-clock source flag. Pinned to 0 (LSI) — LSE is unreliable on
+ * this hardware and the BLE stack can't safely recover if it drops out
+ * (see CFG_LSCLK_LSE in app_conf.h). Kept as a runtime flag so
+ * PeriphCommonClock_Config and MX_RADIO_TIMER_Init can stay generic. */
 volatile uint8_t g_lse_active = 0;
 /* USER CODE END PD */
 
@@ -320,34 +321,16 @@ void SystemClock_Config(void)
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
-  /* LSE drive must be set BEFORE enabling. MEDIUMLOW = lowest drive that
-   * still starts a typical 32.768 kHz crystal. */
-  __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_MEDIUMLOW);
-
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSE|RCC_OSCILLATORTYPE_HSE;
+  /* LSI-only: LSE on this hardware is unreliable and the BLE stack
+   * cannot safely recover if LSE drops out at runtime (see
+   * CFG_LSCLK_LSE in app_conf.h). LSI + periodic calibration is
+   * days-stable in field testing. */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) == HAL_OK)
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
-    g_lse_active = 1;
-  }
-  else
-  {
-    /* LSE didn't start (no crystal / load caps wrong / bad layout).
-     * Fall back to LSI so the device still boots. SCA penalty hurts adv
-     * power but BLE keeps working. */
-    g_lse_active = 0;
-    RCC_OscInitTypeDef fallback = {0};
-    fallback.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
-    fallback.HSEState = RCC_HSE_ON;
-    fallback.LSIState = RCC_LSI_ON;
-    if (HAL_RCC_OscConfig(&fallback) != HAL_OK)
-    {
-      Error_Handler();
-    }
+    Error_Handler();
   }
 
   /** Configure the SYSCLKSource and SYSCLKDivider
@@ -369,18 +352,14 @@ void PeriphCommonClock_Config(void)
 {
   RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
 
-  /** Initializes the peripherals clock
-  */
-  /* Route the BLE wake-up / RTC / WDG slow-clock to LSE if it locked.
-   * Without this selection, even an enabled LSE doesn't drive the BLE
-   * timer — the chip stays on its HSI64M/2048 default and we get no
-   * adv-power benefit from the crystal. */
+  /* BLE wake-up / RTC / WDG slow-clock from HSI64M/2048 (≈ 32 kHz).
+   * The BLE stack runs periodic calibration against HSE so SCA stays
+   * within the 500 ppm advertised in CFG_BLE_SLEEP_CLOCK_ACCURACY. */
   PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SMPS
                                            | RCC_PERIPHCLK_RTC_WDG_BLEWKUP;
   PeriphClkInitStruct.SmpsDivSelection = RCC_SMPSCLK_DIV4;
   PeriphClkInitStruct.RTCWDGBLEWKUPClockSelection =
-      g_lse_active ? RCC_RTC_WDG_BLEWKUP_CLKSOURCE_LSE
-                   : RCC_RTC_WDG_BLEWKUP_CLKSOURCE_HSI64M_DIV2048;
+      RCC_RTC_WDG_BLEWKUP_CLKSOURCE_HSI64M_DIV2048;
 
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
   {
@@ -528,18 +507,11 @@ static void MX_RADIO_TIMER_Init(void)
   while(LL_RADIO_TIMER_GetAbsoluteTime(WAKEUP) < 0x10);
   RADIO_TIMER_InitStruct.XTAL_StartupTime = 320;
 
-  /* When the BLE wakeup clock is the LSE crystal (set in PeriphCommonClock_Config
-   * if g_lse_active), the radio timer doesn't need calibration — the crystal
-   * is already accurate. With LSI fallback we still need calibration since the
-   * RC oscillator drifts with temperature and supply. */
-  extern volatile uint8_t g_lse_active;
-  if (g_lse_active) {
-    RADIO_TIMER_InitStruct.enableInitialCalibration = FALSE;
-    RADIO_TIMER_InitStruct.periodicCalibrationInterval = 0;
-  } else {
-    RADIO_TIMER_InitStruct.enableInitialCalibration = TRUE;
-    RADIO_TIMER_InitStruct.periodicCalibrationInterval = 10000;
-  }
+  /* LSI sleep clock — RC drifts with temperature and supply, so periodic
+   * calibration against HSE is required to keep BLE timing within the
+   * 500 ppm SCA the stack advertises. */
+  RADIO_TIMER_InitStruct.enableInitialCalibration = TRUE;
+  RADIO_TIMER_InitStruct.periodicCalibrationInterval = 10000;
 
   HAL_RADIO_TIMER_Init(&RADIO_TIMER_InitStruct);
   /* USER CODE BEGIN RADIO_TIMER_Init 2 */

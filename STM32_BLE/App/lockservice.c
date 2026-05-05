@@ -48,7 +48,11 @@ typedef struct{
 /* Private defines -----------------------------------------------------------*/
 
 /* USER CODE BEGIN PD */
-#define BATTERYDIAG_SIZE        51  /* BatteryDiagnostic v11 packed payload */
+/* On-demand TLV diagnostic dump (header + variable sections). 220 bytes
+ * leaves headroom over the current ~166-byte v1 payload so future fields can
+ * be appended inside sections without bumping the GATT descriptor and
+ * forcing iOS to rediscover the service. See FW_DIAGNOSTICS_PROMPT.md. */
+#define BATTERYDIAG_SIZE        220
 #define BATTERYDIAG_UUID        0x42,0x44,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
 /* USER CODE END PD */
 
@@ -87,7 +91,7 @@ BLE_GATT_SRV_CCCD_DECLARE(batterydiag, CFG_BLE_NUM_RADIO_TASKS, BLE_GATT_SRV_CCC
 static uint8_t batterydiag_val_buffer[BATTERYDIAG_SIZE];
 
 static ble_gatt_val_buffer_def_t batterydiag_val_buffer_def = {
-  .op_flags   = BLE_GATT_SRV_OP_MODIFIED_EVT_ENABLE_FLAG,
+  .op_flags   = BLE_GATT_SRV_OP_MODIFIED_EVT_ENABLE_FLAG | BLE_GATT_SRV_OP_VALUE_VAR_LENGTH_FLAG,
   .val_len    = BATTERYDIAG_SIZE,
   .buffer_len = sizeof(batterydiag_val_buffer),
   .buffer_p   = batterydiag_val_buffer

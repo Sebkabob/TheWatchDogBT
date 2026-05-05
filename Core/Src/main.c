@@ -165,7 +165,10 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  // Snapshot RCC->CSR reset flags before HAL_Init / clock config can perturb
+  // them. The byte is exposed via PowerMgmt_GetResetCause() to the
+  // diagnostic dump.
+  PowerMgmt_CaptureResetCause();
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -256,6 +259,10 @@ int main(void)
    * on the EEPROM power rail. */
   Loyalty_Init();
 
+  /* EEPROM-persisted boot counter (diagnostic). Same EEPROM, same power
+   * rail — runs after Loyalty_Init so the two don't race. */
+  PowerMgmt_BootCount_Init();
+
   /* Persisted alarm post-motion duration. Same EEPROM, same power rail —
    * runs after Loyalty_Init for the same race-avoidance reason. */
   AlarmDuration_Init();
@@ -286,8 +293,10 @@ int main(void)
     if (HAL_GetTick() - last_battery_check > 1000) {
         last_battery_check = HAL_GetTick();
         if (!PowerMgmt_IsLowPower()) {
+            // Refresh cached gauge state for the rest of the firmware.
+            // Diagnostic emission used to fire here too — now it's
+            // on-demand via CMD_REQUEST_DIAG (see lockservice_app.c).
             BATTERY_UpdateState();
-            LOCKSERVICE_SendBatteryDiagnostic();
         }
     }
 

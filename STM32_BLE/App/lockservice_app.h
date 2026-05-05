@@ -72,6 +72,7 @@ typedef struct
 #define CMD_FIND_MY_DEVICE       0xFA   // byte[1] bit 0 = start
 #define CMD_RESET_DEVICE         0xFB
 #define CMD_DRAIN_MODE           0xFC   // byte[1] bit 0: 1=start, 0=stop
+#define CMD_REQUEST_DIAG         0xF4   // optional byte[1] = section_mask (default 0xFF)
 
 // Device → iOS response markers (DEVICESTATUS notify).
 #define RESP_LOG_COUNT           0xE0
@@ -105,7 +106,12 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification);
 void LOCKSERVICE_SendStatusUpdate(void);
 void LOCKSERVICE_ForceStatusUpdate(void);
 void LOCKSERVICE_SendMotionAlert(uint8_t motionType);
-void LOCKSERVICE_SendBatteryDiagnostic(void);
+
+/* On-demand TLV diagnostic dump on the BATTERYDIAG characteristic.
+ * section_mask is a bitmask: bit 0 = SYSTEM, bit 1 = BATTERY, bit 2 = BLE,
+ * bit 3 = SENSOR, bit 4 = POWER, bit 5 = STORAGE. 0xFF = all. See
+ * FW_DIAGNOSTICS_PROMPT.md for the wire format. */
+void LOCKSERVICE_SendDiagnostic(uint8_t section_mask);
 
 // Drain-mode test: white LED at max + continuous tone, auto-stops at SOC=5%.
 // Drain_Tick() must run every main-loop iteration to re-assert outputs.

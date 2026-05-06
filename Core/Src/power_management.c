@@ -156,6 +156,52 @@ static void Gate_AccelInterrupt(void)
     HAL_GPIO_Init(ACCEL_INT_GPIO_Port, &gpio);
 }
 
+/***************************************************************************
+ * Gate_SWD — drop SWDIO/SWCLK to analog and kill DEEPSTOP debug retention
+ *   PWR_CR2_DBGRET defaults ON; left alone it retains PA2 SWDIO / PA3 SWCLK
+ *   pin state across DEEPSTOP and keeps part of the debug logic alive —
+ *   ~10–15 µA in adv. Disabling it here for the LP window reclaims that
+ *   current; Restore_SWD reverses it on wake so a probe can still attach.
+ ***************************************************************************/
+static void Gate_SWD(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Mode = GPIO_MODE_ANALOG;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Pin  = GPIO_PIN_2 | GPIO_PIN_3;
+    HAL_GPIO_Init(GPIOA, &gpio);
+
+    HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_2 | PWR_GPIO_BIT_3);
+    HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_2 | PWR_GPIO_BIT_3);
+
+    LL_PWR_DisableDBGRET();
+}
+
+/***************************************************************************
+ * Restore_SWD — re-enable SWD pins so a probe can attach mid-session
+ *   Mirrors the SWDIO config from MX_GPIO_Init (AF7, pullup) and re-enables
+ *   the DEEPSTOP retention bias on PA2 so a probe sees a clean line.
+ ***************************************************************************/
+static void Restore_SWD(void)
+{
+    LL_PWR_EnableDBGRET();
+
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Mode      = GPIO_MODE_AF_PP;
+    gpio.Pull      = GPIO_PULLUP;
+    gpio.Speed     = GPIO_SPEED_FREQ_LOW;
+    gpio.Alternate = GPIO_AF7_SWDIO;
+    gpio.Pin       = GPIO_PIN_2;
+    HAL_GPIO_Init(GPIOA, &gpio);
+
+    gpio.Alternate = GPIO_AF7_SWCLK;
+    gpio.Pull      = GPIO_NOPULL;
+    gpio.Pin       = GPIO_PIN_3;
+    HAL_GPIO_Init(GPIOA, &gpio);
+
+    HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_2);
+}
+
 static void Keep_AccelInterrupt(void)
 {
     GPIO_InitTypeDef gpio = {0};
@@ -261,6 +307,7 @@ void PowerMgmt_EnterLowPower_Idle(void)
     Gate_UART();
     Gate_AccelInterrupt();
     Gate_GPIO_Outputs();
+    Gate_SWD();
     Keep_CablePlugInterrupt();
 
     peripherals_gated = 1;
@@ -301,6 +348,7 @@ void PowerMgmt_EnterLowPower_Armed(void)
     Gate_UART();
     Keep_AccelInterrupt();
     Gate_GPIO_Outputs();
+    Gate_SWD();
     Keep_CablePlugInterrupt();
 
     peripherals_gated = 1;
@@ -339,6 +387,7 @@ void PowerMgmt_RestoreAll(void)
 {
     if (!peripherals_gated) return;
 
+    Restore_SWD();
     Restore_I2C_Bus();
     HAL_Delay(5);
 
@@ -372,6 +421,7 @@ void PowerMgmt_RestoreForMotion(void)
 {
     if (!peripherals_gated) return;
 
+    Restore_SWD();
     Restore_I2C_Bus();
 
     __HAL_RCC_TIM16_CLK_ENABLE();

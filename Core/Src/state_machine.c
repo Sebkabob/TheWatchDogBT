@@ -21,6 +21,7 @@
 #include "sound.h"
 #include "battery.h"
 #include "lockservice_app.h"
+#include "loyalty.h"
 #include "accelerometer.h"
 #include "lis2dux12_app.h"
 #include "motion_logger.h"
@@ -124,13 +125,26 @@ void StateMachine_Init(void)
 
 /***************************************************************************
  * CablePlug_UpdateState — edge-detect cable + manage post-unplug awake window
+ *   Drives the loyalty reset window on debounced VBUS edges: rising edge
+ *   opens it (CLAIM may overwrite the EEPROM token for ~10 s), falling edge
+ *   closes it. The 50 ms debounce prevents an insertion bounce from racking
+ *   up multiple Start/Cancel cycles. Boot-with-VBUS-already-high is handled
+ *   inside Loyalty_Init, not here, since this function never sees that edge.
  ***************************************************************************/
+#define CABLE_EDGE_DEBOUNCE_MS  50u
+
 static void CablePlug_UpdateState(void)
 {
+    static uint32_t last_edge_ms = 0;
     uint8_t pluggedNow = IS_CABLE_PLUGGED() ? 1 : 0;
 
     if (pluggedNow) {
         if (!cableWasPlugged) {
+            uint32_t now = HAL_GetTick();
+            if ((now - last_edge_ms) >= CABLE_EDGE_DEBOUNCE_MS) {
+                Loyalty_StartResetWindow();
+                last_edge_ms = now;
+            }
             LED_PlugIn_Start();
         }
         stayAwakeFlag = 1;
@@ -140,7 +154,12 @@ static void CablePlug_UpdateState(void)
     }
 
     if (cableWasPlugged) {
-        cableUnplugTime = HAL_GetTick();
+        uint32_t now = HAL_GetTick();
+        if ((now - last_edge_ms) >= CABLE_EDGE_DEBOUNCE_MS) {
+            Loyalty_CancelResetWindow();
+            last_edge_ms = now;
+        }
+        cableUnplugTime = now;
         cableWasPlugged = 0;
         LED_PlugOut_Start();
     }

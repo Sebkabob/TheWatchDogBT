@@ -44,6 +44,11 @@ static bool    s_claimed   = false;
 static bool    s_unhealthy = false;
 static uint8_t s_token[LOYALTY_TOKEN_LEN] = {0};
 
+// Reset-window state. 0 = closed (LOCKED); non-zero = HAL_GetTick deadline at
+// which the window expires (UNLOCKED). Compared with signed-tick arithmetic so
+// the 49.7-day wraparound is benign.
+static volatile uint32_t s_unlock_expiry_ms = 0;
+
 // CRC-8/CCITT (poly 0x07, init 0x00). Byte-wise loop, no table.
 static uint8_t loyalty_crc8(const uint8_t *data, size_t len)
 {
@@ -100,11 +105,16 @@ static bool loyalty_write_verify(uint16_t addr, const uint8_t *src, uint16_t len
  *   them in place once with the correct CRC. If the rewrite fails the
  *   store goes UNHEALTHY (safer than accepting an in-RAM claim we couldn't
  *   persist).
+ *
+ *   If VBUS is already high at boot we open the reset window here so
+ *   "factory pair" and "reset old device" both reduce to the same gesture
+ *   (plug into USB-C, then tap Pair within 10 s).
  ***************************************************************************/
 void Loyalty_Init(void)
 {
-    s_claimed   = false;
-    s_unhealthy = false;
+    s_claimed         = false;
+    s_unhealthy       = false;
+    s_unlock_expiry_ms = 0;
     memset(s_token, 0, sizeof(s_token));
 
 #if LOYALTY_WIPE_ON_BOOT
@@ -149,6 +159,10 @@ void Loyalty_Init(void)
     }
 
     PowerMgmt_EEPROM_PowerOff();
+
+    if (IS_CABLE_PLUGGED()) {
+        Loyalty_StartResetWindow();
+    }
 }
 
 bool Loyalty_IsClaimed(void)
@@ -228,4 +242,39 @@ bool Loyalty_Wipe(void)
     s_claimed = false;
 
     return ok;
+}
+
+/***************************************************************************
+ * Loyalty_StartResetWindow — open the USB-C-gated CLAIM-overwrite window
+ *   Caller is the cable-plug edge handler (or Loyalty_Init at boot if VBUS
+ *   is already high). Re-arming an already-open window is intentional for
+ *   the boot path; the cable-plug handler debounces edges so legitimate
+ *   re-arms only happen on true unplug→replug.
+ ***************************************************************************/
+void Loyalty_StartResetWindow(void)
+{
+    uint32_t deadline = HAL_GetTick() + LOYALTY_RESET_WINDOW_MS;
+    // 0 is reserved for "closed". On the astronomically unlikely tick that
+    // wraps to exactly 0 here, nudge by 1 ms so IsOpen still treats us as
+    // open.
+    if (deadline == 0) deadline = 1;
+    s_unlock_expiry_ms = deadline;
+}
+
+void Loyalty_CancelResetWindow(void)
+{
+    s_unlock_expiry_ms = 0;
+}
+
+bool Loyalty_IsResetWindowOpen(void)
+{
+    uint32_t expiry = s_unlock_expiry_ms;
+    if (expiry == 0) {
+        return false;
+    }
+    if ((int32_t)(expiry - HAL_GetTick()) > 0) {
+        return true;
+    }
+    s_unlock_expiry_ms = 0;
+    return false;
 }

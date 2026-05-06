@@ -303,12 +303,13 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
                 break;
             }
 
-            // Already claimed: only accept a CLAIM whose token matches —
-            // that's the legitimate owner with stale local state (app
-            // reinstall, BondManager cleared, etc.). Treat it as a
-            // successful re-claim. Any other token is a different phone.
-            if (Loyalty_IsClaimed()) {
-                if (Loyalty_Verify(&received_data[1])) {
+            // USB-C reset window is the only path that's allowed to overwrite
+            // (or write a fresh) token. Outside the window, CLAIM degrades to
+            // "verify the supplied token" — the iOS app's recovery story for
+            // a Keychain wipe is "plug into USB-C, then tap Pair" so this is
+            // intentional, not a UX trap.
+            if (Loyalty_IsResetWindowOpen()) {
+                if (Loyalty_Claim(&received_data[1])) {
                     Loyalty_SendResponse(RESP_CLAIM_OK, 0x01, 0);
                 } else {
                     Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
@@ -316,11 +317,16 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
                 break;
             }
 
-            if (Loyalty_Claim(&received_data[1])) {
-                Loyalty_SendResponse(RESP_CLAIM_OK, 0x01, 0);
-            } else {
-                Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+            // Locked: a matching token means the legitimate owner is
+            // re-establishing a session (their phone still has the token but
+            // BondManager / system state was cleared). Reply VERIFY_OK so the
+            // app can distinguish "we accepted your CLAIM as a verify" from
+            // "we wrote a fresh token". Mismatch is a different phone — REJECT.
+            if (Loyalty_IsClaimed() && Loyalty_Verify(&received_data[1])) {
+                Loyalty_SendResponse(RESP_VERIFY_OK, 0x01, 0);
+                break;
             }
+            Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
             break;
         }
 

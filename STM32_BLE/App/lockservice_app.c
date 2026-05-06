@@ -433,10 +433,12 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
                     deviceState = cmd_data[0];
                 }
                 if (settings_len >= 2) {
-                    // Bit 0 = HIGH_PERF, bit 1 = alarmDisabled, bits 2..7
-                    // reserved (mask off so reads stay clean).
-                    deviceInfo = cmd_data[1] & 0x03;
+                    // Bit 0 = HIGH_PERF, bit 1 = alarmDisabled, bit 2 =
+                    // disconnectSoundDisabled. Bits 3..7 reserved (mask off
+                    // so reads stay clean).
+                    deviceInfo = cmd_data[1] & 0x07;
                     (void)AlarmDisabled_Set((cmd_data[1] >> 1) & 0x01);
+                    (void)DisconnectSoundDisabled_Set((cmd_data[1] >> 2) & 0x01);
                 }
                 if (settings_len >= 3) {
                     (void)AlarmDuration_Set(cmd_data[2]);
@@ -449,10 +451,11 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
                 // LED brightness / alarm-disabled) already wrote inside
                 // their own Set() calls above.
                 DeviceSettings_Persist();
-                APP_DBG_MSG("Recv settings · 0x%02X deviceInfo 0x%02X alarmDur=%us ledBright=%u alarmDisabled=%u\n",
+                APP_DBG_MSG("Recv settings · 0x%02X deviceInfo 0x%02X alarmDur=%us ledBright=%u alarmDisabled=%u disconnSnd=%u\n",
                             deviceState, deviceInfo,
                             AlarmDuration_Get(), LedBrightness_Get(),
-                            AlarmDisabled_Get() ? 1u : 0u);
+                            AlarmDisabled_Get() ? 1u : 0u,
+                            DisconnectSoundDisabled_Get() ? 1u : 0u);
                 HAL_Delay(5);
                 LOCKSERVICE_ForceStatusUpdate();
                 break;
@@ -944,10 +947,12 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
     a_LOCKSERVICE_UpdateCharData[10] = (uint8_t)((accel[1] >> 8) & 0xFF);
     a_LOCKSERVICE_UpdateCharData[11] = (uint8_t)(accel[2] & 0xFF);
     a_LOCKSERVICE_UpdateCharData[12] = (uint8_t)((accel[2] >> 8) & 0xFF);
-    // Bit 0 = HIGH_PERF, bit 1 = alarmDisabled (sourced from the persisted
-    // store so the value survives boot). Bits 2..7 reserved.
+    // Bit 0 = HIGH_PERF, bit 1 = alarmDisabled, bit 2 = disconnectSoundDisabled.
+    // alarmDisabled and disconnectSoundDisabled are sourced from their
+    // persisted stores so the values survive boot. Bits 3..7 reserved.
     a_LOCKSERVICE_UpdateCharData[13] = (uint8_t)((deviceInfo & 0x01)
-                                                | (AlarmDisabled_Get() ? 0x02 : 0));
+                                                | (AlarmDisabled_Get() ? 0x02 : 0)
+                                                | (DisconnectSoundDisabled_Get() ? 0x04 : 0));
     a_LOCKSERVICE_UpdateCharData[14] = g_bd_address[0];
     a_LOCKSERVICE_UpdateCharData[15] = g_bd_address[1];
     a_LOCKSERVICE_UpdateCharData[16] = FW_VERSION_MAJOR;

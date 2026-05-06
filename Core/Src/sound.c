@@ -329,6 +329,8 @@ void firstBootTone(void)
 
 void SOUND_Disconnected(void)
 {
+    if (DisconnectSoundDisabled_Get()) return;
+
     BUZZER_Tone(380, 10);
     HAL_Delay(10);
     BUZZER_Tone(280, 12);
@@ -337,16 +339,18 @@ void SOUND_Disconnected(void)
 }
 
 /***************************************************************************
- * Persisted alarm settings — both EEPROM-backed.
- *   alarm_duration_seconds (0..30, default 10)
- *   alarm_disabled         (default false)
+ * Persisted alarm settings — all EEPROM-backed.
+ *   alarm_duration_seconds     (0..30, default 10)
+ *   alarm_disabled             (default false)
+ *   disconnect_sound_disabled  (default false)
  ***************************************************************************/
 
 extern I2C_HandleTypeDef hi2c1;
 
 static M24CXX_HandleTypeDef s_sound_eeprom;
-static uint8_t s_alarm_duration_s = ALARM_DURATION_DEFAULT_S;
-static bool    s_alarm_disabled   = false;
+static uint8_t s_alarm_duration_s         = ALARM_DURATION_DEFAULT_S;
+static bool    s_alarm_disabled           = false;
+static bool    s_disconnect_sound_disabled = false;
 
 static uint8_t alarm_duration_clamp(uint8_t v)
 {
@@ -472,4 +476,63 @@ bool AlarmDisabled_Set(bool disabled)
 
     PowerMgmt_EEPROM_PowerOff();
     return s_alarm_disabled;
+}
+
+void DisconnectSoundDisabled_Init(void)
+{
+    s_disconnect_sound_disabled = false;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_sound_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) != M24CXX_Ok) {
+        PowerMgmt_EEPROM_PowerOff();
+        return;
+    }
+
+    uint8_t buf[EEPROM_DISCONNECT_SOUND_DISABLED_LEN] = {0};
+    if (m24cxx_read(&s_sound_eeprom, EEPROM_DISCONNECT_SOUND_DISABLED_ADDR, buf,
+                    EEPROM_DISCONNECT_SOUND_DISABLED_LEN) == M24CXX_Ok) {
+        if (buf[0] == EEPROM_DISCONNECT_SOUND_DISABLED_MAGIC) {
+            s_disconnect_sound_disabled = (buf[1] != 0);
+        } else {
+            uint8_t fresh[EEPROM_DISCONNECT_SOUND_DISABLED_LEN];
+            fresh[0] = EEPROM_DISCONNECT_SOUND_DISABLED_MAGIC;
+            fresh[1] = 0;
+            (void)m24cxx_write(&s_sound_eeprom,
+                               EEPROM_DISCONNECT_SOUND_DISABLED_ADDR,
+                               fresh, EEPROM_DISCONNECT_SOUND_DISABLED_LEN);
+        }
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+}
+
+bool DisconnectSoundDisabled_Get(void)
+{
+    return s_disconnect_sound_disabled;
+}
+
+bool DisconnectSoundDisabled_Set(bool disabled)
+{
+    if (disabled == s_disconnect_sound_disabled) {
+        return s_disconnect_sound_disabled;
+    }
+
+    s_disconnect_sound_disabled = disabled;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_sound_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) == M24CXX_Ok) {
+        uint8_t buf[EEPROM_DISCONNECT_SOUND_DISABLED_LEN];
+        buf[0] = EEPROM_DISCONNECT_SOUND_DISABLED_MAGIC;
+        buf[1] = disabled ? 1 : 0;
+        (void)m24cxx_write(&s_sound_eeprom,
+                           EEPROM_DISCONNECT_SOUND_DISABLED_ADDR, buf,
+                           EEPROM_DISCONNECT_SOUND_DISABLED_LEN);
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+    return s_disconnect_sound_disabled;
 }

@@ -273,6 +273,9 @@ int main(void)
   /* Persisted alarm-suppression flag (deviceInfo bit 1). */
   AlarmDisabled_Init();
 
+  /* Persisted disconnect-chime suppression flag (deviceInfo bit 2). */
+  DisconnectSoundDisabled_Init();
+
   /* Persisted deviceState bits (alarm type / sensitivity / lights / logging /
    * silence) and deviceInfo HIGH_PERF. ARMED is never persisted — boot
    * always comes up disarmed. */

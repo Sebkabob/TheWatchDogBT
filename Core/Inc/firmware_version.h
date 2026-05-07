@@ -15,7 +15,7 @@
 #define FIRMWARE_VERSION_H
 
 #define FW_VERSION_MAJOR    1
-#define FW_VERSION_MAIN     12
+#define FW_VERSION_MAIN     13
 #define FW_VERSION_V2       0
 
 #define FW_STRINGIFY_(x)    #x

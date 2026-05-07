@@ -7,6 +7,7 @@
  *   DISCONNECTED_IDLE → (BLE connect) → CONNECTED_IDLE
  *   CONNECTED_IDLE    → (armed)       → STABILIZING
  *   STABILIZING       → (3 s still)   → LOCKED
+ *   STABILIZING       → (15 s elapsed) → CONNECTED_IDLE
  *   LOCKED            → (motion)      → ALARM_ACTIVE
  *   ALARM_ACTIVE      → (melody done + no motion) → LOCKED
  *
@@ -133,6 +134,12 @@ void StateMachine_Init(void)
  ***************************************************************************/
 #define CABLE_EDGE_DEBOUNCE_MS  50u
 
+// Cap on how long STABILIZING will pulse blue waiting for stillness before
+// bailing back to CONNECTED_IDLE. Without this the device sits forever if
+// motion never settles; the fall-back un-arms via the ARMED-bit clear in
+// StateMachine_ChangeState.
+#define STABILIZE_TIMEOUT_MS    15000u
+
 static void CablePlug_UpdateState(void)
 {
     static uint32_t last_edge_ms = 0;
@@ -255,11 +262,18 @@ void State_Connected_Idle_Loop(void)
 /***************************************************************************
  * State_Stabilizing_Loop — wait for 3 s of stillness before locking
  *   Pulsing blue LED while waiting; both the MLC interrupt and a 10 Hz
- *   poll reset the still-timer when motion is detected.
+ *   poll reset the still-timer when motion is detected. Bails to
+ *   CONNECTED_IDLE after STABILIZE_TIMEOUT_MS so a never-settling device
+ *   can't pulse blue forever.
  ***************************************************************************/
 void State_Stabilizing_Loop(void)
 {
+    static uint32_t last_still_time = 0;
+    static uint32_t stabilize_entry_time = 0;
+    static uint8_t  stabilize_started = 0;
+
     if (!GET_ARMED_BIT(deviceState)) {
+        stabilize_started = 0;
         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
         LED_Off();
         return;
@@ -273,11 +287,9 @@ void State_Stabilizing_Loop(void)
         }
     }
 
-    static uint32_t last_still_time = 0;
-    static uint8_t  stabilize_started = 0;
-
     if (!stabilize_started) {
         last_still_time = HAL_GetTick();
+        stabilize_entry_time = HAL_GetTick();
         stabilize_started = 1;
         LIS2DUX12_ClearMotion();
     }
@@ -304,6 +316,13 @@ void State_Stabilizing_Loop(void)
     if (HAL_GetTick() - last_still_time >= 3000) {
         stabilize_started = 0;
         StateMachine_ChangeState(STATE_LOCKED);
+        return;
+    }
+
+    if (HAL_GetTick() - stabilize_entry_time >= STABILIZE_TIMEOUT_MS) {
+        stabilize_started = 0;
+        StateMachine_ChangeState(STATE_CONNECTED_IDLE);
+        return;
     }
 }
 

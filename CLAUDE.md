@@ -6,7 +6,7 @@ ONLY EDIT CODE WITHIN THE USER EDITABLE SECTIONS!!!
 
 ## Firmware Version
 
-**Current: V1.12.0**  (last reconciled at commit `443ebee`)
+**Current: V1.13.0**  (last reconciled at commit `8900dc6`)
 
 Format: `V<MAJOR>.<MAIN>.<V2>` — single source of truth lives in `Core/Inc/firmware_version.h` (`FW_VERSION_MAJOR/MAIN/V2`, plus `FW_VERSION_STRING`). This line in CLAUDE.md and the macros in the header **must stay in sync**.
 
@@ -129,11 +129,14 @@ The central control loop. `StateMachine_Run()` is called every iteration of `mai
 DISCONNECTED_IDLE → (BLE connect) → CONNECTED_IDLE
 CONNECTED_IDLE    → (armed)       → STABILIZING
 STABILIZING       → (3s still)    → LOCKED
+STABILIZING       → (15s elapsed) → CONNECTED_IDLE
 LOCKED            → (motion)      → ALARM_ACTIVE
 ALARM_ACTIVE      → (alarm_duration_seconds elapsed with no motion) → LOCKED
 ```
 
 `StateMachine_ChangeState()` automatically sets/clears the ARMED bit when entering STABILIZING/LOCKED/ALARM_ACTIVE vs. any other state, then pushes a status notification.
+
+STABILIZING is bounded by `STABILIZE_TIMEOUT_MS` (15 s). If the device never settles into 3 s of stillness within that window the loop bails to `CONNECTED_IDLE`, which clears ARMED and pushes a status update so iOS sees the device fall back to unlocked. This makes a permanent stuck blue pulse impossible.
 
 The `deviceState` byte packs all user-configurable settings:
 

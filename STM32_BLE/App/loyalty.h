@@ -27,6 +27,12 @@
 // can't unbond it. Leave at 0 in normal builds.
 #define LOYALTY_WIPE_ON_BOOT        (0)
 
+// USB-C-gated reset window: while open, CLAIM unconditionally overwrites the
+// stored token (handles iOS Keychain wipe after app reinstall). Length is a
+// compromise between giving the user time to open the app and tap Pair vs.
+// limiting the exploitable window for a stranger in BLE range during a charge.
+#define LOYALTY_RESET_WINDOW_MS     10000u
+
 void Loyalty_Init(void);
 bool Loyalty_IsClaimed(void);
 
@@ -42,5 +48,13 @@ bool Loyalty_Claim(const uint8_t *token);
 
 // Wipe on verified UNBOND or the cable-hold recovery hatch.
 bool Loyalty_Wipe(void);
+
+// Reset-window control. The window is RAM-only; only the token persists in
+// EEPROM. Start is called on a debounced VBUS rising edge (and at boot if
+// VBUS is already high); Cancel on the falling edge. IsOpen drives the CLAIM
+// dispatcher's overwrite-vs-match decision and lazily expires the timer.
+void Loyalty_StartResetWindow(void);
+void Loyalty_CancelResetWindow(void);
+bool Loyalty_IsResetWindowOpen(void);
 
 #endif /* LOYALTY_H */

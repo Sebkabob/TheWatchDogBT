@@ -594,6 +594,22 @@ uint16_t bq27427_op_config(void);
 bool bq27427_disable_sleep(void);
 
 /**
+ * @brief Set OPCONFIG_SLEEP=1 (gauge auto-enters SLEEP at low current).
+ *        Reduces continuous Iq from ~93 µA active down to ~22 µA sleep.
+ *        Must be called while in config-update mode.
+ * @return true on success (or no-op when already enabled)
+ */
+bool bq27427_enable_sleep(void);
+
+/**
+ * @brief Drive the gauge into SHUTDOWN mode (~0.4 µA, deepest state).
+ *        Exits ONLY on a VDD power cycle of the chip — gauge state is
+ *        lost. Diagnostic / power-floor characterisation only.
+ * @return true on success
+ */
+bool bq27427_shutdown(void);
+
+/**
  * @brief Diagnostic: returns the current state of the internal _user_config_control flag.
  * @return true if a user-controlled CONFIG UPDATE session is active.
  */

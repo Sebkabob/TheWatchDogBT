@@ -63,10 +63,6 @@ uint8_t LIS2DUX12_PeekMotionStatus(void) {
     return motion_detected_flag;
 }
 
-void LIS2DUX12_ClearMotionFlag(void) {
-    motion_detected_flag = 0;
-}
-
 /***************************************************************************
  * LIS2DUX12_Init — load MLC asset-tracking UCF and prime cached state
  ***************************************************************************/
@@ -260,11 +256,6 @@ int32_t LIS2DUX12_ConfigArmedSleep(void)
     return 0;
 }
 
-void LIS2DUX12_ClearAllInterrupts(void) {
-    lis2dux12_all_sources_t all_sources;
-    lis2dux12_all_sources_get(&dev_ctx, &all_sources);
-}
-
 void LIS2DUX12_ReadAcceleration(int16_t accel[3]) {
     uint8_t data[6];
     lis2dux12_read_reg(&dev_ctx, 0x28, data, 6);
@@ -313,12 +304,4 @@ uint8_t LIS2DUX12_CheckTilt(void) {
     }
 
     return tilt_state;
-}
-
-void LIS2DUX12_I2CScan(void) {
-    for (uint8_t i = 0; i < 128; i++) {
-        uint16_t address = (uint16_t)(i << 1);
-        if (HAL_I2C_IsDeviceReady(&hi2c1, address, 3, 5) == HAL_OK) {
-        }
-    }
 }

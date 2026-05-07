@@ -26,6 +26,8 @@
 #include "sound.h"
 #include "motion_logger.h"
 #include "state_machine.h"
+#include "m24cxx.h"
+#include <string.h>
 
 extern I2C_HandleTypeDef  hi2c1;
 extern TIM_HandleTypeDef  htim2;
@@ -42,24 +44,29 @@ extern void MX_TIM2_Reinit(void);
 extern void MX_TIM16_Reinit(void);
 
 /***************************************************************************
- * Gate_I2C — kill I2C peripheral, bus power, and float SDA/SCL/PA10
+ * Gate_I2C — kill I2C peripheral, hard-cut bus power, float SDA/SCL
+ *   PA10 (I2C_POWER) is held as a driven LOW push-pull output across
+ *   DEEPSTOP — leaving it analog/Hi-Z let the load-switch gate drift,
+ *   which can partially re-power the bus rail and leak through the
+ *   LIS2DUX12 / BQ27427 / EEPROM body diodes.
  ***************************************************************************/
 static void Gate_I2C(void)
 {
     HAL_I2C_DeInit(&hi2c1);
     __HAL_RCC_I2C1_CLK_DISABLE();
 
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+    gpio.Pull  = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    gpio.Pin   = I2C_POWER_Pin;
+    HAL_GPIO_Init(I2C_POWER_GPIO_Port, &gpio);
     HAL_GPIO_WritePin(I2C_POWER_GPIO_Port, I2C_POWER_Pin, GPIO_PIN_RESET);
 
-    GPIO_InitTypeDef gpio = {0};
     gpio.Mode = GPIO_MODE_ANALOG;
     gpio.Pull = GPIO_NOPULL;
-
     gpio.Pin  = GPIO_PIN_0 | GPIO_PIN_1;
     HAL_GPIO_Init(GPIOA, &gpio);
-
-    gpio.Pin = I2C_POWER_Pin;
-    HAL_GPIO_Init(I2C_POWER_GPIO_Port, &gpio);
 }
 
 /***************************************************************************
@@ -147,6 +154,52 @@ static void Gate_AccelInterrupt(void)
     gpio.Mode = GPIO_MODE_ANALOG;
     gpio.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(ACCEL_INT_GPIO_Port, &gpio);
+}
+
+/***************************************************************************
+ * Gate_SWD — drop SWDIO/SWCLK to analog and kill DEEPSTOP debug retention
+ *   PWR_CR2_DBGRET defaults ON; left alone it retains PA2 SWDIO / PA3 SWCLK
+ *   pin state across DEEPSTOP and keeps part of the debug logic alive —
+ *   ~10–15 µA in adv. Disabling it here for the LP window reclaims that
+ *   current; Restore_SWD reverses it on wake so a probe can still attach.
+ ***************************************************************************/
+static void Gate_SWD(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Mode = GPIO_MODE_ANALOG;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Pin  = GPIO_PIN_2 | GPIO_PIN_3;
+    HAL_GPIO_Init(GPIOA, &gpio);
+
+    HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_2 | PWR_GPIO_BIT_3);
+    HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A, PWR_GPIO_BIT_2 | PWR_GPIO_BIT_3);
+
+    LL_PWR_DisableDBGRET();
+}
+
+/***************************************************************************
+ * Restore_SWD — re-enable SWD pins so a probe can attach mid-session
+ *   Mirrors the SWDIO config from MX_GPIO_Init (AF7, pullup) and re-enables
+ *   the DEEPSTOP retention bias on PA2 so a probe sees a clean line.
+ ***************************************************************************/
+static void Restore_SWD(void)
+{
+    LL_PWR_EnableDBGRET();
+
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Mode      = GPIO_MODE_AF_PP;
+    gpio.Pull      = GPIO_PULLUP;
+    gpio.Speed     = GPIO_SPEED_FREQ_LOW;
+    gpio.Alternate = GPIO_AF7_SWDIO;
+    gpio.Pin       = GPIO_PIN_2;
+    HAL_GPIO_Init(GPIOA, &gpio);
+
+    gpio.Alternate = GPIO_AF7_SWCLK;
+    gpio.Pull      = GPIO_NOPULL;
+    gpio.Pin       = GPIO_PIN_3;
+    HAL_GPIO_Init(GPIOA, &gpio);
+
+    HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_2);
 }
 
 static void Keep_AccelInterrupt(void)
@@ -242,11 +295,19 @@ void PowerMgmt_EnterLowPower_Idle(void)
     if (peripherals_gated) return;
 
     Gate_Timers();
+
+    /* Force the LIS2DUX12 to ODR=0 + soft-reset before the I2C rail goes
+     * down. If the accel is on the switched rail, this is harmless (the
+     * rail kill below shuts it off anyway). If it's on always-on rail,
+     * this drops it from ~5 µA MLC-running to ~0.4 µA power-down. */
+    (void)LIS2DUX12_ResetAndPowerDown();
+
     Gate_I2C();
     Gate_EEPROM();
     Gate_UART();
     Gate_AccelInterrupt();
     Gate_GPIO_Outputs();
+    Gate_SWD();
     Keep_CablePlugInterrupt();
 
     peripherals_gated = 1;
@@ -287,6 +348,7 @@ void PowerMgmt_EnterLowPower_Armed(void)
     Gate_UART();
     Keep_AccelInterrupt();
     Gate_GPIO_Outputs();
+    Gate_SWD();
     Keep_CablePlugInterrupt();
 
     peripherals_gated = 1;
@@ -325,6 +387,7 @@ void PowerMgmt_RestoreAll(void)
 {
     if (!peripherals_gated) return;
 
+    Restore_SWD();
     Restore_I2C_Bus();
     HAL_Delay(5);
 
@@ -358,6 +421,7 @@ void PowerMgmt_RestoreForMotion(void)
 {
     if (!peripherals_gated) return;
 
+    Restore_SWD();
     Restore_I2C_Bus();
 
     __HAL_RCC_TIM16_CLK_ENABLE();
@@ -390,4 +454,101 @@ void PowerMgmt_EEPROM_PowerOn(void)
 void PowerMgmt_EEPROM_PowerOff(void)
 {
     HAL_GPIO_WritePin(EEPROM_POW_GPIO_Port, EEPROM_POW_Pin, GPIO_PIN_RESET);
+}
+
+/* ----------------------------- Boot diagnostics ---------------------------
+ * Reset-cause snapshot + EEPROM-persisted boot counter, surfaced to iOS via
+ * the SYSTEM section of the on-demand diagnostic dump. EEPROM offset 0x20
+ * (4 bytes, LE) is inside the existing 0x000..0x03F reserved device-info
+ * region (motion_logger.h), so it cannot collide with motion-log storage.
+ ***************************************************************************/
+
+#define EEPROM_BOOT_COUNT_ADDR  0x20
+#define EEPROM_BOOT_COUNT_LEN   4
+
+static uint8_t  s_reset_cause_packed = 0;
+static uint8_t  s_reset_cause_captured = 0;
+static uint32_t s_boot_count = 0;
+
+/***************************************************************************
+ * PowerMgmt_CaptureResetCause — must be called as the FIRST thing in main()
+ *   Reads RCC->CSR's latched reset flags, packs them into a single byte
+ *   (bit 0 PAD, 1 POR, 2 SFT, 3 WDG, 4 LOCKUP), then clears them so the
+ *   next boot's flags are clean. Idempotent — extra calls do nothing.
+ ***************************************************************************/
+void PowerMgmt_CaptureResetCause(void)
+{
+    if (s_reset_cause_captured) return;
+    s_reset_cause_captured = 1;
+
+    uint32_t csr = RCC->CSR;
+    uint8_t cause = 0;
+    if (csr & RCC_CSR_PADRSTF)    cause |= (1u << 0);
+    if (csr & RCC_CSR_PORRSTF)    cause |= (1u << 1);
+    if (csr & RCC_CSR_SFTRSTF)    cause |= (1u << 2);
+    if (csr & RCC_CSR_WDGRSTF)    cause |= (1u << 3);
+    if (csr & RCC_CSR_LOCKUPRSTF) cause |= (1u << 4);
+    s_reset_cause_packed = cause;
+
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+}
+
+uint8_t PowerMgmt_GetResetCause(void)
+{
+    return s_reset_cause_packed;
+}
+
+/***************************************************************************
+ * PowerMgmt_BootCount_Init — read, increment, write back the boot counter
+ *   Call after the EEPROM is reachable (i.e. same point where Loyalty_Init
+ *   runs). Failure to read or write leaves s_boot_count = 0 — iOS will see
+ *   "0" and can flag it. Brackets its own EEPROM power-on/off because boot
+ *   count is independent of any other persistent record.
+ ***************************************************************************/
+void PowerMgmt_BootCount_Init(void)
+{
+    M24CXX_HandleTypeDef eeprom;
+    uint8_t buf[EEPROM_BOOT_COUNT_LEN] = {0};
+    uint32_t value = 0;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&eeprom, &hi2c1, EEPROM_I2C_ADDRESS) != M24CXX_Ok) {
+        PowerMgmt_EEPROM_PowerOff();
+        return;
+    }
+
+    if (m24cxx_read(&eeprom, EEPROM_BOOT_COUNT_ADDR, buf, EEPROM_BOOT_COUNT_LEN)
+            == M24CXX_Ok) {
+        value = ((uint32_t)buf[0])       |
+                ((uint32_t)buf[1] <<  8) |
+                ((uint32_t)buf[2] << 16) |
+                ((uint32_t)buf[3] << 24);
+        // Treat 0xFFFFFFFF (erased EEPROM) as zero so first-ever boot ticks
+        // 0 → 1 instead of wrapping.
+        if (value == 0xFFFFFFFFu) value = 0;
+    }
+
+    value++;
+
+    buf[0] = (uint8_t)(value      );
+    buf[1] = (uint8_t)(value >>  8);
+    buf[2] = (uint8_t)(value >> 16);
+    buf[3] = (uint8_t)(value >> 24);
+    (void)m24cxx_write(&eeprom, EEPROM_BOOT_COUNT_ADDR, buf, EEPROM_BOOT_COUNT_LEN);
+
+    s_boot_count = value;
+
+    PowerMgmt_EEPROM_PowerOff();
+}
+
+uint32_t PowerMgmt_GetBootCount(void)
+{
+    return s_boot_count;
+}
+
+uint32_t PowerMgmt_GetUptimeSeconds(void)
+{
+    return HAL_GetTick() / 1000u;
 }

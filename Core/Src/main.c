@@ -48,7 +48,22 @@
 #define BD_ADDRESS_OVERRIDE 0
 const uint8_t bd_address_override = BD_ADDRESS_OVERRIDE;
 
+/* Set to 1 to bypass the BQ27427 fuel gauge by sending it into SHUTDOWN
+ * at boot (~0.4 µA). Useful when running off a power profiler with no
+ * battery — without this the gauge stalls BATTERY_Init on INITCOMP and
+ * then sits in active mode forever. Set 0 for normal production with a
+ * cell present so the gauge tracks SOC.
+ *
+ * Wakes only via a VDD power cycle of the BQ27427 (gauge state is lost). */
+#define BQ27427_SHUTDOWN_AT_BOOT 0
+
 stmdev_ctx_t dev_ctx;
+
+/* Sleep-clock source flag. Pinned to 0 (LSI) — LSE is unreliable on
+ * this hardware and the BLE stack can't safely recover if it drops out
+ * (see CFG_LSCLK_LSE in app_conf.h). Kept as a runtime flag so
+ * PeriphCommonClock_Config and MX_RADIO_TIMER_Init can stay generic. */
+volatile uint8_t g_lse_active = 0;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -99,17 +114,45 @@ static void MX_GPIO_LowPower_Unused(void)
     gpio.Mode = GPIO_MODE_ANALOG;
     gpio.Pull = GPIO_NOPULL;
 
-    /*
-     * PA9 — USART1_TX. Set to analog since UART is disabled in production.
-     * STAT (charge status) is now on PA11, configured by MX_GPIO_Init.
-     */
+    /* PA9 — USART1_TX, PB14 — USART1_RX. Set analog since UART is disabled. */
     gpio.Pin = GPIO_PIN_9;
     HAL_GPIO_Init(GPIOA, &gpio);
-
-    /*
-     * PB14 — USART1_RX. Set to analog since UART is disabled.
-     */
     gpio.Pin = GPIO_PIN_14;
+    HAL_GPIO_Init(GPIOB, &gpio);
+
+    /* SWD left enabled: PA2 (SWDIO) and PA3 (SWCLK) keep their AF default
+     * so the debugger can attach. Costs ~µA across DEEPSTOP — acceptable
+     * during development. */
+
+    /* On STM32WB0 the DEEPSTOP pull-up/down state is controlled by the PWR
+     * controller, NOT the GPIO PUPDR register. Any pin not explicitly cleared
+     * may keep a default pull active during sleep, leaking through floating
+     * traces. Force-clear pulls on every unused pin here (PA3 omitted — it's
+     * SWCLK and needs its default pull-down to remain debuggable). */
+    HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A,
+        PWR_GPIO_BIT_4 | PWR_GPIO_BIT_5 | PWR_GPIO_BIT_6 |
+        PWR_GPIO_BIT_7 | PWR_GPIO_BIT_12 | PWR_GPIO_BIT_13 | PWR_GPIO_BIT_14 |
+        PWR_GPIO_BIT_15);
+    HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A,
+        PWR_GPIO_BIT_4 | PWR_GPIO_BIT_5 | PWR_GPIO_BIT_6 |
+        PWR_GPIO_BIT_7 | PWR_GPIO_BIT_12 | PWR_GPIO_BIT_13 | PWR_GPIO_BIT_14 |
+        PWR_GPIO_BIT_15);
+
+    HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_B,
+        PWR_GPIO_BIT_1 | PWR_GPIO_BIT_8 | PWR_GPIO_BIT_9 | PWR_GPIO_BIT_10 |
+        PWR_GPIO_BIT_11 | PWR_GPIO_BIT_13);
+    HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_B,
+        PWR_GPIO_BIT_1 | PWR_GPIO_BIT_8 | PWR_GPIO_BIT_9 | PWR_GPIO_BIT_10 |
+        PWR_GPIO_BIT_11 | PWR_GPIO_BIT_13);
+
+    /* Configure all of the unused pins themselves as analog so the input
+     * Schmitt trigger isn't burning power on slow / floating signals. */
+    gpio.Pin = GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 |
+               GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
+    HAL_GPIO_Init(GPIOA, &gpio);
+
+    gpio.Pin = GPIO_PIN_1 | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 |
+               GPIO_PIN_11 | GPIO_PIN_13;
     HAL_GPIO_Init(GPIOB, &gpio);
 }
 /* USER CODE END 0 */
@@ -122,7 +165,10 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  // Snapshot RCC->CSR reset flags before HAL_Init / clock config can perturb
+  // them. The byte is exposed via PowerMgmt_GetResetCause() to the
+  // diagnostic dump.
+  PowerMgmt_CaptureResetCause();
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -180,6 +226,14 @@ int main(void)
   LIS2DUX12_Init();
   BATTERY_Init();
 
+#if (BQ27427_SHUTDOWN_AT_BOOT == 1)
+  /* Force the fuel gauge into SHUTDOWN to characterise the board's true
+   * floor without the gauge contributing. Re-flash with the macro = 0 to
+   * restore normal SOC tracking. */
+  extern bool bq27427_shutdown(void);
+  bq27427_shutdown();
+#endif
+
 
   if (IS_CABLE_PLUGGED()) {
       BUZZER_Tone(300, 50);
@@ -197,12 +251,17 @@ int main(void)
 
 
   firstBootTone();
+
   StateMachine_Init();
 
   /* Application-layer loyalty token: load from EEPROM after BLE_Init
    * has touched the BD-address region, so the two operations don't race
    * on the EEPROM power rail. */
   Loyalty_Init();
+
+  /* EEPROM-persisted boot counter (diagnostic). Same EEPROM, same power
+   * rail — runs after Loyalty_Init so the two don't race. */
+  PowerMgmt_BootCount_Init();
 
   /* Persisted alarm post-motion duration. Same EEPROM, same power rail —
    * runs after Loyalty_Init for the same race-avoidance reason. */
@@ -213,6 +272,9 @@ int main(void)
 
   /* Persisted alarm-suppression flag (deviceInfo bit 1). */
   AlarmDisabled_Init();
+
+  /* Persisted disconnect-chime suppression flag (deviceInfo bit 2). */
+  DisconnectSoundDisabled_Init();
 
   /* Persisted deviceState bits (alarm type / sensitivity / lights / logging /
    * silence) and deviceInfo HIGH_PERF. ARMED is never persisted — boot
@@ -234,8 +296,10 @@ int main(void)
     if (HAL_GetTick() - last_battery_check > 1000) {
         last_battery_check = HAL_GetTick();
         if (!PowerMgmt_IsLowPower()) {
+            // Refresh cached gauge state for the rest of the firmware.
+            // Diagnostic emission used to fire here too — now it's
+            // on-demand via CMD_REQUEST_DIAG (see lockservice_app.c).
             BATTERY_UpdateState();
-            LOCKSERVICE_SendBatteryDiagnostic();
         }
     }
 
@@ -269,9 +333,10 @@ void SystemClock_Config(void)
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
+  /* LSI-only: LSE on this hardware is unreliable and the BLE stack
+   * cannot safely recover if LSE drops out at runtime (see
+   * CFG_LSCLK_LSE in app_conf.h). LSI + periodic calibration is
+   * days-stable in field testing. */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.LSIState = RCC_LSI_ON;
@@ -299,10 +364,14 @@ void PeriphCommonClock_Config(void)
 {
   RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
 
-  /** Initializes the peripherals clock
-  */
-  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SMPS;
+  /* BLE wake-up / RTC / WDG slow-clock from HSI64M/2048 (≈ 32 kHz).
+   * The BLE stack runs periodic calibration against HSE so SCA stays
+   * within the 500 ppm advertised in CFG_BLE_SLEEP_CLOCK_ACCURACY. */
+  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SMPS
+                                           | RCC_PERIPHCLK_RTC_WDG_BLEWKUP;
   PeriphClkInitStruct.SmpsDivSelection = RCC_SMPSCLK_DIV4;
+  PeriphClkInitStruct.RTCWDGBLEWKUPClockSelection =
+      RCC_RTC_WDG_BLEWKUP_CLKSOURCE_HSI64M_DIV2048;
 
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
   {
@@ -449,8 +518,13 @@ static void MX_RADIO_TIMER_Init(void)
   /* Wait to be sure that the Radio Timer is active */
   while(LL_RADIO_TIMER_GetAbsoluteTime(WAKEUP) < 0x10);
   RADIO_TIMER_InitStruct.XTAL_StartupTime = 320;
+
+  /* LSI sleep clock — RC drifts with temperature and supply, so periodic
+   * calibration against HSE is required to keep BLE timing within the
+   * 500 ppm SCA the stack advertises. */
   RADIO_TIMER_InitStruct.enableInitialCalibration = TRUE;
   RADIO_TIMER_InitStruct.periodicCalibrationInterval = 10000;
+
   HAL_RADIO_TIMER_Init(&RADIO_TIMER_InitStruct);
   /* USER CODE BEGIN RADIO_TIMER_Init 2 */
 

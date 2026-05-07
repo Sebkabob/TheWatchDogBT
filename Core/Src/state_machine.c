@@ -7,6 +7,7 @@
  *   DISCONNECTED_IDLE → (BLE connect) → CONNECTED_IDLE
  *   CONNECTED_IDLE    → (armed)       → STABILIZING
  *   STABILIZING       → (3 s still)   → LOCKED
+ *   STABILIZING       → (15 s elapsed) → CONNECTED_IDLE
  *   LOCKED            → (motion)      → ALARM_ACTIVE
  *   ALARM_ACTIVE      → (melody done + no motion) → LOCKED
  *
@@ -21,6 +22,7 @@
 #include "sound.h"
 #include "battery.h"
 #include "lockservice_app.h"
+#include "loyalty.h"
 #include "accelerometer.h"
 #include "lis2dux12_app.h"
 #include "motion_logger.h"
@@ -124,13 +126,32 @@ void StateMachine_Init(void)
 
 /***************************************************************************
  * CablePlug_UpdateState — edge-detect cable + manage post-unplug awake window
+ *   Drives the loyalty reset window on debounced VBUS edges: rising edge
+ *   opens it (CLAIM may overwrite the EEPROM token for ~10 s), falling edge
+ *   closes it. The 50 ms debounce prevents an insertion bounce from racking
+ *   up multiple Start/Cancel cycles. Boot-with-VBUS-already-high is handled
+ *   inside Loyalty_Init, not here, since this function never sees that edge.
  ***************************************************************************/
+#define CABLE_EDGE_DEBOUNCE_MS  50u
+
+// Cap on how long STABILIZING will pulse blue waiting for stillness before
+// bailing back to CONNECTED_IDLE. Without this the device sits forever if
+// motion never settles; the fall-back un-arms via the ARMED-bit clear in
+// StateMachine_ChangeState.
+#define STABILIZE_TIMEOUT_MS    15000u
+
 static void CablePlug_UpdateState(void)
 {
+    static uint32_t last_edge_ms = 0;
     uint8_t pluggedNow = IS_CABLE_PLUGGED() ? 1 : 0;
 
     if (pluggedNow) {
         if (!cableWasPlugged) {
+            uint32_t now = HAL_GetTick();
+            if ((now - last_edge_ms) >= CABLE_EDGE_DEBOUNCE_MS) {
+                Loyalty_StartResetWindow();
+                last_edge_ms = now;
+            }
             LED_PlugIn_Start();
         }
         stayAwakeFlag = 1;
@@ -140,7 +161,12 @@ static void CablePlug_UpdateState(void)
     }
 
     if (cableWasPlugged) {
-        cableUnplugTime = HAL_GetTick();
+        uint32_t now = HAL_GetTick();
+        if ((now - last_edge_ms) >= CABLE_EDGE_DEBOUNCE_MS) {
+            Loyalty_CancelResetWindow();
+            last_edge_ms = now;
+        }
+        cableUnplugTime = now;
         cableWasPlugged = 0;
         LED_PlugOut_Start();
     }
@@ -236,11 +262,18 @@ void State_Connected_Idle_Loop(void)
 /***************************************************************************
  * State_Stabilizing_Loop — wait for 3 s of stillness before locking
  *   Pulsing blue LED while waiting; both the MLC interrupt and a 10 Hz
- *   poll reset the still-timer when motion is detected.
+ *   poll reset the still-timer when motion is detected. Bails to
+ *   CONNECTED_IDLE after STABILIZE_TIMEOUT_MS so a never-settling device
+ *   can't pulse blue forever.
  ***************************************************************************/
 void State_Stabilizing_Loop(void)
 {
+    static uint32_t last_still_time = 0;
+    static uint32_t stabilize_entry_time = 0;
+    static uint8_t  stabilize_started = 0;
+
     if (!GET_ARMED_BIT(deviceState)) {
+        stabilize_started = 0;
         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
         LED_Off();
         return;
@@ -254,11 +287,9 @@ void State_Stabilizing_Loop(void)
         }
     }
 
-    static uint32_t last_still_time = 0;
-    static uint8_t  stabilize_started = 0;
-
     if (!stabilize_started) {
         last_still_time = HAL_GetTick();
+        stabilize_entry_time = HAL_GetTick();
         stabilize_started = 1;
         LIS2DUX12_ClearMotion();
     }
@@ -285,6 +316,13 @@ void State_Stabilizing_Loop(void)
     if (HAL_GetTick() - last_still_time >= 3000) {
         stabilize_started = 0;
         StateMachine_ChangeState(STATE_LOCKED);
+        return;
+    }
+
+    if (HAL_GetTick() - stabilize_entry_time >= STABILIZE_TIMEOUT_MS) {
+        stabilize_started = 0;
+        StateMachine_ChangeState(STATE_CONNECTED_IDLE);
+        return;
     }
 }
 

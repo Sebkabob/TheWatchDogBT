@@ -6,7 +6,7 @@ ONLY EDIT CODE WITHIN THE USER EDITABLE SECTIONS!!!
 
 ## Firmware Version
 
-**Current: V1.9.29**  (last reconciled at commit `6b1d433`)
+**Current: V1.13.0**  (last reconciled at commit `8900dc6`)
 
 Format: `V<MAJOR>.<MAIN>.<V2>` — single source of truth lives in `Core/Inc/firmware_version.h` (`FW_VERSION_MAJOR/MAIN/V2`, plus `FW_VERSION_STRING`). This line in CLAUDE.md and the macros in the header **must stay in sync**.
 
@@ -129,11 +129,14 @@ The central control loop. `StateMachine_Run()` is called every iteration of `mai
 DISCONNECTED_IDLE → (BLE connect) → CONNECTED_IDLE
 CONNECTED_IDLE    → (armed)       → STABILIZING
 STABILIZING       → (3s still)    → LOCKED
+STABILIZING       → (15s elapsed) → CONNECTED_IDLE
 LOCKED            → (motion)      → ALARM_ACTIVE
 ALARM_ACTIVE      → (alarm_duration_seconds elapsed with no motion) → LOCKED
 ```
 
 `StateMachine_ChangeState()` automatically sets/clears the ARMED bit when entering STABILIZING/LOCKED/ALARM_ACTIVE vs. any other state, then pushes a status notification.
+
+STABILIZING is bounded by `STABILIZE_TIMEOUT_MS` (15 s). If the device never settles into 3 s of stillness within that window the loop bails to `CONNECTED_IDLE`, which clears ARMED and pushes a status update so iOS sees the device fall back to unlocked. This makes a permanent stuck blue pulse impossible.
 
 The `deviceState` byte packs all user-configurable settings:
 
@@ -148,8 +151,9 @@ The `deviceState` byte packs all user-configurable settings:
 
 `deviceInfo` bit layout:
 - Bit 0 `HIGH_PERF`: when set, BLE status updates run at 50 Hz (20 ms) instead of 2 Hz (500 ms).
-- Bit 1 `alarmDisabled`: when set, `StateMachine_ChangeState(STATE_ALARM_ACTIVE)` is gated off — alarm LED never runs, motion logging + BLE motion alerts still fire. EEPROM-persisted via `alarm_disabled.c`. **Buzzer is hard-gated at the TIM16 chokepoint** (`BUZZER_SetFrequency`): every non-zero frequency request is forced to zero while the flag is set, so find-my, drain mode, one-shot tones, and any other path are also silent. `AlarmDisabled_Set(true)` calls `BUZZER_Stop()` before persisting so any in-flight tone is killed immediately. Safe-boot tones (recovery hatch in `main()`) run before `AlarmDisabled_Init()` and are therefore unaffected by the persisted flag.
-- Bits 2..7 reserved (masked to 0 on receive and on echo).
+- Bit 1 `alarmDisabled`: when set, `StateMachine_ChangeState(STATE_ALARM_ACTIVE)` is gated off — alarm LED never runs, motion logging + BLE motion alerts still fire. EEPROM-persisted via `sound.c`. **Buzzer is hard-gated at the TIM16 chokepoint** (`BUZZER_SetFrequency`): every non-zero frequency request is forced to zero while the flag is set, so find-my, drain mode, one-shot tones, and any other path are also silent. `AlarmDisabled_Set(true)` calls `BUZZER_Stop()` before persisting so any in-flight tone is killed immediately. Safe-boot tones (recovery hatch in `main()`) run before `AlarmDisabled_Init()` and are therefore unaffected by the persisted flag.
+- Bit 2 `disconnectSoundDisabled`: when set, `SOUND_Disconnected()` (the three-tone descending chime fired on `LOCKSERVICE_DISCON_HANDLE_EVT`) returns immediately. EEPROM-persisted via `sound.c`. Independent of `alarmDisabled` — alarm tones, find-my, drain mode, and connection chimes are unaffected. The flag is checked inside `SOUND_Disconnected()` itself so callers don't have to gate.
+- Bits 3..7 reserved (masked to 0 on receive and on echo).
 
 A short **motion-grace window** is started on every BLE connect (`StateMachine_StartMotionGrace(2000)`): RestoreAll reloads the UCF, INT1 glitches, and the user is invariably handling the device while pairing — without the grace window every connect would fire the alarm. While active, `LOCKED` drains MLC/FSM events and suppresses transitions to `ALARM_ACTIVE`.
 
@@ -158,7 +162,7 @@ A short **motion-grace window** is started on every BLE connect (`StateMachine_S
 Custom **LockService** (16-bit UUID `0x183E`) GATT service with three characteristics:
 - `APPTOWD` (write) — iOS → device commands. First byte of the inner payload (after the 4-byte loyalty token) = opcode; remaining bytes are payload. Settings writes (no opcode match) also carry a 6-byte trailing timestamp consumed by `UpdateBootTimeFromiOS()`.
 - `DEVICESTATUS` (notify) — **19-byte** payload built by `LOCKSERVICE_Devicestatus_SendNotification()`. Pushed at 50 Hz when `HIGH_PERF` is set, 2 Hz otherwise (gated by `PowerMgmt_IsLowPower()`). Bytes 14..15 carry the low 2 bytes of the BD address (LE) — used by iOS as the user-visible "WatchDog #" identifier. Bytes 16..18 are the firmware version triplet (`FW_VERSION_MAJOR`, `FW_VERSION_MAIN`, `FW_VERSION_V2`) from `firmware_version.h`. Shorter framed responses on the same characteristic (motion alert, log-count, event-data, loyalty acks, …) are unchanged.
-- `BATTERYDIAG` (notify) — 51-byte packed gauge telemetry payload (v11), attached dynamically at init in `lockservice.c`. Sent every ~1 s from `main()`'s battery tick.
+- `BATTERYDIAG` (notify) — **on-demand** TLV diagnostic dump, attached dynamically at init in `lockservice.c` (UUID/handle unchanged for backwards compatibility, but the payload schema is now sectioned, not the old 51-byte gauge struct). Triggered by `CMD_REQUEST_DIAG` (0xF4); the firmware no longer auto-pushes this characteristic. Wire format: `[format_version, section_count, (section_id, section_len, payload)*]` with sections SYSTEM, BATTERY, BLE, SENSOR, POWER, STORAGE. Buffer is sized for 220 bytes to allow future fields to be appended inside sections without requiring iOS to rediscover the service. The full per-section layout lives in `FW_DIAGNOSTICS_PROMPT.md` and is the source of truth for the iOS parser.
 
 iOS opcodes (`lockservice_app.h`) — these run **after** the 4-byte loyalty token has been stripped:
 
@@ -171,8 +175,9 @@ iOS opcodes (`lockservice_app.h`) — these run **after** the 4-byte loyalty tok
 | `0xFA` | `CMD_FIND_MY_DEVICE` | byte[1] bit 0 = start |
 | `0xFB` | `CMD_RESET_DEVICE` | none — calls `NVIC_SystemReset()` |
 | `0xFC` | `CMD_DRAIN_MODE` | byte[1] bit 0: 1=start drain, 0=stop |
+| `0xF4` | `CMD_REQUEST_DIAG` | optional byte[1] = section bitmask (default 0xFF). Triggers one TLV notification on `BATTERYDIAG`. |
 
-Anything not matching an opcode is interpreted as a settings write: `cmd_data[0] → deviceState`, `cmd_data[1] → deviceInfo` (bit 0 HIGH_PERF + bit 1 → `AlarmDisabled_Set()`, upper bits masked), optional `cmd_data[2] → alarm_duration_seconds` (clamped to 0..30, EEPROM-persisted via `alarm_duration.c`), optional `cmd_data[3] → led_brightness` (clamped to 1..255, EEPROM-persisted via `led_brightness.c`), then a forced status notification. The settings core can be 1, 2, 3, or 4 bytes; the dispatcher computes its length as `cmd_length - 6` when the trailing 6-byte timestamp is present (`cmd_length >= 7`). Status LED calls (armed/stabilizing/alarm/find-my/connected-rainbow) multiply by `LedBrightness_Get()`; the charging-status path and the drain-mode diagnostic bypass the scalar. The DEVICESTATUS byte 13 echoes `(deviceInfo & 0x01) | (AlarmDisabled_Get() ? 0x02 : 0)` so iOS sees the persisted alarmDisabled state across boots.
+Anything not matching an opcode is interpreted as a settings write: `cmd_data[0] → deviceState`, `cmd_data[1] → deviceInfo` (bit 0 HIGH_PERF + bit 1 → `AlarmDisabled_Set()` + bit 2 → `DisconnectSoundDisabled_Set()`, upper bits masked), optional `cmd_data[2] → alarm_duration_seconds` (clamped to 0..30, EEPROM-persisted via `sound.c`), optional `cmd_data[3] → led_brightness` (clamped to 1..255, EEPROM-persisted via `lights.c`), then a forced status notification. The settings core can be 1, 2, 3, or 4 bytes; the dispatcher computes its length as `cmd_length - 6` when the trailing 6-byte timestamp is present (`cmd_length >= 7`). Status LED calls (armed/stabilizing/alarm/find-my/connected-rainbow) multiply by `LedBrightness_Get()`; the charging-status path and the drain-mode diagnostic bypass the scalar. The DEVICESTATUS byte 13 echoes `(deviceInfo & 0x01) | (AlarmDisabled_Get() ? 0x02 : 0) | (DisconnectSoundDisabled_Get() ? 0x04 : 0)` so iOS sees the persisted alarmDisabled and disconnectSoundDisabled state across boots.
 
 `app_ble.c` handles GAP/GATT stack init and connection events; `lockservice.c` is the auto-generated GATT server (with hand-added BATTERYDIAG inside USER CODE blocks); `lockservice_app.c` contains all application logic for processing writes and sending notifications. `g_bd_address[6]` is published in `app_ble.c` and `bd_address_override` in `main.c` controls whether the code-defined BD address overwrites EEPROM at boot.
 
@@ -218,15 +223,28 @@ While `LOCKED`, ordinary IN_MOTION/SHAKEN alerts are **deferred**: the alarm its
 
 ### Battery (`Core/Src/battery.c`, `Drivers/BQ27427/`)
 
-Wraps the BQ27427 fuel gauge. Cached state is updated once a second from `main()` (`BATTERY_UpdateState()`); `BATTERY_GetSOC()` / `BATTERY_IsFullCached()` etc. read from that cache so the state machine never blocks on I2C. A long list of diagnostic getters (flags, control_status, temperature, qmax/RES learned bits, design capacity, taper rate, …) feeds the 51-byte BATTERYDIAG notification. `s_init_fail_stage` is a one-shot diagnostic that pinpoints which BATTERY_Init() step failed after the CC-Gain self-heal RESET.
+Wraps the BQ27427 fuel gauge. Cached state is updated once a second from `main()` (`BATTERY_UpdateState()`); `BATTERY_GetSOC()` / `BATTERY_IsFullCached()` etc. read from that cache so the state machine never blocks on I2C. A long list of diagnostic getters (flags, control_status, temperature, qmax/RES learned bits, design capacity, taper rate, …) feeds the BATTERY section of the on-demand diagnostic dump. `s_init_fail_stage` is a one-shot diagnostic that pinpoints which BATTERY_Init() step failed after the CC-Gain self-heal RESET.
+
+### Diagnostics (`STM32_BLE/App/lockservice_app.c::LOCKSERVICE_SendDiagnostic`)
+
+On-demand, sectioned, TLV-framed dump of every cross-cutting health signal the firmware can surface, emitted on the `BATTERYDIAG` characteristic when iOS sends `CMD_REQUEST_DIAG`. There is no auto-push — the device is silent on this characteristic until asked. Sections (per `FW_DIAGNOSTICS_PROMPT.md`):
+
+| ID | Name | Sourced from |
+|----|------|--------------|
+| 0x01 | SYSTEM | `power_management.c` (uptime/boot/reset cause), `firmware_version.h`, `Loyalty_StoreUnhealthy`, `BATTERY_GetInitCompleted` |
+| 0x02 | BATTERY | All `BATTERY_Get*` accessors — schema-compatible with the legacy 51-byte v11 BatteryDiagnostic struct |
+| 0x03 | BLE | TODO counters in `lockservice_app.c` (RSSI, conn count, last disconnect reason, MTU) — currently zero/sentinel |
+| 0x04 | SENSOR | `lis2dux12_app_get_cached_mlc_state` + TODO transition / INT1 / log counters |
+| 0x05 | POWER | `PowerMgmt_IsLowPower` + TODO wake-source counters and time-in-LP accumulator |
+| 0x06 | STORAGE | `MotionLogger_GetEventCount`, loyalty health/claimed flags + TODO peripheral fail counters |
+
+Reset cause is captured by `PowerMgmt_CaptureResetCause()` from `RCC->CSR` as the very first thing in `main()`, packed into a single byte (bits 0..4: PAD/POR/SFT/WDG/LOCKUP), then `__HAL_RCC_CLEAR_RESET_FLAGS()` is called so the next boot's flags are clean. Boot count is a uint32 LE persisted at EEPROM `0x20` (inside the existing reserved 0x000..0x03F device-info block — does not collide with motion log or loyalty); incremented once at boot by `PowerMgmt_BootCount_Init()`.
+
+Each section payload reserves trailing bytes for future fields. iOS reads exactly `section_len` bytes per section and ignores trailing reserved bytes, which is how new fields can be appended later without breaking the app.
 
 ### Drain Mode (`STM32_BLE/App/lockservice_app.c`)
 
 Diagnostic high-load mode for fuel-gauge characterisation: white LED at full brightness + continuous `DRAIN_TONE_FREQUENCY_HZ` (60 Hz) buzzer tone. Started/stopped via `CMD_DRAIN_MODE`, auto-stops at `DRAIN_AUTO_STOP_SOC` (5 %). `Drain_Tick()` runs every loop iteration in `main()` and re-asserts outputs so other subsystems can't override it while active.
-
-### `wd_system.{c,h}`
-
-`wd_system.c` is currently empty. `wd_system.h` contains a draft of system-level types and macros that **nothing in the firmware currently includes** — the live state machine is in `state_machine.{c,h}`. The header is kept as a sketch for future system-level glue. Heads-up: it defines `GET_ALARM_TYPE` / `GET_SENSITIVITY` / `SENSITIVITY_LOW/MEDIUM/HIGH` macros that **collide** with same-named macros in `state_machine.h` but with different bit layouts. Do not include `wd_system.h` from production code without resolving the conflict.
 
 ## Critical Hardware Constraints
 
@@ -300,6 +318,6 @@ The dispatcher in `lockservice_app.c::LOCKSERVICE_Notification()` validates the 
 
 These are the files you should edit / clean up. Vendor (`Drivers/`, `Middlewares/`) and CubeMX-generated infrastructure (`main.c`, `app_entry.c`, `stm32wb0x_*`, `system_*`, `syscalls.c`, `sysmem.c`) are off-limits unless explicitly requested.
 
-**`Core/Src` + `Core/Inc`:** `accelerometer`, `battery`, `lights` (RGB driver + persisted user brightness), `lis2dux12_app`, `motion_logger`, `power_management`, `sound` (buzzer driver + persisted alarm-duration and alarm-disabled), `state_machine`, `wd_system`
+**`Core/Src` + `Core/Inc`:** `accelerometer`, `battery`, `lights` (RGB driver + persisted user brightness), `lis2dux12_app`, `motion_logger`, `power_management`, `sound` (buzzer driver + persisted alarm-duration, alarm-disabled, and disconnect-sound-disabled), `state_machine`
 
 **`STM32_BLE/App` (CubeMX-generated, edit only inside `USER CODE` blocks):** `lockservice_app`, plus the fully-user-authored `loyalty.{c,h}`

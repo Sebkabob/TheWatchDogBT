@@ -24,6 +24,8 @@ void BUZZER_Init(void);
 // Blocking helpers — boot tones, connection chimes.
 void BUZZER_Tone(uint32_t frequency_hz, uint32_t duration_ms);
 void firstBootTone(void);
+// Three-tone disconnect chime. Self-gates on DisconnectSoundDisabled_Get(),
+// so callers can invoke unconditionally.
 void SOUND_Disconnected(void);
 
 // Non-blocking sequence playback.
@@ -82,5 +84,21 @@ bool AlarmDisabled_Get(void);
 // Persists if changed. When transitioning to true, calls BUZZER_Stop()
 // before persisting so any in-flight tone is killed immediately.
 bool AlarmDisabled_Set(bool disabled);
+
+/***************************************************************************
+ * disconnect_sound_disabled (default false) — when true, SOUND_Disconnected()
+ *   becomes a no-op so the three-tone descending chime that fires on BLE
+ *   disconnect is silent. Independent of alarm_disabled — the user may want
+ *   the alarm audible but skip the chime when leaving the app. Stored at
+ *   EEPROM 0x1E. Init runs once from main() after AlarmDisabled_Init().
+ ***************************************************************************/
+
+#define EEPROM_DISCONNECT_SOUND_DISABLED_ADDR  0x1E
+#define EEPROM_DISCONNECT_SOUND_DISABLED_LEN   2
+#define EEPROM_DISCONNECT_SOUND_DISABLED_MAGIC 0xC7
+
+void DisconnectSoundDisabled_Init(void);
+bool DisconnectSoundDisabled_Get(void);
+bool DisconnectSoundDisabled_Set(bool disabled);
 
 #endif /* INC_SOUND_H_ */

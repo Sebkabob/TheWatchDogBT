@@ -131,7 +131,10 @@ void PWR_EnterOffMode( void )
   SYSTEM_DEBUG_SIGNAL_RESET(LOW_POWER_STANDBY_MODE_ENTER);
 
   /* Save all the peripheral registers and CPU peripipheral configuration */
-  apb0.deepstop_wdg_state = ENABLE;
+  /* HAL_IWDG_MODULE is not enabled for this project — gate WDG clock
+   * across DEEPSTOP to save ~0.5-1 µA. The framework re-enables it on
+   * exit if it had been clocked. */
+  apb0.deepstop_wdg_state = DISABLE;
   prepareDeviceLowPower(&apb0, &apb1, &apb2, &ahb0, &cpuPeriph, cStackPreamble);
 
   /* DEEPSTOP configuration */
@@ -256,7 +259,10 @@ void PWR_EnterStopMode( void )
   SYSTEM_DEBUG_SIGNAL_RESET(LOW_POWER_STOP_MODE_ENTER);
 
   /* Save all the peripheral registers and CPU peripipheral configuration */
-  apb0.deepstop_wdg_state = ENABLE;
+  /* HAL_IWDG_MODULE is not enabled for this project — gate WDG clock
+   * across DEEPSTOP to save ~0.5-1 µA. The framework re-enables it on
+   * exit if it had been clocked. */
+  apb0.deepstop_wdg_state = DISABLE;
   prepareDeviceLowPower(&apb0, &apb1, &apb2, &ahb0, &cpuPeriph, cStackPreamble);
 
   /* Clear all the wake-up pin flags */

@@ -29,7 +29,13 @@
 /* USER CODE END Includes */
 
 /**
- * Define to 1 if LSE is used, otherwise set it to 0.
+ * 0 = BLE stack uses LSI for sleep clock (SCA = 500 ppm, periodic
+ * calibration enabled). 1 = LSE (SCA = 100 ppm, no cal).
+ *
+ * Held at 0: LSE on this hardware is unreliable and the stack has no
+ * way to recover if LSE fails to lock at boot — it would announce
+ * 100 ppm to the central while actually drifting on LSI, breaking
+ * connections. LSI with cal is days-stable and worth the few extra µA.
  */
 #define CFG_LSCLK_LSE                       (0)
 
@@ -45,7 +51,7 @@
 /**
  * Define Tx Power
  */
-#define CFG_TX_POWER                        (0x1E) /* 0x1E <=> 5 dBm */
+#define CFG_TX_POWER                        (0x18) /* 0x18 <=> 0 dBm — drops radio peak ~6 mA → ~4.3 mA per adv burst */
 
 /**
  * Define Advertising parameters

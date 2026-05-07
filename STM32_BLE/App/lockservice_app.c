@@ -303,11 +303,10 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
                 break;
             }
 
-            // USB-C reset window is the only path that's allowed to overwrite
-            // (or write a fresh) token. Outside the window, CLAIM degrades to
-            // "verify the supplied token" — the iOS app's recovery story for
-            // a Keychain wipe is "plug into USB-C, then tap Pair" so this is
-            // intentional, not a UX trap.
+            // USB-C reset window: gated overwrite of an existing claim. This is
+            // how a different phone (or the same phone after a Keychain wipe)
+            // takes ownership of an already-claimed device — the user proves
+            // physical possession by plugging in USB-C within the window.
             if (Loyalty_IsResetWindowOpen()) {
                 if (Loyalty_Claim(&received_data[1])) {
                     Loyalty_SendResponse(RESP_CLAIM_OK, 0x01, 0);
@@ -317,12 +316,24 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
                 break;
             }
 
-            // Locked: a matching token means the legitimate owner is
+            // Unowned device (factory-fresh or post-UNBOND): anyone may claim.
+            // No security gate — there's no existing claim to protect, and
+            // UNBOND deliberately put the device in this state.
+            if (!Loyalty_IsClaimed()) {
+                if (Loyalty_Claim(&received_data[1])) {
+                    Loyalty_SendResponse(RESP_CLAIM_OK, 0x01, 0);
+                } else {
+                    Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
+                }
+                break;
+            }
+
+            // Claimed: a matching token means the legitimate owner is
             // re-establishing a session (their phone still has the token but
             // BondManager / system state was cleared). Reply VERIFY_OK so the
             // app can distinguish "we accepted your CLAIM as a verify" from
             // "we wrote a fresh token". Mismatch is a different phone — REJECT.
-            if (Loyalty_IsClaimed() && Loyalty_Verify(&received_data[1])) {
+            if (Loyalty_Verify(&received_data[1])) {
                 Loyalty_SendResponse(RESP_VERIFY_OK, 0x01, 0);
                 break;
             }

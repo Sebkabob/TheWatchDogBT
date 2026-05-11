@@ -4,8 +4,20 @@
  *
  * Motion-event ring buffer. Events are stored in SRAM for fast access and
  * mirrored to the M24C08 EEPROM so they survive DEEPSTOP / power loss.
- * Boot time is set by an iOS write; TickToDateTime converts HAL ticks to
- * calendar time when the app pulls the log.
+ *
+ * Architecture note — calendar at log time, not at read time:
+ *   Prior versions stored HAL_GetTick() per event and converted to calendar
+ *   at the moment iOS pulled the log, using whatever anchor was current
+ *   then. That had two unfixable failure modes:
+ *     1) iOS calls SetBootTime on every settings write, which moves the
+ *        anchor forward — old events' ticks then resolve to garbage future
+ *        dates because (tick_ms - new_boot_tick_ms) underflowed as uint32.
+ *     2) After a reset, HAL_GetTick restarts at 0; any reloaded anchor
+ *        had a boot_tick_ms from the previous boot, so every new event
+ *        underflowed.
+ *   The fix is to capture calendar time AT LOG TIME and freeze it in the
+ *   slot. Once written, no downstream anchor change can disturb it. Slots
+ *   logged before iOS first syncs get the unknown-time sentinel (0 secs).
  ***************************************************************************/
 
 #include "motion_logger.h"
@@ -117,11 +129,14 @@ static void EEPROM_WriteMotionHeader(void)
 
 /***************************************************************************
  * EEPROM_WriteEvent — persist a single event into slot <slot>
+ *   On-wire layout is unchanged from the prior firmware version (4 bytes
+ *   little-endian uint32 + 1 byte motionType). What changed is the meaning
+ *   of the uint32: previously HAL tick ms, now seconds-since-2000.
  ***************************************************************************/
 static void EEPROM_WriteEvent(uint16_t slot, MotionEvent_t *event)
 {
     uint8_t buf[EEPROM_MOTION_EVENT_SIZE];
-    uint32_t ts = event->timestamp_ms;
+    uint32_t ts = event->epoch_seconds_2000;
     buf[0] = (uint8_t)(ts & 0xFF);
     buf[1] = (uint8_t)((ts >> 8) & 0xFF);
     buf[2] = (uint8_t)((ts >> 16) & 0xFF);
@@ -135,6 +150,9 @@ static void EEPROM_WriteEvent(uint16_t slot, MotionEvent_t *event)
 /***************************************************************************
  * EEPROM_LoadMotionLog — reload the persisted log into SRAM at boot
  *   Returns 1 on a valid load, 0 if the EEPROM was empty/invalid.
+ *   On a mid-loop I2C failure, any slots already populated in SRAM are
+ *   reset to valid=0 so they don't resurface as ghost events once
+ *   eventCount climbs past them on later LogEvent calls.
  ***************************************************************************/
 static uint8_t EEPROM_LoadMotionLog(void)
 {
@@ -160,13 +178,20 @@ static uint8_t EEPROM_LoadMotionLog(void)
         uint32_t addr = EEPROM_MOTION_DATA_ADDR + (uint32_t)i * EEPROM_MOTION_EVENT_SIZE;
 
         if (m24cxx_read(&eeprom, addr, buf, sizeof(buf)) != M24CXX_Ok) {
+            // Roll back: clear any slot we already populated this load so
+            // a later LogEvent doesn't see (valid=1, stale-content) ghosts.
+            for (uint16_t j = 0; j < i; j++) {
+                motionEvents[j].valid = 0;
+                motionEvents[j].motionType = MOTION_TYPE_NONE;
+                motionEvents[j].epoch_seconds_2000 = 0;
+            }
             return 0;
         }
 
-        motionEvents[i].timestamp_ms = (uint32_t)buf[0]
-                                     | ((uint32_t)buf[1] << 8)
-                                     | ((uint32_t)buf[2] << 16)
-                                     | ((uint32_t)buf[3] << 24);
+        motionEvents[i].epoch_seconds_2000 = (uint32_t)buf[0]
+                                            | ((uint32_t)buf[1] << 8)
+                                            | ((uint32_t)buf[2] << 16)
+                                            | ((uint32_t)buf[3] << 24);
         motionEvents[i].motionType = (MotionType_t)buf[4];
         motionEvents[i].valid = 1;
     }
@@ -203,13 +228,19 @@ static void EEPROM_EraseMotionData(void)
 
 /***************************************************************************
  * MotionLogger_Init — clear SRAM ring buffer, then restore EEPROM contents
+ *   The persisted iOS-sync anchor is NOT consumed at boot. With timestamps
+ *   now stored per-event as seconds-since-2000 (frozen at log time), the
+ *   anchor only needs to be valid for NEW events going forward. Reloading
+ *   an old anchor would also re-introduce the cross-reset uint32 underflow
+ *   that bricked the previous design. iOS pushes a fresh anchor inside
+ *   sendSettings() right after VERIFY_OK.
  ***************************************************************************/
 void MotionLogger_Init(void)
 {
     for (uint16_t i = 0; i < MAX_MOTION_EVENTS; i++) {
         motionEvents[i].valid = 0;
         motionEvents[i].motionType = MOTION_TYPE_NONE;
-        motionEvents[i].timestamp_ms = 0;
+        motionEvents[i].epoch_seconds_2000 = 0;
     }
     eventCount = 0;
     nextIndex = 0;
@@ -218,9 +249,7 @@ void MotionLogger_Init(void)
     PowerMgmt_EEPROM_PowerOn();
     if (m24cxx_init(&eeprom, &hi2c1, EEPROM_I2C_ADDRESS) == M24CXX_Ok) {
         EEPROM_LoadMotionLog();
-        // Restore the iOS-sync anchor so events logged on a prior boot still
-        // resolve to correct calendar times until iOS sends a fresh anchor.
-        (void)EEPROM_LoadBootTime();
+        // Deliberately not calling EEPROM_LoadBootTime() — see header.
     }
     PowerMgmt_EEPROM_PowerOff();
 }
@@ -265,71 +294,114 @@ static uint8_t is_leap_year(uint32_t year_full)
     return 1;
 }
 
+static const uint16_t DAYS_BEFORE_MONTH[12] = {
+    0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
+};
+static const uint8_t DAYS_IN_MONTH[12] = {
+    31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+};
+
 /***************************************************************************
- * MotionLogger_TickToDateTime — convert a HAL tick to YY/MM/DD HH:MM:SS
- *   Year is reported as offset from 2000 (matches the iOS wire format).
- *   Returns 00-01-01 00:00:00 if no boot time has been set, or if iOS
- *   sent a malformed boot time (month outside 1..12, day outside 1..31).
+ * calendar_to_epoch_seconds_2000 — convert YY/MM/DD HH:MM:SS to a uint32
+ *   `year` is offset from 2000 (matches the iOS wire format). Returns 0 if
+ *   any component is out of range — note this collides with the unknown-
+ *   time sentinel, which is the intended behaviour (the slot is unanchored).
+ *   The leap-day prefix is iterated rather than computed by closed-form
+ *   because the iterator is trivially correct across the 2100/2400 century
+ *   rule and the maximum 256 iterations is negligible at log time.
  ***************************************************************************/
-void MotionLogger_TickToDateTime(uint32_t tick_ms, uint8_t* year, uint8_t* month,
-                                   uint8_t* day, uint8_t* hour, uint8_t* minute, uint8_t* second)
+static uint32_t calendar_to_epoch_seconds_2000(uint8_t year, uint8_t month, uint8_t day,
+                                                uint8_t hour, uint8_t minute, uint8_t second)
 {
-    if (!boot_time.valid ||
-        boot_time.month < 1 || boot_time.month > 12 ||
-        boot_time.day   < 1 || boot_time.day   > 31) {
-        *year = 0;
-        *month = 1;
-        *day = 1;
-        *hour = 0;
-        *minute = 0;
-        *second = 0;
+    if (month < 1 || month > 12) return 0;
+    if (day   < 1 || day   > 31) return 0;
+    if (hour > 23 || minute > 59 || second > 59) return 0;
+
+    uint32_t leap_days_before = 0;
+    for (uint32_t y = 0; y < (uint32_t)year; y++) {
+        if (is_leap_year(2000u + y)) leap_days_before++;
+    }
+
+    uint32_t year_full = 2000u + (uint32_t)year;
+    uint8_t  is_leap   = is_leap_year(year_full);
+
+    uint32_t days_in_prior_years = (uint32_t)year * 365u + leap_days_before;
+    uint32_t day_of_year         = (uint32_t)DAYS_BEFORE_MONTH[month - 1] + (uint32_t)(day - 1);
+    if (is_leap && month > 2) day_of_year++;
+
+    uint32_t total_days = days_in_prior_years + day_of_year;
+    return total_days * 86400u
+         + (uint32_t)hour   * 3600u
+         + (uint32_t)minute * 60u
+         + (uint32_t)second;
+}
+
+/***************************************************************************
+ * MotionLogger_EpochSecondsToDateTime — decompose stored timestamp
+ *   Reverse of calendar_to_epoch_seconds_2000. Sentinel input (0) maps to
+ *   the (0,1,1,0,0,0) "unknown" tuple that iOS recognises.
+ ***************************************************************************/
+void MotionLogger_EpochSecondsToDateTime(uint32_t epoch_seconds_2000,
+                                          uint8_t *year, uint8_t *month, uint8_t *day,
+                                          uint8_t *hour, uint8_t *minute, uint8_t *second)
+{
+    if (epoch_seconds_2000 == 0) {
+        *year = 0; *month = 1; *day = 1;
+        *hour = 0; *minute = 0; *second = 0;
         return;
     }
 
-    uint32_t elapsed_ms = tick_ms - boot_time.boot_tick_ms;
-    uint32_t elapsed_seconds = elapsed_ms / 1000;
+    uint32_t total_days  = epoch_seconds_2000 / 86400u;
+    uint32_t time_of_day = epoch_seconds_2000 % 86400u;
 
-    uint32_t total_seconds = boot_time.second +
-                             boot_time.minute * 60u +
-                             boot_time.hour * 3600u +
-                             elapsed_seconds;
+    *hour   = (uint8_t)(time_of_day / 3600u);
+    *minute = (uint8_t)((time_of_day / 60u) % 60u);
+    *second = (uint8_t)(time_of_day % 60u);
 
-    uint8_t new_second = total_seconds % 60;
-    uint8_t new_minute = (total_seconds / 60) % 60;
-    uint8_t new_hour = (total_seconds / 3600) % 24;
-    uint32_t elapsed_days = total_seconds / 86400;
-
-    static const uint8_t days_in_month[12] = {
-        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
-    };
-
-    uint32_t day_acc   = (uint32_t)boot_time.day + elapsed_days;
-    uint8_t  new_month = boot_time.month;
-    uint32_t year_full = 2000u + (uint32_t)boot_time.year;
-
-    for (;;) {
-        uint8_t dim = days_in_month[new_month - 1];
-        if (new_month == 2 && is_leap_year(year_full)) {
-            dim = 29;
-        }
-        if (day_acc <= dim) {
-            break;
-        }
-        day_acc -= dim;
-        new_month++;
-        if (new_month > 12) {
-            new_month = 1;
-            year_full++;
-        }
+    uint32_t year_offset = 0;
+    while (year_offset < 255u) {
+        uint32_t days_in_year = is_leap_year(2000u + year_offset) ? 366u : 365u;
+        if (total_days < days_in_year) break;
+        total_days -= days_in_year;
+        year_offset++;
     }
-    uint8_t new_day = (uint8_t)day_acc;
+    *year = (uint8_t)year_offset;
 
-    *year   = (uint8_t)((year_full - 2000u) & 0xFFu);
-    *month  = new_month;
-    *day    = new_day;
-    *hour   = new_hour;
-    *minute = new_minute;
-    *second = new_second;
+    uint8_t is_leap = is_leap_year(2000u + year_offset);
+    uint8_t mon = 1;
+    while (mon <= 12) {
+        uint8_t dim = DAYS_IN_MONTH[mon - 1];
+        if (mon == 2 && is_leap) dim = 29;
+        if (total_days < dim) break;
+        total_days -= dim;
+        mon++;
+    }
+    *month = mon;
+    *day   = (uint8_t)(total_days + 1u);
+}
+
+/***************************************************************************
+ * MotionLogger_NowSeconds2000 — current calendar as seconds-since-2000
+ *   Returns 0 (the unknown-time sentinel) when:
+ *     - no anchor has been set this session, OR
+ *     - HAL_GetTick somehow dipped below boot_tick_ms (belt-and-braces
+ *       against a future regression — should be impossible in practice).
+ *   Computed live from the in-RAM anchor; safe to call at log time.
+ ***************************************************************************/
+static uint32_t MotionLogger_NowSeconds2000(void)
+{
+    if (!boot_time.valid) return 0;
+
+    uint32_t now = HAL_GetTick();
+    if (now < boot_time.boot_tick_ms) return 0;
+
+    uint32_t boot_secs = calendar_to_epoch_seconds_2000(
+        boot_time.year, boot_time.month, boot_time.day,
+        boot_time.hour, boot_time.minute, boot_time.second);
+    if (boot_secs == 0) return 0;   // anchor calendar was malformed
+
+    uint32_t elapsed_secs = (now - boot_time.boot_tick_ms) / 1000u;
+    return boot_secs + elapsed_secs;
 }
 
 /***************************************************************************
@@ -337,12 +409,17 @@ void MotionLogger_TickToDateTime(uint32_t tick_ms, uint8_t* year, uint8_t* month
  *   When s_defer_eeprom is set, the EEPROM write is skipped and the slot
  *   is added to the dirty range instead. FlushPending writes them all out
  *   in one batch (e.g., on exit from STATE_ALARM_ACTIVE).
+ *
+ *   Calendar is captured AT LOG TIME and stored as seconds-since-2000.
+ *   This is the architectural piece that fixes "every settings write
+ *   shifts the displayed timestamps of previously-logged events" — once
+ *   the value lands in the slot, nothing downstream can change it.
  ***************************************************************************/
 uint8_t MotionLogger_LogEvent(MotionType_t motionType)
 {
     uint16_t slot = nextIndex;
 
-    motionEvents[slot].timestamp_ms = HAL_GetTick();
+    motionEvents[slot].epoch_seconds_2000 = MotionLogger_NowSeconds2000();
     motionEvents[slot].motionType = motionType;
     motionEvents[slot].valid = 1;
 
@@ -439,16 +516,21 @@ MotionEvent_t* MotionLogger_GetEvent(uint16_t index)
 
 /***************************************************************************
  * MotionLogger_Clear — wipe SRAM ring buffer and EEPROM motion section
+ *   Also resets the deferred-EEPROM dirty range. A mid-alarm CMD_CLEAR_LOG
+ *   from iOS would otherwise leave stale s_dirty_first/s_dirty_count, and
+ *   the next FlushPending would write zero'd RAM over wrong EEPROM slots.
  ***************************************************************************/
 void MotionLogger_Clear(void)
 {
     for (uint16_t i = 0; i < MAX_MOTION_EVENTS; i++) {
         motionEvents[i].valid = 0;
         motionEvents[i].motionType = MOTION_TYPE_NONE;
-        motionEvents[i].timestamp_ms = 0;
+        motionEvents[i].epoch_seconds_2000 = 0;
     }
     eventCount = 0;
     nextIndex = 0;
+    s_dirty_first = 0;
+    s_dirty_count = 0;
 
     PowerMgmt_EEPROM_PowerOn();
     EEPROM_EraseMotionData();

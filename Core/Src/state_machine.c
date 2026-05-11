@@ -366,11 +366,14 @@ void State_Locked_Loop(void)
         motion_assessing = 1;
         motion_assess_start = HAL_GetTick();
 
-        // Log the wake event up-front so brief motions that stop before any
-        // further classification still get recorded.
-        if (GET_LOGGING_BIT(deviceState)) {
-            MotionLogger_LogEvent(MOTION_TYPE_IN_MOTION);
-        }
+        // ONE log per wake. The prior firmware logged MOTION_TYPE_IN_MOTION
+        // unconditionally here ("up-front so brief motions still recorded"),
+        // then logged a SECOND event below for the FSM impact/freefall
+        // branch, plus eventually a third via motion_pending → settle. That
+        // tripled every wake's footprint in the ring. Track whether the
+        // classifier produced a qualifying log; only fall back to a generic
+        // IN_MOTION at the end if it did not.
+        uint8_t wake_handled = 0;
 
         // Significant-motion fast-path (MEDIUM + HIGH only): if |a| deviates
         // from 1 g by more than 250 mg, fire the alarm without waiting for
@@ -395,6 +398,9 @@ void State_Locked_Loop(void)
                         StateMachine_ChangeState(STATE_ALARM_ACTIVE);
                     }
                     fast_fired = 1;
+                    // The pending_type path will log on settle (or via the
+                    // 3-s safety timeout). Don't fall back to a generic log.
+                    wake_handled = 1;
                 }
             }
         }
@@ -415,6 +421,7 @@ void State_Locked_Loop(void)
                 if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
                     StateMachine_ChangeState(STATE_ALARM_ACTIVE);
                 }
+                wake_handled = 1;
             } else if (mlc_out == MLC_STATE_IN_MOTION ||
                        mlc_out == MLC_STATE_SHAKEN) {
                 if (!motion_pending) {
@@ -427,7 +434,16 @@ void State_Locked_Loop(void)
                 if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
                     StateMachine_ChangeState(STATE_ALARM_ACTIVE);
                 }
+                wake_handled = 1;
             }
+        }
+
+        // Fallback: INT latched but neither FSM nor MLC qualified. The wake
+        // itself is evidence of motion, so log a generic IN_MOTION so brief
+        // blips don't slip through. No alarm transition without a qualifying
+        // classification — motion_assessing's timeout governs the decision.
+        if (!wake_handled && GET_LOGGING_BIT(deviceState)) {
+            MotionLogger_LogEvent(MOTION_TYPE_IN_MOTION);
         }
     }
 
@@ -633,16 +649,22 @@ void State_Alarm_Active_Loop(void)
         if (impact)   motionType = MOTION_TYPE_IMPACT;
         if (freefall) motionType = MOTION_TYPE_FREEFALL;
 
-        if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN
-            || impact || freefall) {
+        uint8_t qualifying = (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN
+                              || impact || freefall);
+        if (qualifying) {
             last_motion_time = HAL_GetTick();
             motion_this_iter = 1;
             APP_DBG_MSG("Alarm timer reset → %us\n", alarm_duration_s);
-        }
 
-        if (GET_LOGGING_BIT(deviceState)) {
-            MotionLogger_LogEvent(motionType);
-            LOCKSERVICE_SendMotionAlert(motionType);
+            // Gate the log+alert on a real classification. Previously the
+            // log was outside this if-block and a stationary→stationary INT
+            // (MLC still STATIONARY, no FSM event) would land as a spurious
+            // MOTION_TYPE_IN_MOTION entry — visible to the user as junk
+            // events during long alarms.
+            if (GET_LOGGING_BIT(deviceState)) {
+                MotionLogger_LogEvent(motionType);
+                LOCKSERVICE_SendMotionAlert(motionType);
+            }
         }
     }
 

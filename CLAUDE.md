@@ -6,7 +6,7 @@ ONLY EDIT CODE WITHIN THE USER EDITABLE SECTIONS!!!
 
 ## Firmware Version
 
-**Current: V1.17.0**  (last reconciled at commit `8900dc6`)
+**Current: V1.12.2**  (last reconciled at commit `b59e8aa`)
 
 Format: `V<MAJOR>.<MAIN>.<V2>` — single source of truth lives in `Core/Inc/firmware_version.h` (`FW_VERSION_MAJOR/MAIN/V2`, plus `FW_VERSION_STRING`). This line in CLAUDE.md and the macros in the header **must stay in sync**.
 
@@ -183,7 +183,7 @@ Anything not matching an opcode is interpreted as a settings write: `cmd_data[0]
 
 Advertising uses `HCI_ADV_FILTER_ACCEPT_LIST_CONNECT` — only bonded devices can connect.
 
-On connect, `PowerMgmt_RestoreAll()` is called, a 2-second motion-grace window is armed, and any pending logged events trigger an unsolicited `LOCKSERVICE_SendEventCount()` so iOS knows to drain them.
+On connect, `PowerMgmt_RestoreAll()` is called and a 2-second motion-grace window is armed. The firmware no longer pushes an unsolicited `LOCKSERVICE_SendEventCount()` on connect — that fired before the loyalty handshake completed and leaked the pending-event count to any phone the radio accept-list let in. iOS now drives the drain itself by calling `requestMotionLogCount()` inside `onLoyaltyVerifiedHook`, 0.5 s after `RESP_CLAIM_OK` / `RESP_VERIFY_OK`. Log delivery is therefore gated by application-layer ownership verification.
 
 ### Accelerometer (`Core/Src/accelerometer.c`, `Core/Src/lis2dux12_app.c`)
 
@@ -213,9 +213,13 @@ Two restore paths:
 
 ### Motion Logger (`Core/Src/motion_logger.c`)
 
-Ring buffer of up to **`MAX_MOTION_EVENTS` (169)** `MotionEvent_t` records (HAL tick + `MotionType_t`), mirrored to EEPROM so it survives DEEPSTOP / power loss. Boot time is synced from iOS via a BLE write; `MotionLogger_TickToDateTime()` converts ticks to calendar time for log transfers.
+Ring buffer of up to **`MAX_MOTION_EVENTS` (169)** `MotionEvent_t` records (4-byte `epoch_seconds_2000` + `MotionType_t`), mirrored to EEPROM so it survives DEEPSTOP / power loss. Calendar time is captured **at log time** via `MotionLogger_NowSeconds2000()` and frozen in the slot; the wire-side reader (`MotionLogger_EpochSecondsToDateTime`) is a pure decomposition with no anchor dependency.
 
-**Time anchor persistence:** the iOS-sync anchor (`boot_time`: calendar + `boot_tick_ms`) is mirrored to EEPROM at `0x00..0x0A` (magic `0xB7`) every time iOS calls `SetBootTime`, and again on entry to `STATE_LOCKED` as a defensive checkpoint. On boot, `MotionLogger_Init` reloads it via `EEPROM_LoadBootTime`, so events logged on a prior boot still resolve to correct calendar times after a reset. Caveat without an RTC: new events logged *after* a reset but *before* iOS resyncs will mis-resolve, since `HAL_GetTick()` restarts at 0 each boot — those entries display as "unknown" until iOS connects and sends a fresh anchor. There is no fix without battery-backed RTC hardware.
+**Why store calendar instead of HAL ticks:** the prior design stored `HAL_GetTick()` per event and converted to calendar at read time using whichever anchor was current then. Two unfixable failure modes ensued: (1) every `MotionLogger_SetBootTime` call from iOS (sendSettings, every UI toggle, every Motion Logs view open) reset `boot_tick_ms = HAL_GetTick()`, so all previously-logged events with smaller ticks underflowed the `uint32_t` subtraction and produced ~49-day-future garbage; (2) after a reset, `HAL_GetTick` restarts at 0 while the reloaded EEPROM anchor still held the previous boot's `boot_tick_ms`, so any new event underflowed instantly. Storing seconds-since-2000 captured at log time means nothing downstream — anchor moves, reboots, drift — can disturb an event once it's written.
+
+**Time anchor:** the iOS-sync anchor (`boot_time`: calendar + `boot_tick_ms`) is RAM-only authority for the current session. iOS pushes a fresh anchor inside `sendSettings()` right after `RESP_CLAIM_OK` / `RESP_VERIFY_OK`. `MotionLogger_SetBootTime` still mirrors the bytes to EEPROM at `0x00..0x0A` (magic `0xB7`) — and `state_machine.c` checkpoints again on entry to `STATE_LOCKED` — but `MotionLogger_Init` deliberately does **not** consume the persisted bytes at boot. They're forensic data. Events logged after a reset and before iOS reconnects get the unknown-time sentinel (`epoch_seconds_2000 = 0`), which the wire-side encoder emits as `(0,1,1,0,0,0)` and the iOS parser maps to `nil` ("Unknown time"). Without an RTC, this is the honest answer.
+
+**EEPROM magic byte:** bumped to `0xA6` (was `0xA5`) when the per-slot semantics changed. Old EEPROMs load as empty; legacy events couldn't be displayed correctly anyway.
 
 **Deferred EEPROM during `ALARM_ACTIVE`:** an M24C08 page commit pins the main loop for ~15–25 ms (`HAL_Delay(2)` for power-on + `i2c_wait` polling). TIM16 keeps playing the last-set buzzer frequency through the stall, which is audible as the alarm tone hitching on a single pitch. `StateMachine_ChangeState` calls `MotionLogger_SetDeferEEPROM(1)` on entry to `ALARM_ACTIVE` and `FlushPending` + `SetDeferEEPROM(0)` on exit (after `BUZZER_Stop`). While deferred, events still hit the RAM ring immediately — only the EEPROM mirror lags. Tradeoff: a hard reset *during* the alarm loses deferred events that hadn't been flushed yet.
 
@@ -225,7 +229,9 @@ Ring buffer of up to **`MAX_MOTION_EVENTS` (169)** `MotionEvent_t` records (HAL 
 
 While `LOCKED`, ordinary IN_MOTION/SHAKEN alerts are **deferred**: the alarm itself fires immediately, but the BLE alert + log entry are held until the MLC settles back to STATIONARY. A 3 s safety timeout flushes any pending motion that never settled. Impact and freefall (FSM) are always sent immediately.
 
-(This was the entry point used by `door_detector.c` in earlier revisions — that module has since been removed; the deferral is now just used as a debounce so a brief jolt isn't double-logged.)
+**One log per wake.** The LP-wake path used to log `MOTION_TYPE_IN_MOTION` unconditionally up-front and *then* log a second event for whatever classifier (FSM impact/freefall, or motion_pending → settle) fired below — so every wake landed 2-3 entries in the ring. The current code tracks `wake_handled`: the classifier branches that produce a real log (FSM immediate, or motion_pending which logs later on settle) mark it true, and the catch-all fallback `MotionLogger_LogEvent(MOTION_TYPE_IN_MOTION)` only runs when nothing else qualified. Brief blips that the MLC missed still surface, but every wake produces exactly one ring entry.
+
+**Alarm-loop log gating.** `State_Alarm_Active_Loop`'s INT-triggered `MotionLogger_LogEvent` is gated on a qualifying classification (`mlc_out == IN_MOTION/SHAKEN || impact || freefall`). A stationary→stationary INT (no FSM event) used to log a spurious `MOTION_TYPE_IN_MOTION` because the default `motionType` was set above the gate; the log is now inside the qualifying branch.
 
 ### Battery (`Core/Src/battery.c`, `Drivers/BQ27427/`)
 

@@ -192,7 +192,8 @@ static void LOCKSERVICE_SendEvent(uint16_t index)
     }
 
     uint8_t year, month, day, hour, minute, second;
-    MotionLogger_TickToDateTime(event->timestamp_ms, &year, &month, &day, &hour, &minute, &second);
+    MotionLogger_EpochSecondsToDateTime(event->epoch_seconds_2000,
+                                        &year, &month, &day, &hour, &minute, &second);
 
     uint8_t dataIdx = 0;
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = RESP_EVENT_DATA;
@@ -549,10 +550,13 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification)
       connectionStatus = 1;
       LOCKSERVICE_ForceStatusUpdate();
 
-      // Drain any events logged while disconnected so iOS can pull them.
-      if (MotionLogger_GetEventCount() > 0) {
-          LOCKSERVICE_SendEventCount();
-      }
+      // (Removed: unsolicited LOCKSERVICE_SendEventCount() on connect.)
+      // The previous push fired before the loyalty handshake completed,
+      // leaking the pending-event count to any phone the radio accept-
+      // list let in. iOS now drives this itself by calling
+      // requestMotionLogCount() inside onLoyaltyVerifiedHook, 0.5 s after
+      // RESP_CLAIM_OK / RESP_VERIFY_OK. Pulling the log is therefore
+      // gated by application-layer ownership verification.
       /* USER CODE END Service1_APP_CENTR_CONN_HANDLE_EVT */
       break;
     case LOCKSERVICE_DISCON_HANDLE_EVT :

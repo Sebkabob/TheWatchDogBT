@@ -6,7 +6,7 @@ ONLY EDIT CODE WITHIN THE USER EDITABLE SECTIONS!!!
 
 ## Firmware Version
 
-**Current: V1.13.0**  (last reconciled at commit `8900dc6`)
+**Current: V1.14.0**  (last reconciled at commit `8900dc6`)
 
 Format: `V<MAJOR>.<MAIN>.<V2>` — single source of truth lives in `Core/Inc/firmware_version.h` (`FW_VERSION_MAJOR/MAIN/V2`, plus `FW_VERSION_STRING`). This line in CLAUDE.md and the macros in the header **must stay in sync**.
 
@@ -295,6 +295,8 @@ Firmware responses on `DEVICESTATUS` notify (2 bytes each):
 | `[0xE4, 0x01]` | `RESP_UNPAIR_ACK` — EEPROM wiped, followed by disconnect |
 
 The dispatcher in `lockservice_app.c::LOCKSERVICE_Notification()` validates the token before forwarding any regular-command payload to the existing handlers. Payload offsets inside regular handlers are unchanged — the token is stripped before the inner switch runs.
+
+**Auto-disarm on owner authentication:** every successful CLAIM/VERIFY (both `RESP_CLAIM_OK` and `RESP_VERIFY_OK` paths) calls `Unlock_OnOwnerAuthenticated()` which clears the `ARMED` bit in `deviceState`. The state-loops (`State_Locked_Loop`, `State_Alarm_Active_Loop`) already gate on `!ARMED` to tear down (buzzer stop, LED reset) and transition to `CONNECTED_IDLE` with a forced status notify, so the helper is just one bit-clear. The disarm is intentionally gated on loyalty verify, not the raw BLE connect event — connecting alone doesn't prove ownership.
 
 **Recovery hatch:** holding the charging cable plugged in for **30 consecutive seconds** during the safe-boot busy-wait in `main.c` calls `Loyalty_Wipe()` and plays a distinct ascending tone. After unplug, any phone can claim the device again. This exists for users whose owner phone is lost or the app's local token has been deleted.
 

@@ -258,6 +258,21 @@ static void Loyalty_SendResponse(uint8_t marker, uint8_t value, uint8_t disconne
     }
 }
 
+/***************************************************************************
+ * Unlock_OnOwnerAuthenticated — drop ARMED so LOCKED/ALARM_ACTIVE fall back
+ *   Called after every CLAIM/VERIFY success. The state-loops already gate
+ *   on !ARMED to tear down (buzzer stop, LED reset, CONNECTED_IDLE transit
+ *   with status notify), so clearing the bit here is sufficient. Gated to
+ *   the loyalty-verified peer because BLE connect alone doesn't prove
+ *   ownership.
+ ***************************************************************************/
+static void Unlock_OnOwnerAuthenticated(void)
+{
+    if (GET_ARMED_BIT(deviceState)) {
+        SET_ARMED_BIT(deviceState, 0);
+    }
+}
+
 /* USER CODE END PFP */
 
 /* Functions Definition ------------------------------------------------------*/
@@ -310,6 +325,7 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
             if (Loyalty_IsResetWindowOpen()) {
                 if (Loyalty_Claim(&received_data[1])) {
                     Loyalty_SendResponse(RESP_CLAIM_OK, 0x01, 0);
+                    Unlock_OnOwnerAuthenticated();
                 } else {
                     Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
                 }
@@ -322,6 +338,7 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
             if (!Loyalty_IsClaimed()) {
                 if (Loyalty_Claim(&received_data[1])) {
                     Loyalty_SendResponse(RESP_CLAIM_OK, 0x01, 0);
+                    Unlock_OnOwnerAuthenticated();
                 } else {
                     Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
                 }
@@ -335,6 +352,7 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
             // "we wrote a fresh token". Mismatch is a different phone — REJECT.
             if (Loyalty_Verify(&received_data[1])) {
                 Loyalty_SendResponse(RESP_VERIFY_OK, 0x01, 0);
+                Unlock_OnOwnerAuthenticated();
                 break;
             }
             Loyalty_SendResponse(RESP_REJECT, 0x01, 1);
@@ -349,6 +367,7 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
                 break;
             }
             Loyalty_SendResponse(RESP_VERIFY_OK, 0x01, 0);
+            Unlock_OnOwnerAuthenticated();
             break;
         }
 

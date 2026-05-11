@@ -6,7 +6,7 @@ ONLY EDIT CODE WITHIN THE USER EDITABLE SECTIONS!!!
 
 ## Firmware Version
 
-**Current: V1.14.0**  (last reconciled at commit `8900dc6`)
+**Current: V1.17.0**  (last reconciled at commit `8900dc6`)
 
 Format: `V<MAJOR>.<MAIN>.<V2>` — single source of truth lives in `Core/Inc/firmware_version.h` (`FW_VERSION_MAJOR/MAIN/V2`, plus `FW_VERSION_STRING`). This line in CLAUDE.md and the macros in the header **must stay in sync**.
 
@@ -214,6 +214,12 @@ Two restore paths:
 ### Motion Logger (`Core/Src/motion_logger.c`)
 
 Ring buffer of up to **`MAX_MOTION_EVENTS` (169)** `MotionEvent_t` records (HAL tick + `MotionType_t`), mirrored to EEPROM so it survives DEEPSTOP / power loss. Boot time is synced from iOS via a BLE write; `MotionLogger_TickToDateTime()` converts ticks to calendar time for log transfers.
+
+**Time anchor persistence:** the iOS-sync anchor (`boot_time`: calendar + `boot_tick_ms`) is mirrored to EEPROM at `0x00..0x0A` (magic `0xB7`) every time iOS calls `SetBootTime`, and again on entry to `STATE_LOCKED` as a defensive checkpoint. On boot, `MotionLogger_Init` reloads it via `EEPROM_LoadBootTime`, so events logged on a prior boot still resolve to correct calendar times after a reset. Caveat without an RTC: new events logged *after* a reset but *before* iOS resyncs will mis-resolve, since `HAL_GetTick()` restarts at 0 each boot — those entries display as "unknown" until iOS connects and sends a fresh anchor. There is no fix without battery-backed RTC hardware.
+
+**Deferred EEPROM during `ALARM_ACTIVE`:** an M24C08 page commit pins the main loop for ~15–25 ms (`HAL_Delay(2)` for power-on + `i2c_wait` polling). TIM16 keeps playing the last-set buzzer frequency through the stall, which is audible as the alarm tone hitching on a single pitch. `StateMachine_ChangeState` calls `MotionLogger_SetDeferEEPROM(1)` on entry to `ALARM_ACTIVE` and `FlushPending` + `SetDeferEEPROM(0)` on exit (after `BUZZER_Stop`). While deferred, events still hit the RAM ring immediately — only the EEPROM mirror lags. Tradeoff: a hard reset *during* the alarm loses deferred events that hadn't been flushed yet.
+
+**Other I2C work paused during `ALARM_ACTIVE`** for the same reason: `BATTERY_UpdateState()` in `main.c` (the 1 Hz fuel-gauge poll does ~10 I2C transactions = 20–30 ms blocking) and the live `LIS2DUX12_ReadAcceleration()` inside `LOCKSERVICE_Devicestatus_SendNotification`. The battery cache and live accel bytes go stale during the alarm; iOS uses the motion-alert path for the live channel anyway. Both resume the moment we leave `ALARM_ACTIVE`.
 
 ### Deferred motion alert (in `state_machine.c::State_Locked_Loop`)
 

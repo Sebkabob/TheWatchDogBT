@@ -718,6 +718,26 @@ void StateMachine_ChangeState(SystemState_t newState)
             SET_ARMED_BIT(deviceState, 0);
         }
 
+        // EEPROM motion writes block the main loop ~15-25 ms (HAL_Delay +
+        // i2c_wait on the M24C08 page commit), which freezes BUZZER_Update
+        // and stretches whatever tone TIM16 happens to be playing. Defer
+        // while ALARM_ACTIVE so the alarm pattern stays clean; flush after
+        // BUZZER_Stop has already silenced the buzzer.
+        if (newState == STATE_ALARM_ACTIVE) {
+            MotionLogger_SetDeferEEPROM(1);
+        } else if (previousState == STATE_ALARM_ACTIVE) {
+            MotionLogger_SetDeferEEPROM(0);
+            MotionLogger_FlushPending();
+        }
+
+        // Checkpoint the iOS-sync time anchor to EEPROM on LOCKED entry so
+        // events logged on this boot still resolve to correct calendar times
+        // if the device resets during the upcoming alarm window. No-op if
+        // iOS hasn't synced the time yet.
+        if (newState == STATE_LOCKED) {
+            MotionLogger_PersistAnchor();
+        }
+
         lis2dux12_app_set_stabilizing(newState == STATE_STABILIZING ? 1 : 0);
 
         LOCKSERVICE_SendStatusUpdate();

@@ -963,8 +963,15 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
         CLEAR_BATTERY_CHARGING(deviceBattery);
     }
 
-    int16_t accel[3];
-    LIS2DUX12_ReadAcceleration(accel);
+    // Live I2C accel read costs ~3-5 ms per call. At the 40 ms status-notify
+    // cadence that's tolerable, but during ALARM_ACTIVE every ms of main-
+    // loop block stretches the buzzer note (TIM16 PWM keeps running but
+    // BUZZER_Update can't advance). Zero the bytes during alarm — iOS only
+    // uses the per-axis data outside of an alarming session.
+    int16_t accel[3] = {0, 0, 0};
+    if (currentState != STATE_ALARM_ACTIVE) {
+        LIS2DUX12_ReadAcceleration(accel);
+    }
 
     // 19-byte DEVICESTATUS payload. Bytes 14..15 carry the low 2 bytes of
     // the BD address (LE) — used by the iOS app as the user-visible

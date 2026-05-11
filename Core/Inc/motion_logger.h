@@ -22,6 +22,20 @@
 #define EEPROM_DEVICE_INFO_ADDR      0x000
 #define EEPROM_DEVICE_INFO_SIZE      64
 
+/* Boot-time anchor (calendar + HAL_GetTick at iOS sync) persisted so events
+ * already on EEPROM can still resolve to correct calendar times after a
+ * reset. Lives inside the 0x000..0x03F reserved device-info block. Layout:
+ *   [0]    magic 0xB7
+ *   [1..6] year (offset from 2000) / month / day / hour / minute / second
+ *   [7..10] boot_tick_ms (uint32, little-endian)
+ * After a reset, OLD events with old-boot ticks resolve correctly against
+ * this loaded anchor. NEW events logged before iOS resyncs will still mis-
+ * resolve (HAL_GetTick restarts at 0 each boot) — they get an "unknown"
+ * calendar until iOS sends a fresh anchor. */
+#define EEPROM_BOOT_TIME_ADDR        0x00
+#define EEPROM_BOOT_TIME_LEN         11
+#define EEPROM_BOOT_TIME_MAGIC       0xB7
+
 #define EEPROM_MOTION_HEADER_ADDR    0x040
 #define EEPROM_MOTION_HEADER_SIZE    8
 
@@ -51,8 +65,22 @@ uint16_t MotionLogger_GetEventCount(void);
 MotionEvent_t* MotionLogger_GetEvent(uint16_t index);
 void MotionLogger_Clear(void);
 
+/* Defer EEPROM writes while the alarm is sounding — TIM16 PWM is unaffected
+ * by main-loop stalls, but BUZZER_Update can't advance notes during a 15+ ms
+ * EEPROM page commit, which the user hears as a stuck frequency. While
+ * deferred, LogEvent updates only the RAM ring; FlushPending writes the
+ * dirty slots + header out in a single batch (called after BUZZER_Stop). */
+void MotionLogger_SetDeferEEPROM(uint8_t enable);
+void MotionLogger_FlushPending(void);
+
 void MotionLogger_SetBootTime(uint8_t year, uint8_t month, uint8_t day,
                                uint8_t hour, uint8_t minute, uint8_t second);
+
+/* Force-flush the in-RAM boot-time anchor to EEPROM. SetBootTime already
+ * does this implicitly when iOS syncs; state_machine.c calls it again on
+ * entry to STATE_LOCKED as a defensive checkpoint in case the device
+ * resets during an alarm. No-op if the anchor isn't valid. */
+void MotionLogger_PersistAnchor(void);
 void MotionLogger_TickToDateTime(uint32_t tick_ms, uint8_t* year, uint8_t* month,
                                    uint8_t* day, uint8_t* hour, uint8_t* minute, uint8_t* second);
 

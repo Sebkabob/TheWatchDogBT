@@ -295,10 +295,13 @@ int main(void)
     static uint32_t last_battery_check = 0;
     if (HAL_GetTick() - last_battery_check > 1000) {
         last_battery_check = HAL_GetTick();
-        if (!PowerMgmt_IsLowPower()) {
-            // Refresh cached gauge state for the rest of the firmware.
-            // Diagnostic emission used to fire here too — now it's
-            // on-demand via CMD_REQUEST_DIAG (see lockservice_app.c).
+        // BATTERY_UpdateState fires ~10 I2C transactions on the BQ27427
+        // (~20-30 ms of synchronous HAL_I2C_Mem_Read). TIM16 keeps tooting
+        // the last note while we're blocked, which is audible as a "stuck
+        // frequency" hitch every second during the alarm. Skip while
+        // ALARM_ACTIVE — the gauge cache goes stale for the few seconds
+        // the alarm runs, then resumes on exit.
+        if (!PowerMgmt_IsLowPower() && currentState != STATE_ALARM_ACTIVE) {
             BATTERY_UpdateState();
         }
     }

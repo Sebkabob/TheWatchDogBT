@@ -20,6 +20,14 @@ static MotionEvent_t motionEvents[MAX_MOTION_EVENTS];
 static uint16_t eventCount = 0;
 static uint16_t nextIndex = 0;
 
+/* Deferred-EEPROM state — see MotionLogger_SetDeferEEPROM in the header.
+ * s_dirty_first is the slot index of the oldest unflushed entry;
+ * s_dirty_count is how many slots from there are unflushed. The ring wrap
+ * is handled in FlushPending. */
+static uint8_t  s_defer_eeprom = 0;
+static uint16_t s_dirty_first  = 0;
+static uint16_t s_dirty_count  = 0;
+
 static M24CXX_HandleTypeDef eeprom;
 extern I2C_HandleTypeDef hi2c1;
 
@@ -33,6 +41,60 @@ static struct {
     uint32_t boot_tick_ms;  // HAL_GetTick() when boot time was set
     uint8_t valid;
 } boot_time = {0};
+
+/***************************************************************************
+ * EEPROM_WriteBootTime / EEPROM_LoadBootTime — persist the iOS-anchor
+ *   No on-chip RTC survives power loss, so the only way for events logged
+ *   on a prior boot to resolve to correct calendar times after a reset is
+ *   to keep the (calendar, boot_tick_ms) pair on EEPROM. Caller must ensure
+ *   EEPROM is powered and I2C is ready.
+ ***************************************************************************/
+static void EEPROM_WriteBootTime(void)
+{
+    if (!boot_time.valid) {
+        return;
+    }
+
+    uint8_t buf[EEPROM_BOOT_TIME_LEN];
+    buf[0]  = EEPROM_BOOT_TIME_MAGIC;
+    buf[1]  = boot_time.year;
+    buf[2]  = boot_time.month;
+    buf[3]  = boot_time.day;
+    buf[4]  = boot_time.hour;
+    buf[5]  = boot_time.minute;
+    buf[6]  = boot_time.second;
+    buf[7]  = (uint8_t)(boot_time.boot_tick_ms       & 0xFF);
+    buf[8]  = (uint8_t)((boot_time.boot_tick_ms >> 8)  & 0xFF);
+    buf[9]  = (uint8_t)((boot_time.boot_tick_ms >> 16) & 0xFF);
+    buf[10] = (uint8_t)((boot_time.boot_tick_ms >> 24) & 0xFF);
+
+    m24cxx_write(&eeprom, EEPROM_BOOT_TIME_ADDR, buf, sizeof(buf));
+}
+
+static uint8_t EEPROM_LoadBootTime(void)
+{
+    uint8_t buf[EEPROM_BOOT_TIME_LEN];
+    if (m24cxx_read(&eeprom, EEPROM_BOOT_TIME_ADDR, buf, sizeof(buf)) != M24CXX_Ok) {
+        return 0;
+    }
+
+    if (buf[0] != EEPROM_BOOT_TIME_MAGIC) {
+        return 0;
+    }
+
+    boot_time.year   = buf[1];
+    boot_time.month  = buf[2];
+    boot_time.day    = buf[3];
+    boot_time.hour   = buf[4];
+    boot_time.minute = buf[5];
+    boot_time.second = buf[6];
+    boot_time.boot_tick_ms = ((uint32_t)buf[7])
+                           | ((uint32_t)buf[8]  << 8)
+                           | ((uint32_t)buf[9]  << 16)
+                           | ((uint32_t)buf[10] << 24);
+    boot_time.valid = 1;
+    return 1;
+}
 
 /***************************************************************************
  * EEPROM_WriteMotionHeader — write magic + counters to the header slot
@@ -156,6 +218,9 @@ void MotionLogger_Init(void)
     PowerMgmt_EEPROM_PowerOn();
     if (m24cxx_init(&eeprom, &hi2c1, EEPROM_I2C_ADDRESS) == M24CXX_Ok) {
         EEPROM_LoadMotionLog();
+        // Restore the iOS-sync anchor so events logged on a prior boot still
+        // resolve to correct calendar times until iOS sends a fresh anchor.
+        (void)EEPROM_LoadBootTime();
     }
     PowerMgmt_EEPROM_PowerOff();
 }
@@ -174,6 +239,20 @@ void MotionLogger_SetBootTime(uint8_t year, uint8_t month, uint8_t day,
     boot_time.second = second;
     boot_time.boot_tick_ms = HAL_GetTick();
     boot_time.valid = 1;
+
+    PowerMgmt_EEPROM_PowerOn();
+    EEPROM_WriteBootTime();
+    PowerMgmt_EEPROM_PowerOff();
+}
+
+void MotionLogger_PersistAnchor(void)
+{
+    if (!boot_time.valid) {
+        return;
+    }
+    PowerMgmt_EEPROM_PowerOn();
+    EEPROM_WriteBootTime();
+    PowerMgmt_EEPROM_PowerOff();
 }
 
 // Gregorian leap-year rule: divisible by 4, except divisible by 100, except
@@ -255,6 +334,9 @@ void MotionLogger_TickToDateTime(uint32_t tick_ms, uint8_t* year, uint8_t* month
 
 /***************************************************************************
  * MotionLogger_LogEvent — append an event, persist to EEPROM, ring-wrap
+ *   When s_defer_eeprom is set, the EEPROM write is skipped and the slot
+ *   is added to the dirty range instead. FlushPending writes them all out
+ *   in one batch (e.g., on exit from STATE_ALARM_ACTIVE).
  ***************************************************************************/
 uint8_t MotionLogger_LogEvent(MotionType_t motionType)
 {
@@ -272,12 +354,59 @@ uint8_t MotionLogger_LogEvent(MotionType_t motionType)
         eventCount++;
     }
 
+    if (s_defer_eeprom) {
+        if (s_dirty_count == 0) {
+            s_dirty_first = slot;
+            s_dirty_count = 1;
+        } else if (s_dirty_count < MAX_MOTION_EVENTS) {
+            s_dirty_count++;
+        } else {
+            // Dirty range already spans the whole ring. New writes overwrite
+            // the oldest dirty slot in place, so advance the start instead of
+            // growing past the ring size.
+            s_dirty_first = (uint16_t)((s_dirty_first + 1) % MAX_MOTION_EVENTS);
+        }
+        return 1;
+    }
+
     PowerMgmt_EEPROM_PowerOn();
     EEPROM_WriteEvent(slot, &motionEvents[slot]);
     EEPROM_WriteMotionHeader();
     PowerMgmt_EEPROM_PowerOff();
 
     return 1;
+}
+
+/***************************************************************************
+ * MotionLogger_SetDeferEEPROM — toggle deferred-write mode
+ *   Caller is responsible for pairing every enable=1 with a FlushPending +
+ *   enable=0. StateMachine_ChangeState does this around ALARM_ACTIVE.
+ ***************************************************************************/
+void MotionLogger_SetDeferEEPROM(uint8_t enable)
+{
+    s_defer_eeprom = enable ? 1 : 0;
+}
+
+/***************************************************************************
+ * MotionLogger_FlushPending — persist any deferred slots in one batch
+ *   Powers the EEPROM once, writes each dirty slot, writes the header, then
+ *   powers down. No-op if nothing is dirty.
+ ***************************************************************************/
+void MotionLogger_FlushPending(void)
+{
+    if (s_dirty_count == 0) {
+        return;
+    }
+
+    PowerMgmt_EEPROM_PowerOn();
+    for (uint16_t i = 0; i < s_dirty_count; i++) {
+        uint16_t slot = (uint16_t)((s_dirty_first + i) % MAX_MOTION_EVENTS);
+        EEPROM_WriteEvent(slot, &motionEvents[slot]);
+    }
+    EEPROM_WriteMotionHeader();
+    PowerMgmt_EEPROM_PowerOff();
+
+    s_dirty_count = 0;
 }
 
 uint16_t MotionLogger_GetEventCount(void)

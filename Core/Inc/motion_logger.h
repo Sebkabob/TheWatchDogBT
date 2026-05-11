@@ -30,17 +30,18 @@
 #define EEPROM_DEVICE_INFO_ADDR      0x000
 #define EEPROM_DEVICE_INFO_SIZE      64
 
-/* Boot-time anchor (calendar + HAL_GetTick at iOS sync). Lives inside the
- * 0x000..0x03F reserved device-info block. Layout:
+/* Boot-time anchor (calendar + monotonic-radio-timer seconds at iOS sync).
+ * Lives inside the 0x000..0x03F reserved device-info block. Layout:
  *   [0]    magic 0xB7
  *   [1..6] year (offset from 2000) / month / day / hour / minute / second
- *   [7..10] boot_tick_ms (uint32, little-endian)
+ *   [7..10] boot_monotonic_secs (uint32 LE) — seconds reported by
+ *           HAL_RADIO_TIMER_GetCurrentSysTime() / 409600 at the moment
+ *           iOS pushed the anchor. NOT HAL_GetTick(): SysTick is suspended
+ *           in DEEPSTOP so HAL_GetTick deltas miss every sleep period.
  *
  * The anchor is RAM-only authority from iOS each session — we no longer
- * reload it at boot. Without RTC hardware, a reloaded anchor combined with
- * a fresh HAL_GetTick produced underflowing elapsed-ms and garbage future
- * timestamps for new events. EEPROM persistence is kept for diagnostic /
- * forensic inspection; MotionLogger_Init does NOT consume it. */
+ * reload it at boot. EEPROM persistence is kept for diagnostic / forensic
+ * inspection; MotionLogger_Init does NOT consume it. */
 #define EEPROM_BOOT_TIME_ADDR        0x00
 #define EEPROM_BOOT_TIME_LEN         11
 #define EEPROM_BOOT_TIME_MAGIC       0xB7

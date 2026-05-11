@@ -5,19 +5,25 @@
  * Motion-event ring buffer. Events are stored in SRAM for fast access and
  * mirrored to the M24C08 EEPROM so they survive DEEPSTOP / power loss.
  *
- * Architecture note — calendar at log time, not at read time:
+ * Architecture note — calendar at log time, monotonic radio-timer clock:
  *   Prior versions stored HAL_GetTick() per event and converted to calendar
  *   at the moment iOS pulled the log, using whatever anchor was current
- *   then. That had two unfixable failure modes:
+ *   then. Three failure modes ensued:
  *     1) iOS calls SetBootTime on every settings write, which moves the
  *        anchor forward — old events' ticks then resolve to garbage future
  *        dates because (tick_ms - new_boot_tick_ms) underflowed as uint32.
  *     2) After a reset, HAL_GetTick restarts at 0; any reloaded anchor
  *        had a boot_tick_ms from the previous boot, so every new event
  *        underflowed.
- *   The fix is to capture calendar time AT LOG TIME and freeze it in the
- *   slot. Once written, no downstream anchor change can disturb it. Slots
- *   logged before iOS first syncs get the unknown-time sentinel (0 secs).
+ *     3) SysTick (the source of HAL_GetTick) is suspended in DEEPSTOP, so
+ *        elapsed-tick deltas missed every minute of sleep — events logged
+ *        between iOS syncs all clustered at the anchor's calendar value
+ *        plus a few ms of wake time, regardless of when they actually fired.
+ *   The fixes are: (a) capture calendar at log time and freeze it in the
+ *   slot, so anchor moves don't disturb existing events, and (b) source
+ *   "now" from HAL_RADIO_TIMER_GetCurrentSysTime() (LSI-clocked, runs in
+ *   DEEPSTOP_WITH_SLOW_CLOCK_ON) instead of HAL_GetTick. Slots logged
+ *   before iOS first syncs get the unknown-time sentinel (0 secs).
  ***************************************************************************/
 
 #include "motion_logger.h"
@@ -50,16 +56,35 @@ static struct {
     uint8_t hour;
     uint8_t minute;
     uint8_t second;
-    uint32_t boot_tick_ms;  // HAL_GetTick() when boot time was set
+    /* Monotonic seconds at the moment iOS sync'd the anchor. Sourced from
+     * HAL_RADIO_TIMER_GetCurrentSysTime() — NOT HAL_GetTick(). SysTick
+     * stops in DEEPSTOP, so HAL_GetTick deltas under-count by however
+     * long the device slept. The radio-timer clock runs from LSI and
+     * keeps counting in DEEPSTOP_WITH_SLOW_CLOCK_ON (we configure that
+     * in Projects/Common/BLE/Interfaces/stm32_lpm_if.c::PWR_EnterOffMode),
+     * so its delta correctly reflects wall-clock elapsed seconds. */
+    uint32_t boot_monotonic_secs;
     uint8_t valid;
 } boot_time = {0};
 
 /***************************************************************************
+ * MotionLogger_MonotonicSeconds — DEEPSTOP-safe seconds-since-boot
+ *   Wraps the 64-bit radio-timer counter (409600 ticks/sec). uint32 result
+ *   gives ~136 years; we cast down because that fits the boot_time field
+ *   and matches the elapsed-seconds math elsewhere.
+ ***************************************************************************/
+static uint32_t MotionLogger_MonotonicSeconds(void)
+{
+    return (uint32_t)(HAL_RADIO_TIMER_GetCurrentSysTime() / 409600ULL);
+}
+
+/***************************************************************************
  * EEPROM_WriteBootTime / EEPROM_LoadBootTime — persist the iOS-anchor
- *   No on-chip RTC survives power loss, so the only way for events logged
- *   on a prior boot to resolve to correct calendar times after a reset is
- *   to keep the (calendar, boot_tick_ms) pair on EEPROM. Caller must ensure
- *   EEPROM is powered and I2C is ready.
+ *   Persisted for forensic inspection only; MotionLogger_Init no longer
+ *   reloads at boot (see header). The on-wire layout's last four bytes
+ *   still hold a uint32 LE; the semantics changed from "HAL tick ms" to
+ *   "monotonic radio-timer seconds." Magic byte unchanged because the
+ *   field is no longer consumed.
  ***************************************************************************/
 static void EEPROM_WriteBootTime(void)
 {
@@ -75,10 +100,10 @@ static void EEPROM_WriteBootTime(void)
     buf[4]  = boot_time.hour;
     buf[5]  = boot_time.minute;
     buf[6]  = boot_time.second;
-    buf[7]  = (uint8_t)(boot_time.boot_tick_ms       & 0xFF);
-    buf[8]  = (uint8_t)((boot_time.boot_tick_ms >> 8)  & 0xFF);
-    buf[9]  = (uint8_t)((boot_time.boot_tick_ms >> 16) & 0xFF);
-    buf[10] = (uint8_t)((boot_time.boot_tick_ms >> 24) & 0xFF);
+    buf[7]  = (uint8_t)(boot_time.boot_monotonic_secs       & 0xFF);
+    buf[8]  = (uint8_t)((boot_time.boot_monotonic_secs >> 8)  & 0xFF);
+    buf[9]  = (uint8_t)((boot_time.boot_monotonic_secs >> 16) & 0xFF);
+    buf[10] = (uint8_t)((boot_time.boot_monotonic_secs >> 24) & 0xFF);
 
     m24cxx_write(&eeprom, EEPROM_BOOT_TIME_ADDR, buf, sizeof(buf));
 }
@@ -100,10 +125,10 @@ static uint8_t EEPROM_LoadBootTime(void)
     boot_time.hour   = buf[4];
     boot_time.minute = buf[5];
     boot_time.second = buf[6];
-    boot_time.boot_tick_ms = ((uint32_t)buf[7])
-                           | ((uint32_t)buf[8]  << 8)
-                           | ((uint32_t)buf[9]  << 16)
-                           | ((uint32_t)buf[10] << 24);
+    boot_time.boot_monotonic_secs = ((uint32_t)buf[7])
+                                  | ((uint32_t)buf[8]  << 8)
+                                  | ((uint32_t)buf[9]  << 16)
+                                  | ((uint32_t)buf[10] << 24);
     boot_time.valid = 1;
     return 1;
 }
@@ -255,7 +280,11 @@ void MotionLogger_Init(void)
 }
 
 /***************************************************************************
- * MotionLogger_SetBootTime — anchor calendar time to the current HAL tick
+ * MotionLogger_SetBootTime — anchor calendar to the monotonic radio-timer
+ *   The monotonic reference uses HAL_RADIO_TIMER_GetCurrentSysTime (not
+ *   HAL_GetTick), because SysTick stops in DEEPSTOP and would under-count
+ *   the elapsed time between iOS sync and any event logged after the
+ *   device next slept.
  ***************************************************************************/
 void MotionLogger_SetBootTime(uint8_t year, uint8_t month, uint8_t day,
                                uint8_t hour, uint8_t minute, uint8_t second)
@@ -266,7 +295,7 @@ void MotionLogger_SetBootTime(uint8_t year, uint8_t month, uint8_t day,
     boot_time.hour = hour;
     boot_time.minute = minute;
     boot_time.second = second;
-    boot_time.boot_tick_ms = HAL_GetTick();
+    boot_time.boot_monotonic_secs = MotionLogger_MonotonicSeconds();
     boot_time.valid = 1;
 
     PowerMgmt_EEPROM_PowerOn();
@@ -384,23 +413,26 @@ void MotionLogger_EpochSecondsToDateTime(uint32_t epoch_seconds_2000,
  * MotionLogger_NowSeconds2000 — current calendar as seconds-since-2000
  *   Returns 0 (the unknown-time sentinel) when:
  *     - no anchor has been set this session, OR
- *     - HAL_GetTick somehow dipped below boot_tick_ms (belt-and-braces
- *       against a future regression — should be impossible in practice).
- *   Computed live from the in-RAM anchor; safe to call at log time.
+ *     - the monotonic counter dipped below boot_monotonic_secs (which
+ *       should be impossible — radio timer is monotonic — but we belt-
+ *       and-brace anyway).
+ *   The monotonic reference survives DEEPSTOP (LSI keeps the radio
+ *   timer's wakeup block ticking in DEEPSTOP_WITH_SLOW_CLOCK_ON), so
+ *   events logged after a long sleep get a correct calendar value.
  ***************************************************************************/
 static uint32_t MotionLogger_NowSeconds2000(void)
 {
     if (!boot_time.valid) return 0;
 
-    uint32_t now = HAL_GetTick();
-    if (now < boot_time.boot_tick_ms) return 0;
+    uint32_t now = MotionLogger_MonotonicSeconds();
+    if (now < boot_time.boot_monotonic_secs) return 0;
 
     uint32_t boot_secs = calendar_to_epoch_seconds_2000(
         boot_time.year, boot_time.month, boot_time.day,
         boot_time.hour, boot_time.minute, boot_time.second);
     if (boot_secs == 0) return 0;   // anchor calendar was malformed
 
-    uint32_t elapsed_secs = (now - boot_time.boot_tick_ms) / 1000u;
+    uint32_t elapsed_secs = now - boot_time.boot_monotonic_secs;
     return boot_secs + elapsed_secs;
 }
 

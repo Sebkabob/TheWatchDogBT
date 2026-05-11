@@ -137,8 +137,30 @@ void PWR_EnterOffMode( void )
   apb0.deepstop_wdg_state = DISABLE;
   prepareDeviceLowPower(&apb0, &apb1, &apb2, &ahb0, &cpuPeriph, cStackPreamble);
 
-  /* DEEPSTOP configuration */
-  configDS.deepStopMode = PWR_DEEPSTOP_WITH_SLOW_CLOCK_OFF;
+  /* DEEPSTOP configuration
+   *
+   * We use PWR_DEEPSTOP_WITH_SLOW_CLOCK_ON, not _OFF.
+   *
+   * _OFF disables LSI inside DEEPSTOP to save the LSI's standby current
+   * (~100 nA per the WB05 datasheet). The price is that EVERY low-power
+   * counter on the chip stops: the radio-timer wakeup block, the IWDG,
+   * the WDG, and anything else clocked from the slow clock. SysTick is
+   * a CPU clock, so it stops in DEEPSTOP regardless of the mode —
+   * `HAL_GetTick()` is unusable across DEEPSTOP either way.
+   *
+   * Motion-log timestamps in `motion_logger.c::NowSeconds2000` depend on
+   * a monotonic counter that survives DEEPSTOP. With _OFF, no such
+   * counter exists, so events logged during disconnected operation get
+   * stamped with the calendar value the device had at last iOS sync —
+   * the user observes every event freezing at the same time of day.
+   *
+   * Flipping to _ON keeps LSI alive in DEEPSTOP, which keeps
+   * `HAL_RADIO_TIMER_GetCurrentSysTime()` valid across the sleep. The
+   * ~100 nA penalty is two orders of magnitude below the LIS2DUX12's
+   * armed-mode draw (1.5–1.7 µA) and one order below our measurement
+   * noise floor. Cheapest possible "have a real clock" fix.
+   */
+  configDS.deepStopMode = PWR_DEEPSTOP_WITH_SLOW_CLOCK_ON;
   HAL_PWR_ConfigDEEPSTOP(&configDS);
 
   /* Clear all the wake-up pin flags */

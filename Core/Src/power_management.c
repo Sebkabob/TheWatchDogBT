@@ -39,6 +39,17 @@ static volatile uint8_t peripherals_gated = 0;
 // decide whether the UCF needs a fresh reload.
 static volatile uint8_t mlc_kept_alive = 0;
 
+// 1 if RestoreForMotion ran (lean restore) but RestoreAll hasn't yet finished
+// the work it skipped (TIM2/LEDs, PA8 GPOUT, PA11 STAT input, UCF reload when
+// MLC was kept alive, BATTERY_Init). Cleared by a full RestoreAll. This is
+// the BLE-reconnect-while-locked fix: a motion wake that happens just before
+// the user reconnects (which is the common case — they're handling the
+// device) used to leave peripherals_gated=0, and the subsequent RestoreAll
+// silently early-returned, leaving TIM2 dead (glitchy armed-pulse LED), the
+// accel's INT1 latched (no further motion EXTI → no alarm), and the gauge
+// uninitialised.
+static volatile uint8_t restore_incomplete = 0;
+
 extern void MX_I2C1_Reinit(void);
 extern void MX_TIM2_Reinit(void);
 extern void MX_TIM16_Reinit(void);
@@ -311,6 +322,7 @@ void PowerMgmt_EnterLowPower_Idle(void)
     Keep_CablePlugInterrupt();
 
     peripherals_gated = 1;
+    restore_incomplete = 0;
 }
 
 /***************************************************************************
@@ -352,6 +364,7 @@ void PowerMgmt_EnterLowPower_Armed(void)
     Keep_CablePlugInterrupt();
 
     peripherals_gated = 1;
+    restore_incomplete = 0;
 }
 
 /***************************************************************************
@@ -379,36 +392,78 @@ static void Restore_I2C_Bus(void)
 
 /***************************************************************************
  * PowerMgmt_RestoreAll — full peripheral restore (BLE connect / cable plug)
- *   LED_Off() after MX_TIM2_Reinit clamps CCRs to 999. Without it, the
- *   freshly-init'd timer leaves CCR=0 (active-low → LEDs full ON) for the
- *   tens of ms it takes RestoreAll to finish.
+ *
+ * Two entry conditions to handle:
+ *   peripherals_gated == 1  : device is fresh out of DEEPSTOP, everything is
+ *                             gated, do the full bring-up.
+ *   restore_incomplete == 1 : RestoreForMotion already ran (lean restore) and
+ *                             cleared peripherals_gated. Fill in only the
+ *                             pieces that the lean path skipped — TIM2/LEDs,
+ *                             PA8 GPOUT, PA11 STAT input, the UCF reload
+ *                             when MLC was kept alive, and BATTERY_Init.
+ *
+ * Without the "fill the gaps" branch, a motion wake immediately followed by
+ * a BLE reconnect (the common case — the user grabs the device to open the
+ * app) left this function as a silent early-return: TIM2 stayed dead so
+ * LED_Armed flailed, INT1 stayed latched so further motion never reached the
+ * EXTI handler, and the gauge wasn't re-init'd.
+ *
+ * LED_Off() after MX_TIM2_Reinit clamps the CCRs to 999. Without it the
+ * freshly-init'd timer leaves CCR=0 (active-low → LEDs full ON) for the tens
+ * of ms it takes the rest of the restore to finish.
  ***************************************************************************/
 void PowerMgmt_RestoreAll(void)
 {
-    if (!peripherals_gated) return;
+    if (!peripherals_gated && !restore_incomplete) return;
 
-    Restore_SWD();
-    Restore_I2C_Bus();
-    HAL_Delay(5);
+    if (peripherals_gated) {
+        /* Full bring-up from DEEPSTOP. */
+        Restore_SWD();
+        Restore_I2C_Bus();
+        HAL_Delay(5);
 
-    __HAL_RCC_TIM2_CLK_ENABLE();
-    __HAL_RCC_TIM16_CLK_ENABLE();
-    MX_TIM2_Reinit();
-    LED_Off();
-    MX_TIM16_Reinit();
-    BUZZER_Init();
+        __HAL_RCC_TIM2_CLK_ENABLE();
+        __HAL_RCC_TIM16_CLK_ENABLE();
+        MX_TIM2_Reinit();
+        LED_Off();
+        MX_TIM16_Reinit();
+        BUZZER_Init();
 
-    Restore_GPIO_Outputs();
-    Restore_AccelInterrupt();
-    Restore_CablePlugInterrupt();
-    Restore_UART_Pins();
+        Restore_GPIO_Outputs();
+        Restore_AccelInterrupt();
+        Restore_CablePlugInterrupt();
+        Restore_UART_Pins();
 
-    HAL_Delay(10);
-    LIS2DUX12_Init();
-    LIS2DUX12_ClearMotion();
-    BATTERY_Init();
+        HAL_Delay(10);
+        LIS2DUX12_Init();
+        LIS2DUX12_ClearMotion();
+        BATTERY_Init();
+    } else {
+        /* RestoreForMotion already brought up I2C, TIM16, the accel/cable
+         * interrupts, and SWD. Only the LED timer, the misc GPIO restores,
+         * and (conditionally) the UCF reload + battery init are missing. */
+        __HAL_RCC_TIM2_CLK_ENABLE();
+        MX_TIM2_Reinit();
+        LED_Off();
 
-    peripherals_gated = 0;
+        Restore_GPIO_Outputs();
+        Restore_UART_Pins();
+
+        if (mlc_kept_alive) {
+            /* Lean path skipped the SW-reset + UCF reload because the chip
+             * was still classifying. INT1 has been latched HIGH since the
+             * wake event, though, so without this reset the rising-edge
+             * EXTI on PB15 never fires again. */
+            HAL_Delay(10);
+            LIS2DUX12_Init();
+            LIS2DUX12_ClearMotion();
+        }
+        BATTERY_Init();
+    }
+
+    peripherals_gated  = 0;
+    mlc_kept_alive     = 0;
+    restore_incomplete = 0;
 }
 
 /***************************************************************************
@@ -416,6 +471,10 @@ void PowerMgmt_RestoreAll(void)
  *   Brings up only what an alarm needs: I2C, buzzer, accel + cable INTs.
  *   Skips TIM2/LEDs (lights stay off), BATTERY_Init (gauge runs on its own
  *   VDD), and LIS2DUX12_Init when the chip kept MLC alive across sleep.
+ *
+ *   restore_incomplete is set so a subsequent RestoreAll (typically from the
+ *   BLE connect callback) knows to come back and finish the work that this
+ *   lean path skipped.
  ***************************************************************************/
 void PowerMgmt_RestoreForMotion(void)
 {
@@ -437,7 +496,8 @@ void PowerMgmt_RestoreForMotion(void)
         LIS2DUX12_ClearMotion();
     }
 
-    peripherals_gated = 0;
+    peripherals_gated  = 0;
+    restore_incomplete = 1;
 }
 
 uint8_t PowerMgmt_IsLowPower(void)

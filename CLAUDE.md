@@ -6,7 +6,7 @@ ONLY EDIT CODE WITHIN THE USER EDITABLE SECTIONS!!!
 
 ## Firmware Version
 
-**Current: V1.12.5**  (last reconciled at commit `8594a53`)
+**Current: V1.12.7**  (last reconciled at commit `45bcc95`)
 
 Format: `V<MAJOR>.<MAIN>.<V2>` — single source of truth lives in `Core/Inc/firmware_version.h` (`FW_VERSION_MAJOR/MAIN/V2`, plus `FW_VERSION_STRING`). This line in CLAUDE.md and the macros in the header **must stay in sync**.
 
@@ -157,6 +157,8 @@ The `deviceState` byte packs all user-configurable settings:
 
 A short **motion-grace window** is started on every BLE connect (`StateMachine_StartMotionGrace(2000)`): RestoreAll reloads the UCF, INT1 glitches, and the user is invariably handling the device while pairing — without the grace window every connect would fire the alarm. While active, `LOCKED` drains MLC/FSM events and suppresses transitions to `ALARM_ACTIVE`.
 
+**`stayAwakeFlag` in connected-and-locked is non-negotiable.** The BLE stack's automatic LPM in `app_entry.c::App_PowerSaveLevel_Check` gates chip-level DEEPSTOP-between-connection-events on this flag: when it's clear and a connection is up, `UTIL_SEQ_Idle` picks `POWER_SAVE_LEVEL_STOP_LS_CLOCK_ON` and the chip sleeps between every connection event. `State_Connected_Idle_Loop` and `State_Alarm_Active_Loop` both set the flag as their first line; `State_Locked_Loop`'s connected branch does the same. Without it, reconnect-while-locked lands us in a state where `currentState` was already `LOCKED` (no state-change setter runs) and the disconnect path had cleared the flag for LP-armed entry — so the main loop only ticks at the negotiated connection interval (often ~1 s on a known-bonded reconnect when iOS isn't actively streaming). TIM2/TIM16 don't survive DEEPSTOP cycles cleanly, the armed-pulse LED chatters, motion polling gets crushed to ~1 Hz, and the alarm transition path goes dark. Disconnect "fixes" it because the LP-armed path is its own coherent universe; unlock "fixes" it because the transition into `STATE_CONNECTED_IDLE` re-asserts the flag.
+
 ### BLE Layer (`STM32_BLE/App/`)
 
 Custom **LockService** (16-bit UUID `0x183E`) GATT service with three characteristics:
@@ -210,6 +212,8 @@ Two restore paths:
 - **`PowerMgmt_RestoreForMotion()`** — lean wake on accel motion. Skips TIM2/LED restore, skips `BATTERY_Init`, and skips `LIS2DUX12_Init` when the chip kept MLC alive across sleep (HIGH sensitivity). Net wake latency is dominated by the I2C/TIM16 reinit (~ a few ms).
 
 `PowerMgmt_IsLowPower()` gates sensor polling throughout the state machine.
+
+**The `restore_incomplete` flag** bridges the two paths. `RestoreForMotion()` sets it; `RestoreAll()` checks it on entry and — if `peripherals_gated` is already 0 because the motion-wake path got there first — performs only the missing work (TIM2/LEDs, PA8 GPOUT, PA11 STAT, UCF reload when MLC was kept alive, BATTERY_Init). Without this, a motion wake immediately followed by a BLE reconnect (the user grabs the device to open the app) used to leave `RestoreAll()` as a silent early-return: TIM2 stayed dead so the armed-pulse LED was glitchy, the accel's INT1 stayed latched HIGH so rising-edge EXTI on PB15 never fired again — no further MLC IN_MOTION/SHAKEN logs, no alarm — and the gauge wasn't re-initialised. Fully cleared by any full `RestoreAll()` or by the next LP entry.
 
 ### Motion Logger (`Core/Src/motion_logger.c`)
 

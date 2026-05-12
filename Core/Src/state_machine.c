@@ -279,6 +279,14 @@ void State_Stabilizing_Loop(void)
     static uint32_t stabilize_entry_time = 0;
     static uint8_t  stabilize_started = 0;
 
+    // STABILIZING is only reachable from CONNECTED_IDLE, which already sets
+    // this every iteration — but re-asserting here keeps the invariant
+    // "stayAwakeFlag is 1 whenever currentState implies a live BLE session"
+    // locally provable. See the comment in State_Locked_Loop's connected
+    // branch for the chip-level DEEPSTOP-between-events failure mode this
+    // flag exists to suppress.
+    stayAwakeFlag = 1;
+
     if (!GET_ARMED_BIT(deviceState)) {
         stabilize_started = 0;
         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
@@ -577,6 +585,24 @@ void State_Locked_Loop(void)
             PowerMgmt_RestoreAll();
         }
         motion_assessing = 0;
+
+        // stayAwakeFlag gates the BLE stack's chip-level LPM in
+        // app_entry.c::App_PowerSaveLevel_Check. With it clear AND a live
+        // connection, UTIL_SEQ_Idle picks POWER_SAVE_LEVEL_STOP_LS_CLOCK_ON
+        // and the chip enters DEEPSTOP between BLE connection events.
+        // That's catastrophic in connected-and-locked: the main loop only
+        // ticks at the connection interval (iOS often picks ~1 s on a
+        // known-bonded reconnect), TIM2/TIM16 state isn't preserved
+        // across DEEPSTOP so the LED pulse flails, and motion polling
+        // gets crushed to the same ~1 Hz cadence — alarms miss, MLC
+        // logs never get pushed.
+        //
+        // State_Connected_Idle_Loop and State_Alarm_Active_Loop both
+        // set this as their first line; State_Locked_Loop was the gap.
+        // The disconnect branch above intentionally clears the flag to
+        // allow LP-armed entry, so on reconnect-while-locked we land
+        // here with stayAwakeFlag=0 and need to re-assert it.
+        stayAwakeFlag = 1;
     }
 }
 

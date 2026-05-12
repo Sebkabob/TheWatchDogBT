@@ -260,18 +260,25 @@ static void Loyalty_SendResponse(uint8_t marker, uint8_t value, uint8_t disconne
 }
 
 /***************************************************************************
- * Unlock_OnOwnerAuthenticated — drop ARMED so LOCKED/ALARM_ACTIVE fall back
- *   Called after every CLAIM/VERIFY success. The state-loops already gate
- *   on !ARMED to tear down (buzzer stop, LED reset, CONNECTED_IDLE transit
- *   with status notify), so clearing the bit here is sufficient. Gated to
- *   the loyalty-verified peer because BLE connect alone doesn't prove
- *   ownership.
+ * Unlock_OnOwnerAuthenticated — formerly dropped ARMED on every CLAIM/
+ * VERIFY success so reconnecting auto-disarmed a still-armed device.
+ *
+ * Reverted to a no-op: the iOS side was re-encoding settings on reconnect
+ * with a possibly-stale local ARMED bit and re-arming the device a few
+ * hundred ms after this function disarmed it, producing a visible
+ * unlock → stabilize → relock cycle that surfaced especially when the
+ * "silent when connected" flag held the firmware in LOCKED across motion
+ * (so the user actually noticed). With this and the iOS-side
+ * onLoyaltyVerifiedHook change to skip sendSettings on reconnect, the
+ * device's state at connect is preserved — exactly what the user
+ * explicitly asked for.
  ***************************************************************************/
 static void Unlock_OnOwnerAuthenticated(void)
 {
-    if (GET_ARMED_BIT(deviceState)) {
-        SET_ARMED_BIT(deviceState, 0);
-    }
+    /* Intentionally empty. Auto-disarm-on-reconnect was causing more
+     * confusion than it solved; the user disarms via the lock button
+     * (which iOS encodes into the settings byte and writes through). */
+    (void)deviceState;
 }
 
 /* USER CODE END PFP */

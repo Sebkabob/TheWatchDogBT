@@ -447,8 +447,23 @@ static uint32_t MotionLogger_NowSeconds2000(void)
  *   shifts the displayed timestamps of previously-logged events" — once
  *   the value lands in the slot, nothing downstream can change it.
  ***************************************************************************/
+extern volatile uint8_t connectionStatus;
+
 uint8_t MotionLogger_LogEvent(MotionType_t motionType)
 {
+    // While iOS is connected, motion events are delivered live via the
+    // LOCKSERVICE_SendMotionAlert path (firmware → notify → iOS), and
+    // iOS synthesises the MotionEvent record from that alert with its
+    // own wall-clock timestamp. Storing the same event to the EEPROM
+    // ring is redundant work — costs an I2C page write (~15-25 ms in
+    // the non-deferred path) and burns M24C08 write endurance — so
+    // skip it entirely when connected. The ring is only useful for
+    // events that happen while the user is out of BLE range, where
+    // the firmware needs to buffer them until the next reconnect.
+    if (connectionStatus) {
+        return 0;
+    }
+
     uint16_t slot = nextIndex;
 
     motionEvents[slot].epoch_seconds_2000 = MotionLogger_NowSeconds2000();

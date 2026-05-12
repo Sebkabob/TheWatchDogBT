@@ -54,18 +54,28 @@
 
 /* Bumped from 0xA5 → 0xA6 when the per-slot timestamp semantics changed
  * from "HAL tick milliseconds (this-boot)" to "seconds since 2000-01-01
- * 00:00:00 UTC, captured at log time". Old EEPROMs with 0xA5 will load
- * as empty after the upgrade — those legacy events couldn't be displayed
- * correctly anyway. */
-#define EEPROM_MAGIC_BYTE            0xA6
+ * 00:00:00 UTC, captured at log time". Bumped 0xA6 → 0xA7 when the
+ * SESSION_START / SESSION_END boundary markers were added — old logs
+ * without these markers can't be parsed into sessions correctly, so
+ * loading them as empty is the right behaviour. Old EEPROMs reload as
+ * blank after either upgrade. */
+#define EEPROM_MAGIC_BYTE            0xA7
 #define EEPROM_I2C_ADDRESS           0x50   // M24C08 with A2=0
 
+/* MOTION_TYPE_* values 0..4 are the firmware-emitted motion classifications
+ * fed by the MLC + FSM. Session boundary markers live at 0x10/0x11 — well
+ * clear of the motion range so future motion types can be added at 5..15
+ * without colliding, and so iOS code that already has phantom enum cases at
+ * 5/6/7 (vestigial — never emitted by firmware) can stay untouched. iOS
+ * mirrors these two values in its MotionEventType enum. */
 typedef enum {
-    MOTION_TYPE_NONE       = 0,
-    MOTION_TYPE_IN_MOTION  = 1,  // MLC: general movement detected
-    MOTION_TYPE_SHAKEN     = 2,  // MLC: device was shaken
-    MOTION_TYPE_IMPACT     = 3,  // FSM: impact event
-    MOTION_TYPE_FREEFALL   = 4,  // FSM: free-fall event
+    MOTION_TYPE_NONE          = 0,
+    MOTION_TYPE_IN_MOTION     = 1,    // MLC: general movement detected
+    MOTION_TYPE_SHAKEN        = 2,    // MLC: device was shaken
+    MOTION_TYPE_IMPACT        = 3,    // FSM: impact event
+    MOTION_TYPE_FREEFALL      = 4,    // FSM: free-fall event
+    MOTION_TYPE_SESSION_START = 0x10, // App-defined: arming, session begins
+    MOTION_TYPE_SESSION_END   = 0x11, // App-defined: unlock, session closes
 } MotionType_t;
 
 typedef struct {

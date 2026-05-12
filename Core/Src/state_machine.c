@@ -249,6 +249,13 @@ void State_Connected_Idle_Loop(void)
         }
     }
 
+    // (Previously polled the MLC output here every 250 ms to keep the
+    // "Moving / Resting / Shaken" indicator under iOS's battery icon
+    // fresh. That added a recurring ~1-2 ms I2C blocking call on the
+    // main loop the whole time a device is connected, which made BLE
+    // operations feel noticeably sluggish. Removed for now — the
+    // staleness is purely cosmetic; reliability comes first.)
+
     if (!connectionStatus) {
         StateMachine_ChangeState(STATE_DISCONNECTED_IDLE);
     }
@@ -751,6 +758,17 @@ void StateMachine_ChangeState(SystemState_t newState)
             MotionLogger_SetDeferEEPROM(0);
             MotionLogger_FlushPending();
         }
+
+        // (Session-boundary markers used to be logged here on entry to
+        // and exit from the locked-family states. Reverted because the
+        // SESSION_END EEPROM write on the auto-disarm path at reconnect
+        // — when iOS reconnects to a device that was still armed — adds
+        // a ~20 ms blocking EEPROM write right inside the loyalty-
+        // handshake window, which was the only remaining piece of work
+        // we'd added that runs during connect. Sessions will need a
+        // different way to detect boundaries — likely iOS-side from the
+        // ARMED-bit settings writes — but that lives outside this
+        // performance-sensitive path entirely.)
 
         // Checkpoint the iOS-sync time anchor to EEPROM on LOCKED entry so
         // events logged on this boot still resolve to correct calendar times

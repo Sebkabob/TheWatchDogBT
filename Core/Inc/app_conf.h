@@ -46,17 +46,23 @@
 /**
  * Define Tx Power Mode
  */
-#define CFG_TX_POWER_MODE                   (0) /* Tx normal power mode */
+#define CFG_TX_POWER_MODE                   (1) /* High Power mode — required to reach +8 dBm on WB05 */
 
 /**
  * Define Tx Power
+ *
+ * WB05 TX-power table (from aci_hal_set_tx_power_level docs in
+ * ble_api.h): values are "normal-power / high-power" dBm. PA_Level
+ * 31 = +6 dBm normal / +8 dBm high. We're in high-power mode above,
+ * so this gives +8 dBm — the chip's max output. Note: PA_Level 32 is
+ * WB09-only and won't work on this part.
  */
-#define CFG_TX_POWER                        (0x18) /* 0x18 <=> 0 dBm — drops radio peak ~6 mA → ~4.3 mA per adv burst */
+#define CFG_TX_POWER                        (31)
 
 /**
  * Define Advertising parameters
  */
-#define CFG_PUBLIC_BD_ADDRESS               (0x000000000003)
+#define CFG_PUBLIC_BD_ADDRESS               (0x000000000002)
 #define CFG_BD_ADDRESS_TYPE                 HCI_ADDR_PUBLIC
 #define CFG_BLE_PRIVACY_ENABLED             (0)
 

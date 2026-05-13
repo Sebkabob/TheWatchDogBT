@@ -656,7 +656,7 @@ void State_Alarm_Active_Loop(void)
                 break;
             case ALARM_LOUD:
                 if (showLights) LED_Alarm(125, 255, 225, 0, led_b);
-                BUZZER_StartLaCucaracha();
+                BUZZER_StartSuperLoudAlarm();
                 break;
             default:
                 break;

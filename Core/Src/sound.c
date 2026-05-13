@@ -32,15 +32,20 @@ static const Note_t CALM_ALARM_PATTERN[] = {
     {349, 20, 15},
 };
 
+// Eight-note alternating C6/A5 pattern that loops in exactly 1000 ms
+// (8 × 125 ms = 110 ms tone + 15 ms gap per note). Locking the loop
+// period to a clean 1 s cadence makes the alarm-duration countdown
+// land on tone-boundary transitions rather than mid-note, which is
+// what you want when the user picks "alarm stops 3 s after motion ends".
 static const Note_t NORMAL_ALARM_PATTERN[] = {
-    {1047, 150, 15},
-    {880,  150, 15},
-    {1047, 150, 15},
-    {880,  150, 15},
-    {1047, 150, 15},
-    {880,  150, 15},
-    {1047, 150, 15},
-    {880,  150, 15},
+    {1047, 110, 15},
+    {880,  110, 15},
+    {1047, 110, 15},
+    {880,  110, 15},
+    {1047, 110, 15},
+    {880,  110, 15},
+    {1047, 110, 15},
+    {880,  110, 15},
 };
 
 // Apple "Find My" style ping — 3-tone ascending chirp.
@@ -69,6 +74,22 @@ static const Note_t LA_CUCARACHA_PATTERN[] = {
     {587, 125, 25},
     {587, 125, 25},
     {523, 500, 500},
+};
+
+/***************************************************************************
+ * SUPER_LOUD_ALARM_PATTERN — ear-piercing warble in the buzzer's resonant
+ *   band. The magnetic transducer hits peak SPL near 4 kHz; both tones
+ *   sit within ±200 Hz of that peak so neither half of the cycle drops
+ *   below the loudest output. Alternating every 75 ms (~6.7 Hz warble)
+ *   produces a psychoacoustically rough wail that's far harder to tune
+ *   out than a steady 4 kHz tone at the same SPL — the auditory system
+ *   keeps re-orienting to the changing pitch instead of habituating.
+ *   delay_ms = 0 keeps the cycle continuous; the few-ms silence inherent
+ *   in the BUZZER_Update note-to-note transition is below perception.
+ ***************************************************************************/
+static const Note_t SUPER_LOUD_ALARM_PATTERN[] = {
+    {4200, 75, 0},
+    {3800, 75, 0},
 };
 
 typedef struct {
@@ -280,6 +301,18 @@ uint32_t BUZZER_GetLaCucarachaDuration(void)
 {
     return BUZZER_GetSequenceDuration(LA_CUCARACHA_PATTERN,
         sizeof(LA_CUCARACHA_PATTERN) / sizeof(Note_t));
+}
+
+void BUZZER_StartSuperLoudAlarm(void)
+{
+    BUZZER_PlaySequence(SUPER_LOUD_ALARM_PATTERN,
+        sizeof(SUPER_LOUD_ALARM_PATTERN) / sizeof(Note_t), 1);
+}
+
+uint32_t BUZZER_GetSuperLoudAlarmDuration(void)
+{
+    return BUZZER_GetSequenceDuration(SUPER_LOUD_ALARM_PATTERN,
+        sizeof(SUPER_LOUD_ALARM_PATTERN) / sizeof(Note_t));
 }
 
 void BUZZER_StartFindMe(void)

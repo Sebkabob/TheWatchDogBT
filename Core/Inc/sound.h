@@ -41,8 +41,18 @@ void BUZZER_StartNormalAlarm(void);
 uint32_t BUZZER_GetCalmAlarmDuration(void);
 uint32_t BUZZER_GetNormalAlarmDuration(void);
 
+// La Cucaracha — preserved as a legacy / easter-egg alarm pattern.
+// The user-facing ALARM_LOUD setting now drives the SuperLoud alarm
+// below instead; nothing in the runtime path calls these unless
+// something is explicitly wired up to play the melody.
 void BUZZER_StartLaCucaracha(void);
 uint32_t BUZZER_GetLaCucarachaDuration(void);
+
+// Super-loud alarm — ear-piercing two-tone warble centered on the
+// buzzer's ~4 kHz resonant peak. Drives the user-facing ALARM_LOUD
+// setting in state_machine.c::State_Alarm_Active_Loop.
+void BUZZER_StartSuperLoudAlarm(void);
+uint32_t BUZZER_GetSuperLoudAlarmDuration(void);
 
 void BUZZER_StartFindMe(void);
 

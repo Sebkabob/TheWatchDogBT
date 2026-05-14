@@ -3,7 +3,7 @@
  * created by Sebastian Forenza 2026
  *
  * LIS2DUX12 accelerometer driver — public API for MLC asset tracking,
- * low-power wake-up modes, tilt detection, and motion-flag access.
+ * low-power wake-up modes, and motion-flag access.
  ***************************************************************************/
 
 #ifndef INC_ACCELEROMETER_H_
@@ -29,9 +29,6 @@ void LIS2DUX12_ClearMotion(void);
 // Arms PB15 as a DEEPSTOP wakeup source (HIGH polarity).
 void LIS2DUX12_ConfigureWakeup(void);
 
-// Power-down (ODR=0, ~0.4 µA). Call before gating I2C.
-int32_t LIS2DUX12_PowerDown(void);
-
 // Software-reset then power-down — clears MLC/FSM residual current.
 int32_t LIS2DUX12_ResetAndPowerDown(void);
 
@@ -45,11 +42,5 @@ int32_t LIS2DUX12_EnterMediumLowPowerWakeup(void);
 int32_t LIS2DUX12_ConfigArmedSleep(void);
 
 void LIS2DUX12_ReadAcceleration(int16_t accel[3]);
-
-// Snapshot current gravity vector as the tilt-detection reference.
-void LIS2DUX12_CaptureReference(void);
-
-// Returns 1 if tilted >15° from reference (10° hysteresis to clear).
-uint8_t LIS2DUX12_CheckTilt(void);
 
 #endif /* INC_ACCELEROMETER_H_ */

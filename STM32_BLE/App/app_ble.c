@@ -349,28 +349,19 @@ void BLE_Init(void)
         uint8_t hdr = EEPROM_MAGIC_BYTE;
         m24cxx_write(&bd_eeprom, EEPROM_DEVICE_INFO_ADDR, &hdr, 1);
         m24cxx_write(&bd_eeprom, EEPROM_DEVICE_INFO_ADDR + 1, bd_address, 6);
-        APP_DBG_MSG("  BD addr: override active, wrote code value to EEPROM\n");
       } else if (magic == EEPROM_MAGIC_BYTE) {
         /* Use the EEPROM-stored address — overrides the code value. */
         if (m24cxx_read(&bd_eeprom, EEPROM_DEVICE_INFO_ADDR + 1, stored_addr, 6) == M24CXX_Ok) {
           memcpy(bd_address, stored_addr, 6);
-          ret = aci_hal_write_config_data(CONFIG_DATA_PUBADDR_OFFSET,
+          (void)aci_hal_write_config_data(CONFIG_DATA_PUBADDR_OFFSET,
                                           CONFIG_DATA_PUBADDR_LEN, bd_address);
-          if (ret != BLE_STATUS_SUCCESS) {
-            APP_DBG_MSG("  Fail   : re-write PUBADDR from EEPROM, result: 0x%02X\n", ret);
-          } else {
-            APP_DBG_MSG("  BD addr: loaded from EEPROM\n");
-          }
         }
       } else {
         /* First boot / blank EEPROM — persist the code-defined address. */
         uint8_t hdr = EEPROM_MAGIC_BYTE;
         m24cxx_write(&bd_eeprom, EEPROM_DEVICE_INFO_ADDR, &hdr, 1);
         m24cxx_write(&bd_eeprom, EEPROM_DEVICE_INFO_ADDR + 1, bd_address, 6);
-        APP_DBG_MSG("  BD addr: EEPROM blank, wrote code value\n");
       }
-    } else {
-      APP_DBG_MSG("  BD addr: EEPROM not responding, using code value\n");
     }
 
     PowerMgmt_EEPROM_PowerOff();

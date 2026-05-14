@@ -415,14 +415,9 @@ void LOCKSERVICE_Init(void)
    * .ioc regeneration cannot wipe the wiring. */
   tBleStatus add_char_ret = aci_gatt_srv_add_char(&batterydiag_char,
                                                   LOCKSERVICE_Context.LockserviceSvcHdle);
-  if (add_char_ret != BLE_STATUS_SUCCESS)
-  {
-    APP_DBG_MSG("  Fail   : aci_gatt_srv_add_char BATTERYDIAG, error code: 0x%x \n", add_char_ret);
-  }
-  else
+  if (add_char_ret == BLE_STATUS_SUCCESS)
   {
     LOCKSERVICE_Context.BatterydiagCharHdle = aci_gatt_srv_get_char_decl_handle(&batterydiag_char);
-    APP_DBG_MSG("  Success: aci_gatt_srv_add_char BATTERYDIAG \n");
   }
   /* USER CODE END InitService1Svc_2 */
 
@@ -528,10 +523,6 @@ tBleStatus LOCKSERVICE_NotifyValue(LOCKSERVICE_CharOpcode_t CharOpcode, LOCKSERV
                               GATT_NOTIFICATION,
                               pData->Length,
                               (uint8_t *)pData->p_Payload);
-    if (ret != BLE_STATUS_SUCCESS)
-    {
-      APP_DBG_MSG("  Fail   : aci_gatt_srv_notify BATTERYDIAG, error code: 0x%2X\n", ret);
-    }
   }
   /* USER CODE END Service1_App_Notify_Char_2 */
 

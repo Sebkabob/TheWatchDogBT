@@ -19,10 +19,6 @@
 
 static volatile uint8_t motion_detected_flag = 0;
 
-static int16_t ref_accel[3] = {0, 0, 0};
-static uint8_t ref_valid = 0;
-static uint8_t tilt_state = 0;  // hysteresis: 0 = not tilted, 1 = tilted
-
 /***************************************************************************
  * HAL_GPIO_EXTI_Callback — sets motion flag on PB15 EXTI rising edge
  ***************************************************************************/
@@ -89,19 +85,6 @@ void LIS2DUX12_ConfigureWakeup(void) {
 
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF19);   // WUF19 = PB15
     __HAL_GPIO_EXTI_CLEAR_IT(ACCEL_INT_GPIO_Port, ACCEL_INT_Pin);
-}
-
-/***************************************************************************
- * LIS2DUX12_PowerDown — ODR=0, ~0.4 µA, no interrupts. Call before I2C gate.
- ***************************************************************************/
-int32_t LIS2DUX12_PowerDown(void)
-{
-    lis2dux12_md_t mode = {
-        .odr = LIS2DUX12_OFF,
-        .fs  = LIS2DUX12_4g,
-        .bw  = LIS2DUX12_ODR_div_2,
-    };
-    return lis2dux12_mode_set(&dev_ctx, &mode);
 }
 
 /***************************************************************************
@@ -262,46 +245,4 @@ void LIS2DUX12_ReadAcceleration(int16_t accel[3]) {
     accel[0] = (int16_t)((data[1] << 8) | data[0]);
     accel[1] = (int16_t)((data[3] << 8) | data[2]);
     accel[2] = (int16_t)((data[5] << 8) | data[4]);
-}
-
-/***************************************************************************
- * LIS2DUX12_CaptureReference — snapshot gravity vector for tilt detection
- ***************************************************************************/
-void LIS2DUX12_CaptureReference(void) {
-    LIS2DUX12_ReadAcceleration(ref_accel);
-    ref_valid = 1;
-    tilt_state = 0;
-}
-
-/***************************************************************************
- * LIS2DUX12_CheckTilt — compare current gravity to reference, integer-only
- *   |cur - ref|² = 2·|g|²·(1 - cos θ).  Cortex-M0+ has no FPU, so we test
- *   diff_sq · K > ref_sq with K = round(1 / (2·(1 - cos θ))).
- *     enter at 15°: K = 15  (1/0.0681 ≈ 14.68)
- *     exit  at 10°: K = 33  (1/0.0304 ≈ 32.9)
- ***************************************************************************/
-uint8_t LIS2DUX12_CheckTilt(void) {
-    if (!ref_valid) return 0;
-
-    int16_t cur[3];
-    LIS2DUX12_ReadAcceleration(cur);
-
-    int32_t dx = (int32_t)cur[0] - ref_accel[0];
-    int32_t dy = (int32_t)cur[1] - ref_accel[1];
-    int32_t dz = (int32_t)cur[2] - ref_accel[2];
-
-    int32_t diff_sq = dx * dx + dy * dy + dz * dz;
-    int32_t ref_sq  = (int32_t)ref_accel[0] * ref_accel[0]
-                    + (int32_t)ref_accel[1] * ref_accel[1]
-                    + (int32_t)ref_accel[2] * ref_accel[2];
-
-    if (ref_sq == 0) return 0;
-
-    if (tilt_state == 0) {
-        if (diff_sq * 15 > ref_sq) tilt_state = 1;
-    } else {
-        if (diff_sq * 33 <= ref_sq) tilt_state = 0;
-    }
-
-    return tilt_state;
 }

@@ -276,7 +276,7 @@ Diagnostic high-load mode for fuel-gauge characterisation: white LED at full bri
 
 **Debug GPIO:** `DEBUG_GPIO_Pin` (PB5) is EXTI rising-edge with pulldown. While HIGH, device stays awake and won't enter low power — allows debugger attachment after DEEPSTOP wake. Also registered as a PWR wakeup pin (`LL_PWR_WAKEUP_PB5`, polarity HIGH).
 
-**Cable plug (PB4):** Falling edge = cable plugged in. Triggers `CablePlug_IRQCallback()` which sets `cablePlugFlag` + `stayAwakeFlag`. Also registered as a PWR wakeup pin (`LL_PWR_WAKEUP_PB4`, polarity LOW). After unplug, the device stays awake for `CABLE_UNPLUG_AWAKE_MS` (5 s) before being allowed back to deep sleep.
+**Cable plug (PB4):** Falling edge = cable plugged in. Triggers `CablePlug_IRQCallback()` which sets `stayAwakeFlag`. Also registered as a PWR wakeup pin (`LL_PWR_WAKEUP_PB4`, polarity LOW). After unplug, the device stays awake for `CABLE_UNPLUG_AWAKE_MS` (5 s) before being allowed back to deep sleep.
 
 **DEEPSTOP wakeups bypass EXTI:** On STM32WB0x, wake from DEEPSTOP routes through the PWR controller, NOT EXTI. `HAL_PWR_WKUPx_Callback()` in `accelerometer.c` is the override: it sets `motion_detected_flag` for PB15 wakeups and calls `CablePlug_IRQCallback()` for PB4 wakeups.
 

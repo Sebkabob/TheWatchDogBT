@@ -21,10 +21,6 @@
 #define MLC_STATE_IN_MOTION              0x08
 #define MLC_STATE_SHAKEN                 0x0C
 
-// FSM program indices in the asset-tracking UCF.
-#define FSM_PROGRAM_IMPACT    0  // FSM1
-#define FSM_PROGRAM_FREEFALL  1  // FSM2
-
 extern stmdev_ctx_t dev_ctx;
 extern I2C_HandleTypeDef hi2c1;
 
@@ -35,14 +31,8 @@ int lis2dux12_app_init(I2C_HandleTypeDef *hi2c);
 // Read the MLC1_SRC classification byte. 0 on success.
 int lis2dux12_app_get_mlc_output(uint8_t *mlc_out);
 
-// Returns a static string describing the MLC state.
-const char* lis2dux12_app_decode_mlc(uint8_t mlc_val);
-
 // Sets *impact / *freefall from the FSM status registers. 0 on success.
 int lis2dux12_app_check_fsm_events(uint8_t *impact, uint8_t *freefall);
-
-// Returns 1 if MLC1 output changed since the last read.
-int lis2dux12_app_mlc_status_changed(void);
 
 // Cached state byte sent over BLE (DEVICESTATUS byte 6):
 //   0    Stationary
@@ -50,9 +40,6 @@ int lis2dux12_app_mlc_status_changed(void);
 //   3    Shaken     (MLC)
 //   0xFE Stabilizing (waiting for stillness before locking)
 //   0xFF Unknown
-#define CACHED_STATE_STATIONARY     0
-#define CACHED_STATE_IN_MOTION      2
-#define CACHED_STATE_SHAKEN         3
 #define CACHED_STATE_STABILIZING    0xFE
 
 void lis2dux12_app_update_cached_state(uint8_t mlc_out);

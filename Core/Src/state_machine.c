@@ -12,9 +12,9 @@
  *   ALARM_ACTIVE      → (melody done + no motion) → LOCKED
  *
  * Cable plug / unplug events are handled in this file too:
- *   PB4 (BQ251_PG, falling-edge EXTI) sets cablePlugFlag + stayAwakeFlag.
- *   On unplug, stayAwakeFlag is held for CABLE_UNPLUG_AWAKE_MS before the
- *   device is allowed back to deep sleep.
+ *   PB4 (BQ251_PG, falling-edge EXTI) sets stayAwakeFlag. On unplug,
+ *   stayAwakeFlag is held for CABLE_UNPLUG_AWAKE_MS before the device
+ *   is allowed back to deep sleep.
  ***************************************************************************/
 
 #include "state_machine.h"
@@ -65,7 +65,6 @@ static uint8_t MotionGrace_Active(void)
     return (int32_t)(motion_grace_until - HAL_GetTick()) > 0;
 }
 
-volatile uint8_t cablePlugFlag = 0;
 static uint32_t cableUnplugTime = 0;
 static uint8_t  cableWasPlugged = 0;
 
@@ -93,12 +92,11 @@ static void LED_ChargingPulse(void)
 
 /***************************************************************************
  * CablePlug_IRQCallback — called from GPIOB IRQ when PB4 falls (cable in)
- *   Safe from interrupt context. Sets cablePlugFlag + stayAwakeFlag so the
- *   main loop can restore peripherals and show charging status.
+ *   Safe from interrupt context. Sets stayAwakeFlag so the main loop can
+ *   restore peripherals and show charging status.
  ***************************************************************************/
 void CablePlug_IRQCallback(void)
 {
-    cablePlugFlag = 1;
     stayAwakeFlag = 1;
 }
 
@@ -180,8 +178,6 @@ static void CablePlug_UpdateState(void)
             cableUnplugTime = 0;
         }
     }
-
-    cablePlugFlag = 0;
 }
 
 void State_Disconnected_Idle_Loop(void)
@@ -248,13 +244,6 @@ void State_Connected_Idle_Loop(void)
             LED_Off();
         }
     }
-
-    // (Previously polled the MLC output here every 250 ms to keep the
-    // "Moving / Resting / Shaken" indicator under iOS's battery icon
-    // fresh. That added a recurring ~1-2 ms I2C blocking call on the
-    // main loop the whole time a device is connected, which made BLE
-    // operations feel noticeably sluggish. Removed for now — the
-    // staleness is purely cosmetic; reliability comes first.)
 
     if (!connectionStatus) {
         StateMachine_ChangeState(STATE_DISCONNECTED_IDLE);
@@ -687,7 +676,6 @@ void State_Alarm_Active_Loop(void)
         if (qualifying) {
             last_motion_time = HAL_GetTick();
             motion_this_iter = 1;
-            APP_DBG_MSG("Alarm timer reset → %us\n", alarm_duration_s);
 
             // Gate the log+alert on a real classification. Previously the
             // log was outside this if-block and a stationary→stationary INT
@@ -711,7 +699,6 @@ void State_Alarm_Active_Loop(void)
             if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN) {
                 last_motion_time = HAL_GetTick();
                 motion_this_iter = 1;
-                APP_DBG_MSG("Alarm timer reset → %us\n", alarm_duration_s);
             }
         }
 
@@ -720,7 +707,6 @@ void State_Alarm_Active_Loop(void)
         if (impact || freefall) {
             last_motion_time = HAL_GetTick();
             motion_this_iter = 1;
-            APP_DBG_MSG("Alarm timer reset → %us\n", alarm_duration_s);
             if (GET_LOGGING_BIT(deviceState)) {
                 MotionType_t mt = impact ? MOTION_TYPE_IMPACT : MOTION_TYPE_FREEFALL;
                 MotionLogger_LogEvent(mt);
@@ -785,17 +771,6 @@ void StateMachine_ChangeState(SystemState_t newState)
             MotionLogger_FlushPending();
         }
 
-        // (Session-boundary markers used to be logged here on entry to
-        // and exit from the locked-family states. Reverted because the
-        // SESSION_END EEPROM write on the auto-disarm path at reconnect
-        // — when iOS reconnects to a device that was still armed — adds
-        // a ~20 ms blocking EEPROM write right inside the loyalty-
-        // handshake window, which was the only remaining piece of work
-        // we'd added that runs during connect. Sessions will need a
-        // different way to detect boundaries — likely iOS-side from the
-        // ARMED-bit settings writes — but that lives outside this
-        // performance-sensitive path entirely.)
-
         // Checkpoint the iOS-sync time anchor to EEPROM on LOCKED entry so
         // events logged on this boot still resolve to correct calendar times
         // if the device resets during the upcoming alarm window. No-op if
@@ -805,6 +780,17 @@ void StateMachine_ChangeState(SystemState_t newState)
         }
 
         lis2dux12_app_set_stabilizing(newState == STATE_STABILIZING ? 1 : 0);
+
+        // When ARMED clears, reset the cached MLC byte so the status notify
+        // we're about to push doesn't carry a stale "Moving"/"Shaken" value
+        // latched during LOCKED or ALARM_ACTIVE. The cache otherwise stays
+        // pinned until the next class-change INT — which in MEDIUM/LOW
+        // sensitivity may never come because LP wakeup wipes the MLC. Motion
+        // classification is not meaningful while disarmed, so forcing to
+        // STATIONARY is honest.
+        if (newState != STATE_STABILIZING && newState != STATE_LOCKED && newState != STATE_ALARM_ACTIVE) {
+            lis2dux12_app_update_cached_state(MLC_STATE_STATIONARY_UPRIGHT);
+        }
 
         LOCKSERVICE_SendStatusUpdate();
     }

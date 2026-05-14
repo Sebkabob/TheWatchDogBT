@@ -56,26 +56,6 @@ static const Note_t FIND_MY_PATTERN[] = {
     {987, 120, 50},
 };
 
-static const Note_t LA_CUCARACHA_PATTERN[] = {
-    {523, 125, 25},
-    {523, 125, 25},
-    {523, 125, 25},
-    {698, 250, 25},
-    {880, 250, 200},
-    {523, 125, 25},
-    {523, 125, 25},
-    {523, 125, 25},
-    {698, 250, 25},
-    {880, 250, 200},
-    {698, 125, 25},
-    {698, 125, 25},
-    {659, 125, 25},
-    {659, 125, 25},
-    {587, 125, 25},
-    {587, 125, 25},
-    {523, 500, 500},
-};
-
 /***************************************************************************
  * SUPER_LOUD_ALARM_PATTERN — ear-piercing warble in the buzzer's resonant
  *   band. The magnetic transducer hits peak SPL near 4 kHz; both tones
@@ -257,26 +237,10 @@ uint8_t BUZZER_IsToneActive(void)
     return buzzer_state.is_playing && !buzzer_state.in_delay;
 }
 
-uint32_t BUZZER_GetSequenceDuration(const Note_t* sequence, uint8_t num_notes)
-{
-    uint32_t total = 0;
-    for (uint8_t i = 0; i < num_notes; i++) {
-        total += sequence[i].duration_ms;
-        total += sequence[i].delay_ms;
-    }
-    return total;
-}
-
 void BUZZER_StartCalmAlarm(void)
 {
     BUZZER_PlaySequence(CALM_ALARM_PATTERN,
         sizeof(CALM_ALARM_PATTERN) / sizeof(Note_t), 1);
-}
-
-uint32_t BUZZER_GetCalmAlarmDuration(void)
-{
-    return BUZZER_GetSequenceDuration(CALM_ALARM_PATTERN,
-        sizeof(CALM_ALARM_PATTERN) / sizeof(Note_t));
 }
 
 void BUZZER_StartNormalAlarm(void)
@@ -285,34 +249,10 @@ void BUZZER_StartNormalAlarm(void)
         sizeof(NORMAL_ALARM_PATTERN) / sizeof(Note_t), 1);
 }
 
-uint32_t BUZZER_GetNormalAlarmDuration(void)
-{
-    return BUZZER_GetSequenceDuration(NORMAL_ALARM_PATTERN,
-        sizeof(NORMAL_ALARM_PATTERN) / sizeof(Note_t));
-}
-
-void BUZZER_StartLaCucaracha(void)
-{
-    BUZZER_PlaySequence(LA_CUCARACHA_PATTERN,
-        sizeof(LA_CUCARACHA_PATTERN) / sizeof(Note_t), 1);
-}
-
-uint32_t BUZZER_GetLaCucarachaDuration(void)
-{
-    return BUZZER_GetSequenceDuration(LA_CUCARACHA_PATTERN,
-        sizeof(LA_CUCARACHA_PATTERN) / sizeof(Note_t));
-}
-
 void BUZZER_StartSuperLoudAlarm(void)
 {
     BUZZER_PlaySequence(SUPER_LOUD_ALARM_PATTERN,
         sizeof(SUPER_LOUD_ALARM_PATTERN) / sizeof(Note_t), 1);
-}
-
-uint32_t BUZZER_GetSuperLoudAlarmDuration(void)
-{
-    return BUZZER_GetSequenceDuration(SUPER_LOUD_ALARM_PATTERN,
-        sizeof(SUPER_LOUD_ALARM_PATTERN) / sizeof(Note_t));
 }
 
 void BUZZER_StartFindMe(void)

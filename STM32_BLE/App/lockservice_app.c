@@ -260,24 +260,13 @@ static void Loyalty_SendResponse(uint8_t marker, uint8_t value, uint8_t disconne
 }
 
 /***************************************************************************
- * Unlock_OnOwnerAuthenticated — formerly dropped ARMED on every CLAIM/
- * VERIFY success so reconnecting auto-disarmed a still-armed device.
- *
- * Reverted to a no-op: the iOS side was re-encoding settings on reconnect
- * with a possibly-stale local ARMED bit and re-arming the device a few
- * hundred ms after this function disarmed it, producing a visible
- * unlock → stabilize → relock cycle that surfaced especially when the
- * "silent when connected" flag held the firmware in LOCKED across motion
- * (so the user actually noticed). With this and the iOS-side
- * onLoyaltyVerifiedHook change to skip sendSettings on reconnect, the
- * device's state at connect is preserved — exactly what the user
- * explicitly asked for.
+ * Unlock_OnOwnerAuthenticated — intentional no-op
+ *   Kept as the named hook into the loyalty success path so iOS-side
+ *   behaviour can be added back here without changing the call sites.
+ *   Disarm is driven by the explicit settings-write ARMED bit instead.
  ***************************************************************************/
 static void Unlock_OnOwnerAuthenticated(void)
 {
-    /* Intentionally empty. Auto-disarm-on-reconnect was causing more
-     * confusion than it solved; the user disarms via the lock button
-     * (which iOS encodes into the settings byte and writes through). */
     (void)deviceState;
 }
 
@@ -500,12 +489,6 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
                 // LED brightness / alarm-disabled / BLE TX power) already
                 // wrote inside their own Set() calls above.
                 DeviceSettings_Persist();
-                APP_DBG_MSG("Recv settings · 0x%02X deviceInfo 0x%02X alarmDur=%us ledBright=%u alarmDisabled=%u disconnSnd=%u bleTxPwr=%u\n",
-                            deviceState, deviceInfo,
-                            AlarmDuration_Get(), LedBrightness_Get(),
-                            AlarmDisabled_Get() ? 1u : 0u,
-                            DisconnectSoundDisabled_Get() ? 1u : 0u,
-                            (unsigned)BleTxPower_Get());
                 HAL_Delay(5);
                 LOCKSERVICE_ForceStatusUpdate();
                 break;
@@ -563,13 +546,9 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification)
       connectionStatus = 1;
       LOCKSERVICE_ForceStatusUpdate();
 
-      // (Removed: unsolicited LOCKSERVICE_SendEventCount() on connect.)
-      // The previous push fired before the loyalty handshake completed,
-      // leaking the pending-event count to any phone the radio accept-
-      // list let in. iOS now drives this itself by calling
-      // requestMotionLogCount() inside onLoyaltyVerifiedHook, 0.5 s after
-      // RESP_CLAIM_OK / RESP_VERIFY_OK. Pulling the log is therefore
-      // gated by application-layer ownership verification.
+      // Motion-log drain is loyalty-gated: iOS calls requestMotionLogCount()
+      // inside onLoyaltyVerifiedHook (0.5 s after RESP_CLAIM_OK / VERIFY_OK)
+      // so the pending-event count is never leaked to an unverified phone.
       /* USER CODE END Service1_APP_CENTR_CONN_HANDLE_EVT */
       break;
     case LOCKSERVICE_DISCON_HANDLE_EVT :

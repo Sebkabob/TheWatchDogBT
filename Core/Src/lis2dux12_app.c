@@ -149,32 +149,7 @@ int lis2dux12_app_get_mlc_output(uint8_t *mlc_out)
     return 0;
 }
 
-const char* lis2dux12_app_decode_mlc(uint8_t mlc_val)
-{
-    switch (mlc_val) {
-        case MLC_STATE_STATIONARY_UPRIGHT:
-            return "Stationary - Upright";
-        case MLC_STATE_STATIONARY_NOT_UPRIGHT:
-            return "Stationary - Not Upright";
-        case MLC_STATE_IN_MOTION:
-            return "In Motion";
-        case MLC_STATE_SHAKEN:
-            return "Shaken";
-        default:
-            return "Unknown";
-    }
-}
-
-int lis2dux12_app_mlc_status_changed(void)
-{
-    lis2dux12_mlc_status_mainpage_t mlc_status;
-    if (lis2dux12_mlc_status_get(&dev_ctx, &mlc_status) != 0) {
-        return 0;
-    }
-    return mlc_status.is_mlc1;
-}
-
-// Avoids I2C reads in the 1-second BLE status notification path.
+// Avoids I2C reads in the BLE status notification path (50 Hz / 2 Hz).
 static uint8_t cached_mlc_state = 0xFF;
 static uint8_t stabilizing_override = 0;
 

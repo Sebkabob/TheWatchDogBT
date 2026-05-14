@@ -31,10 +31,8 @@ typedef enum {
 
 #define BATTERY_CHARGING_BIT    7
 #define BATTERY_CHARGING_MASK   (1 << BATTERY_CHARGING_BIT)
-#define IS_CHARGING(pin_state)  ((pin_state) == GPIO_PIN_RESET)
 #define SET_BATTERY_CHARGING(status)    ((status) |= BATTERY_CHARGING_MASK)
 #define CLEAR_BATTERY_CHARGING(status)  ((status) &= ~BATTERY_CHARGING_MASK)
-#define IS_BATTERY_CHARGING(status)     ((status) & BATTERY_CHARGING_MASK)
 
 #define GET_ARMED_BIT(byte)       ((byte) & 0x01)
 #define GET_ALARM_TYPE(byte)      (((byte) >> 1) & 0x03)
@@ -49,9 +47,6 @@ typedef enum {
 #define SET_LIGHTS_BIT(byte, val)      do { if(val) (byte) |= 0x20; else (byte) &= ~0x20; } while(0)
 #define SET_LOGGING_BIT(byte, val)     do { if(val) (byte) |= 0x40; else (byte) &= ~0x40; } while(0)
 #define SET_SILENCE_BIT(byte, val)     do { if(val) (byte) |= 0x80; else (byte) &= ~0x80; } while(0)
-
-#define GET_HIGHPERF_BIT(byte)    ((byte) & 0x01)
-#define SET_HIGHPERF_BIT(byte, val) do { if(val) (byte) |= 0x01; else (byte) &= ~0x01; } while(0)
 
 #define ALARM_NONE        0x00
 #define ALARM_CALM        0x01
@@ -71,7 +66,6 @@ extern volatile uint8_t deviceInfo;
 extern volatile uint8_t deviceBattery;
 
 extern volatile uint8_t stayAwakeFlag;
-extern volatile uint8_t cablePlugFlag;
 
 // Suppress motion-triggered alarm transitions for the next <ms> ms. Used
 // after BLE connect / RestoreAll so the UCF reload + user handling the

@@ -49,7 +49,6 @@ typedef struct {
 } BatteryState_t;
 
 static BatteryState_t battery_state = {0};
-static uint16_t cached_design_capacity = 0;
 
 // Subclass 104 (Calibration) raw dump — diagnostic surface for CC Gain trim.
 static uint8_t s_calib_bytes[16] = {0};
@@ -217,7 +216,6 @@ void BATTERY_RefreshConfigCache(void)
         battery_state.op_config_raw         = 0;
         battery_state.board_offset          = 0;
         battery_state.deadband_mA           = 0;
-        cached_design_capacity              = 0;
         return;
     }
 
@@ -236,8 +234,6 @@ void BATTERY_RefreshConfigCache(void)
     }
 
     bq27427_exit_config(true);
-
-    cached_design_capacity = battery_state.design_capacity_mAh;
 }
 
 /***************************************************************************

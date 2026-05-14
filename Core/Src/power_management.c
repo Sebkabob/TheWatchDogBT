@@ -26,6 +26,7 @@
 #include "sound.h"
 #include "motion_logger.h"
 #include "state_machine.h"
+#include "ble.h"          // aci_hal_set_tx_power_level (BleTxPower_*)
 #include "m24cxx.h"
 #include <string.h>
 
@@ -611,4 +612,111 @@ uint32_t PowerMgmt_GetBootCount(void)
 uint32_t PowerMgmt_GetUptimeSeconds(void)
 {
     return HAL_GetTick() / 1000u;
+}
+
+/* ----------------------------- BLE TX power ------------------------------
+ * Persisted radio output level — see power_management.h for the NORMAL/HIGH
+ * enum, EEPROM layout, and the WB05 (En_High_Power, PA_Level) mapping.
+ * Stored at EEPROM offset 0x24 (2 bytes: magic + value).
+ ***************************************************************************/
+
+static M24CXX_HandleTypeDef s_ble_power_eeprom;
+static BleTxPower_t         s_tx_power = BLE_TX_POWER_DEFAULT;
+
+/***************************************************************************
+ * ble_power_level_to_pa — map the NORMAL/HIGH enum to the two-arg radio call
+ *   *en_hp_out / *pa_out are set on every call. Out-of-range inputs collapse
+ *   onto HIGH so a corrupted EEPROM cell falls back to the legacy default
+ *   instead of leaving the radio silent.
+ ***************************************************************************/
+static void ble_power_level_to_pa(BleTxPower_t level, uint8_t *en_hp_out,
+                                  uint8_t *pa_out)
+{
+    switch (level) {
+        case BLE_TX_POWER_NORMAL:
+            *en_hp_out = 0;   // Normal SMPS rail
+            *pa_out    = 24;  // 0 dBm
+            break;
+        case BLE_TX_POWER_HIGH:
+        default:
+            *en_hp_out = 1;   // High SMPS rail — required for +8 dBm
+            *pa_out    = 31;  // +8 dBm
+            break;
+    }
+}
+
+static BleTxPower_t ble_power_clamp(BleTxPower_t v)
+{
+    return (v < BLE_TX_POWER_COUNT) ? v : BLE_TX_POWER_HIGH;
+}
+
+void BleTxPower_Init(void)
+{
+    s_tx_power = BLE_TX_POWER_DEFAULT;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_ble_power_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) != M24CXX_Ok) {
+        PowerMgmt_EEPROM_PowerOff();
+        BleTxPower_Apply();   // still push the default to the radio
+        return;
+    }
+
+    uint8_t buf[EEPROM_BLE_TX_POWER_LEN] = {0};
+    if (m24cxx_read(&s_ble_power_eeprom, EEPROM_BLE_TX_POWER_ADDR, buf,
+                    EEPROM_BLE_TX_POWER_LEN) == M24CXX_Ok) {
+        if (buf[0] == EEPROM_BLE_TX_POWER_MAGIC) {
+            s_tx_power = ble_power_clamp((BleTxPower_t)buf[1]);
+        } else {
+            uint8_t fresh[EEPROM_BLE_TX_POWER_LEN];
+            fresh[0] = EEPROM_BLE_TX_POWER_MAGIC;
+            fresh[1] = (uint8_t)BLE_TX_POWER_DEFAULT;
+            (void)m24cxx_write(&s_ble_power_eeprom, EEPROM_BLE_TX_POWER_ADDR,
+                               fresh, EEPROM_BLE_TX_POWER_LEN);
+        }
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+
+    BleTxPower_Apply();
+}
+
+BleTxPower_t BleTxPower_Get(void)
+{
+    return s_tx_power;
+}
+
+BleTxPower_t BleTxPower_Set(BleTxPower_t value)
+{
+    BleTxPower_t clamped = ble_power_clamp(value);
+    if (clamped == s_tx_power) {
+        return clamped;
+    }
+
+    s_tx_power = clamped;
+
+    PowerMgmt_EEPROM_PowerOn();
+    HAL_Delay(2);
+
+    if (m24cxx_init(&s_ble_power_eeprom, &hi2c1, EEPROM_I2C_ADDRESS) == M24CXX_Ok) {
+        uint8_t buf[EEPROM_BLE_TX_POWER_LEN];
+        buf[0] = EEPROM_BLE_TX_POWER_MAGIC;
+        buf[1] = (uint8_t)clamped;
+        (void)m24cxx_write(&s_ble_power_eeprom, EEPROM_BLE_TX_POWER_ADDR, buf,
+                           EEPROM_BLE_TX_POWER_LEN);
+    }
+
+    PowerMgmt_EEPROM_PowerOff();
+
+    BleTxPower_Apply();
+    return clamped;
+}
+
+void BleTxPower_Apply(void)
+{
+    uint8_t en_hp = 1;
+    uint8_t pa    = 31;
+    ble_power_level_to_pa(s_tx_power, &en_hp, &pa);
+    (void)aci_hal_set_tx_power_level(en_hp, pa);
 }

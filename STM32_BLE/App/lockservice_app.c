@@ -467,9 +467,9 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
 
             default: {
                 // Settings update. Post-token payload is
-                //   [settings, deviceInfo, alarmDur?, ledBright?, ts0..ts5]
+                //   [settings, deviceInfo, alarmDur?, ledBright?, bleTxPwr?, ts0..ts5]
                 // The 6-byte timestamp tail is stripped above when
-                // cmd_length >= 7 — discount it here so a length-2/3/4
+                // cmd_length >= 7 — discount it here so a length-2..5
                 // settings core is recognised correctly.
                 uint8_t settings_len = (cmd_length >= 7) ? (uint8_t)(cmd_length - 6)
                                                          : cmd_length;
@@ -490,16 +490,22 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
                 if (settings_len >= 4) {
                     (void)LedBrightness_Set(cmd_data[3]);
                 }
+                if (settings_len >= 5) {
+                    // 0=NORMAL (0 dBm), 1=HIGH (+8 dBm). Set() clamps +
+                    // persists + applies via aci_hal_set_tx_power_level.
+                    (void)BleTxPower_Set((BleTxPower_t)cmd_data[4]);
+                }
                 // Persist the deviceState/deviceInfo bytes (ARMED bit
                 // excluded). The other persisted records (alarm duration /
-                // LED brightness / alarm-disabled) already wrote inside
-                // their own Set() calls above.
+                // LED brightness / alarm-disabled / BLE TX power) already
+                // wrote inside their own Set() calls above.
                 DeviceSettings_Persist();
-                APP_DBG_MSG("Recv settings · 0x%02X deviceInfo 0x%02X alarmDur=%us ledBright=%u alarmDisabled=%u disconnSnd=%u\n",
+                APP_DBG_MSG("Recv settings · 0x%02X deviceInfo 0x%02X alarmDur=%us ledBright=%u alarmDisabled=%u disconnSnd=%u bleTxPwr=%u\n",
                             deviceState, deviceInfo,
                             AlarmDuration_Get(), LedBrightness_Get(),
                             AlarmDisabled_Get() ? 1u : 0u,
-                            DisconnectSoundDisabled_Get() ? 1u : 0u);
+                            DisconnectSoundDisabled_Get() ? 1u : 0u,
+                            (unsigned)BleTxPower_Get());
                 HAL_Delay(5);
                 LOCKSERVICE_ForceStatusUpdate();
                 break;
@@ -1001,12 +1007,14 @@ __USED void LOCKSERVICE_Devicestatus_SendNotification(void) /* Property Notifica
     a_LOCKSERVICE_UpdateCharData[10] = (uint8_t)((accel[1] >> 8) & 0xFF);
     a_LOCKSERVICE_UpdateCharData[11] = (uint8_t)(accel[2] & 0xFF);
     a_LOCKSERVICE_UpdateCharData[12] = (uint8_t)((accel[2] >> 8) & 0xFF);
-    // Bit 0 = HIGH_PERF, bit 1 = alarmDisabled, bit 2 = disconnectSoundDisabled.
-    // alarmDisabled and disconnectSoundDisabled are sourced from their
-    // persisted stores so the values survive boot. Bits 3..7 reserved.
+    // Bit 0 = HIGH_PERF, bit 1 = alarmDisabled, bit 2 = disconnectSoundDisabled,
+    // bit 3  = BLE TX power level (0=NORMAL, 1=HIGH). The flag bits are
+    // sourced from their persisted stores so they survive boot.
+    // Bits 4..7 reserved.
     a_LOCKSERVICE_UpdateCharData[13] = (uint8_t)((deviceInfo & 0x01)
                                                 | (AlarmDisabled_Get() ? 0x02 : 0)
-                                                | (DisconnectSoundDisabled_Get() ? 0x04 : 0));
+                                                | (DisconnectSoundDisabled_Get() ? 0x04 : 0)
+                                                | ((BleTxPower_Get() == BLE_TX_POWER_HIGH) ? 0x08 : 0));
     a_LOCKSERVICE_UpdateCharData[14] = g_bd_address[0];
     a_LOCKSERVICE_UpdateCharData[15] = g_bd_address[1];
     a_LOCKSERVICE_UpdateCharData[16] = FW_VERSION_MAJOR;

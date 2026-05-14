@@ -6,7 +6,7 @@ ONLY EDIT CODE WITHIN THE USER EDITABLE SECTIONS!!!
 
 ## Firmware Version
 
-**Current: V1.12.7**  (last reconciled at commit `45bcc95`)
+**Current: V1.12.10**  (last reconciled at commit `b5ebe0c`)
 
 Format: `V<MAJOR>.<MAIN>.<V2>` — single source of truth lives in `Core/Inc/firmware_version.h` (`FW_VERSION_MAJOR/MAIN/V2`, plus `FW_VERSION_STRING`). This line in CLAUDE.md and the macros in the header **must stay in sync**.
 
@@ -179,7 +179,7 @@ iOS opcodes (`lockservice_app.h`) — these run **after** the 4-byte loyalty tok
 | `0xFC` | `CMD_DRAIN_MODE` | byte[1] bit 0: 1=start drain, 0=stop |
 | `0xF4` | `CMD_REQUEST_DIAG` | optional byte[1] = section bitmask (default 0xFF). Triggers one TLV notification on `BATTERYDIAG`. |
 
-Anything not matching an opcode is interpreted as a settings write: `cmd_data[0] → deviceState`, `cmd_data[1] → deviceInfo` (bit 0 HIGH_PERF + bit 1 → `AlarmDisabled_Set()` + bit 2 → `DisconnectSoundDisabled_Set()`, upper bits masked), optional `cmd_data[2] → alarm_duration_seconds` (clamped to 0..30, EEPROM-persisted via `sound.c`), optional `cmd_data[3] → led_brightness` (clamped to 1..255, EEPROM-persisted via `lights.c`), then a forced status notification. The settings core can be 1, 2, 3, or 4 bytes; the dispatcher computes its length as `cmd_length - 6` when the trailing 6-byte timestamp is present (`cmd_length >= 7`). Status LED calls (armed/stabilizing/alarm/find-my/connected-rainbow) multiply by `LedBrightness_Get()`; the charging-status path and the drain-mode diagnostic bypass the scalar. The DEVICESTATUS byte 13 echoes `(deviceInfo & 0x01) | (AlarmDisabled_Get() ? 0x02 : 0) | (DisconnectSoundDisabled_Get() ? 0x04 : 0)` so iOS sees the persisted alarmDisabled and disconnectSoundDisabled state across boots.
+Anything not matching an opcode is interpreted as a settings write: `cmd_data[0] → deviceState`, `cmd_data[1] → deviceInfo` (bit 0 HIGH_PERF + bit 1 → `AlarmDisabled_Set()` + bit 2 → `DisconnectSoundDisabled_Set()`, upper bits masked), optional `cmd_data[2] → alarm_duration_seconds` (clamped to 0..30, EEPROM-persisted via `sound.c`), optional `cmd_data[3] → led_brightness` (clamped to 1..255, EEPROM-persisted via `lights.c`), optional `cmd_data[4] → ble_tx_power` (0=NORMAL 0 dBm, 1=HIGH +8 dBm — clamped, EEPROM-persisted via `power_management.c`, applied to the radio via `aci_hal_set_tx_power_level`), then a forced status notification. The settings core can be 1, 2, 3, 4, or 5 bytes; the dispatcher computes its length as `cmd_length - 6` when the trailing 6-byte timestamp is present (`cmd_length >= 7`). Status LED calls (armed/stabilizing/alarm/find-my/connected-rainbow) multiply by `LedBrightness_Get()`; the charging-status path and the drain-mode diagnostic bypass the scalar. The DEVICESTATUS byte 13 echoes `(deviceInfo & 0x01) | (AlarmDisabled_Get() ? 0x02 : 0) | (DisconnectSoundDisabled_Get() ? 0x04 : 0) | ((BleTxPower_Get() == BLE_TX_POWER_HIGH) ? 0x08 : 0)` so iOS sees the persisted alarmDisabled, disconnectSoundDisabled, and BLE TX power state across boots. Note: `aci_hal_set_tx_power_level` only takes effect on new Link Layer state machines, so a power-level change applies on the next advertise/connect — current connections keep the old level until they tear down.
 
 `app_ble.c` handles GAP/GATT stack init and connection events; `lockservice.c` is the auto-generated GATT server (with hand-added BATTERYDIAG inside USER CODE blocks); `lockservice_app.c` contains all application logic for processing writes and sending notifications. `g_bd_address[6]` is published in `app_ble.c` and `bd_address_override` in `main.c` controls whether the code-defined BD address overwrites EEPROM at boot.
 
@@ -338,6 +338,6 @@ The dispatcher in `lockservice_app.c::LOCKSERVICE_Notification()` validates the 
 
 These are the files you should edit / clean up. Vendor (`Drivers/`, `Middlewares/`) and CubeMX-generated infrastructure (`main.c`, `app_entry.c`, `stm32wb0x_*`, `system_*`, `syscalls.c`, `sysmem.c`) are off-limits unless explicitly requested.
 
-**`Core/Src` + `Core/Inc`:** `accelerometer`, `battery`, `lights` (RGB driver + persisted user brightness), `lis2dux12_app`, `motion_logger`, `power_management`, `sound` (buzzer driver + persisted alarm-duration, alarm-disabled, and disconnect-sound-disabled), `state_machine`
+**`Core/Src` + `Core/Inc`:** `accelerometer`, `battery`, `lights` (RGB driver + persisted user brightness), `lis2dux12_app`, `motion_logger`, `power_management` (low-power gating, reset/boot diagnostics, and persisted BLE TX-power level — NORMAL/HIGH applied via `aci_hal_set_tx_power_level`), `sound` (buzzer driver + persisted alarm-duration, alarm-disabled, and disconnect-sound-disabled), `state_machine`
 
 **`STM32_BLE/App` (CubeMX-generated, edit only inside `USER CODE` blocks):** `lockservice_app`, plus the fully-user-authored `loyalty.{c,h}`

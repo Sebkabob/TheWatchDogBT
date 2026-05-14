@@ -45,7 +45,7 @@
 /* Set to 1 to force the code-defined CFG_PUBLIC_BD_ADDRESS to overwrite
  * whatever is stored in EEPROM. Leave 0 for normal boots — EEPROM wins.
  * Consumed by app_ble.c via the extern below. */
-#define BD_ADDRESS_OVERRIDE 0
+#define BD_ADDRESS_OVERRIDE 1
 const uint8_t bd_address_override = BD_ADDRESS_OVERRIDE;
 
 /* Set to 1 to bypass the BQ27427 fuel gauge by sending it into SHUTDOWN
@@ -275,6 +275,11 @@ int main(void)
 
   /* Persisted disconnect-chime suppression flag (deviceInfo bit 2). */
   DisconnectSoundDisabled_Init();
+
+  /* Persisted BLE TX-power level (LOW / NORMAL / HIGH). Pushes the cached
+   * value to the radio via aci_hal_set_tx_power_level — must run AFTER
+   * MX_APPE_Init has stood up the BLE stack. */
+  BleTxPower_Init();
 
   /* Persisted deviceState bits (alarm type / sensitivity / lights / logging /
    * silence) and deviceInfo HIGH_PERF. ARMED is never persisted — boot

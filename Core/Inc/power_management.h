@@ -42,4 +42,40 @@ void     PowerMgmt_BootCount_Init(void);
 uint32_t PowerMgmt_GetBootCount(void);
 uint32_t PowerMgmt_GetUptimeSeconds(void);
 
+/* ---------------- Persisted BLE TX-power level ----------------------------
+ *
+ * Two-step radio output level applied via aci_hal_set_tx_power_level. The
+ * NORMAL/HIGH enum maps to (En_High_Power, PA_Level) per the WB05 power
+ * table (ble_api.h):
+ *
+ *   NORMAL = (0, 24)  →   0 dBm
+ *   HIGH   = (1, 31)  →  +8 dBm   (legacy default — High SMPS rail needed)
+ *
+ * Stored at EEPROM offset 0x24 (2 bytes: magic + value). BleTxPower_Init
+ * loads the cached value and pushes it to the radio — must run AFTER
+ * MX_APPE_Init has stood up the BLE stack. BleTxPower_Set persists +
+ * applies in one call. Out-of-range inputs clamp to HIGH so a corrupted
+ * cell falls back to the legacy default instead of leaving the radio quiet.
+ *
+ * Note: aci_hal_set_tx_power_level only takes effect on new Link Layer
+ * state machines, so a change applies on the next advertise/connect —
+ * current connections keep the old level until they tear down.
+ */
+typedef enum {
+    BLE_TX_POWER_NORMAL = 0,
+    BLE_TX_POWER_HIGH   = 1,
+} BleTxPower_t;
+
+#define BLE_TX_POWER_DEFAULT       BLE_TX_POWER_HIGH
+#define BLE_TX_POWER_COUNT         2u
+
+#define EEPROM_BLE_TX_POWER_ADDR   0x24
+#define EEPROM_BLE_TX_POWER_LEN    2
+#define EEPROM_BLE_TX_POWER_MAGIC  0xC9
+
+void         BleTxPower_Init(void);
+BleTxPower_t BleTxPower_Get(void);
+BleTxPower_t BleTxPower_Set(BleTxPower_t value);
+void         BleTxPower_Apply(void);
+
 #endif /* INC_POWER_MANAGEMENT_H_ */

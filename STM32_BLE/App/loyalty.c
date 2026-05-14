@@ -20,7 +20,10 @@
  *   0x1C..0x1D   alarm-disabled record (sound.{c,h})
  *   0x1E..0x20   device-settings record (state_machine.{c,h}) —
  *                deviceState (sans ARMED) + deviceInfo HIGH_PERF
- *   0x21..0x3F   reserved
+ *   0x20..0x23   boot-count uint32 LE (power_management.{c,h})
+ *   0x24..0x25   ble-tx-power record (power_management.{c,h}) —
+ *                magic + NORMAL/HIGH enum
+ *   0x26..0x3F   reserved
  *   0x40..0x47   motion-log header (motion_logger.h)
  *   0x48..0x3FF  motion-log event data
  ***************************************************************************/

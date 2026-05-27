@@ -520,6 +520,36 @@ void State_Locked_Loop(void)
         if (HAL_GetTick() - last_poll >= 100) {
             last_poll = HAL_GetTick();
 
+            // Poll the MLC class alongside FSM. The INT-driven path above
+            // only sees MLC *transitions* (rising edge of INT1 on a class
+            // change). If MLC transitioned to IN_MOTION/SHAKEN during a
+            // window where the INT was consumed without acting on it — the
+            // 2 s post-reconnect motion-grace drain is the canonical case:
+            // motion that starts in-grace and persists past it leaves MLC
+            // latched in IN_MOTION with no further edge to wake the active
+            // branch — the alarm never fires until MLC settles back to
+            // STATIONARY, by which time mlc_out no longer qualifies.
+            // Polling here closes that gap and also covers any missed INT
+            // (chip glitch, brief EXTI masking during a peripheral reinit).
+            uint8_t mlc_out;
+            if (lis2dux12_app_get_mlc_output(&mlc_out) == 0) {
+                lis2dux12_app_update_cached_state(mlc_out);
+                if (mlc_out == MLC_STATE_IN_MOTION ||
+                    mlc_out == MLC_STATE_SHAKEN) {
+                    if (!motion_pending) {
+                        motion_pending = 1;
+                        pending_type = (mlc_out == MLC_STATE_SHAKEN)
+                            ? MOTION_TYPE_SHAKEN : MOTION_TYPE_IN_MOTION;
+                        motion_pending_tick = HAL_GetTick();
+                    }
+                    stayAwakeFlag = 1;
+                    motion_assessing = 0;
+                    if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
+                        StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+                    }
+                }
+            }
+
             uint8_t impact, freefall;
             lis2dux12_app_check_fsm_events(&impact, &freefall);
             if (impact || freefall) {

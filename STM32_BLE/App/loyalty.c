@@ -5,27 +5,12 @@
  * Application-layer loyalty token store. EEPROM-backed 4-byte ownership
  * marker; stands in for BLE pairing/bonding for the prototype.
  *
- * Record layout (single 6-byte record at 0x10..0x15):
+ * Record layout (single 6-byte record at EEPROM_LOYALTY_ADDR):
  *   [0]    status: 0xA7=CLAIMED, 0xCE=CLEARED, anything else=BLANK
  *   [1..4] 4-byte token (only valid when CLAIMED + CRC matches)
  *   [5]    CRC8 over [0..4]
  *
- * EEPROM map (M24C08, 1024 B):
- *   0x00..0x06   BD address: magic(1) + addr(6)
- *   0x07..0x0F   reserved
- *   0x10..0x15   loyalty record (this file)
- *   0x16..0x17   reserved
- *   0x18..0x19   alarm-duration record (sound.{c,h})
- *   0x1A..0x1B   led-brightness record (lights.{c,h})
- *   0x1C..0x1D   alarm-disabled record (sound.{c,h})
- *   0x1E..0x20   device-settings record (state_machine.{c,h}) —
- *                deviceState (sans ARMED) + deviceInfo HIGH_PERF
- *   0x20..0x23   boot-count uint32 LE (power_management.{c,h})
- *   0x24..0x25   ble-tx-power record (power_management.{c,h}) —
- *                magic + NORMAL/HIGH enum
- *   0x26..0x3F   reserved
- *   0x40..0x47   motion-log header (motion_logger.h)
- *   0x48..0x3FF  motion-log event data
+ * Full EEPROM memory map lives in eeprom_map.h — single source of truth.
  ***************************************************************************/
 
 #include "loyalty.h"
@@ -33,7 +18,7 @@
 #include "main.h"
 #include "app_common.h"
 #include "power_management.h"
-#include "motion_logger.h"   // EEPROM_I2C_ADDRESS
+#include "eeprom_map.h"      // EEPROM_I2C_ADDRESS + loyalty record offsets
 
 #define M24CXX_MODEL 0
 #include "m24cxx.h"

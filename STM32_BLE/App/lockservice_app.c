@@ -39,6 +39,8 @@
 #include "power_management.h"
 #include "loyalty.h"
 #include "firmware_version.h"
+#include "ee_scratch.h"
+#include "crash_forensics.h"
 #include <string.h>
 /* USER CODE END Includes */
 
@@ -270,6 +272,49 @@ static void Unlock_OnOwnerAuthenticated(void)
     (void)deviceState;
 }
 
+/***************************************************************************
+ * Send_EeReadResponse — push a scratch-region read result on DEVICESTATUS
+ *   Frame: [RESP_EE_READ, offset, length, ...data]. Length is the actual
+ *   bytes returned, clamped to EE_SCRATCH_MAX_CHUNK on the caller side.
+ ***************************************************************************/
+static void Send_EeReadResponse(uint8_t offset, uint8_t length, const uint8_t *data)
+{
+    if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) return;
+    if (length > EE_SCRATCH_MAX_CHUNK) length = EE_SCRATCH_MAX_CHUNK;
+
+    a_LOCKSERVICE_UpdateCharData[0] = RESP_EE_READ;
+    a_LOCKSERVICE_UpdateCharData[1] = offset;
+    a_LOCKSERVICE_UpdateCharData[2] = length;
+    if (length > 0 && data != NULL) {
+        memcpy(&a_LOCKSERVICE_UpdateCharData[3], data, length);
+    }
+
+    LOCKSERVICE_Data_t resp;
+    resp.p_Payload = (uint8_t *)a_LOCKSERVICE_UpdateCharData;
+    resp.Length    = (uint16_t)(3 + length);
+    LOCKSERVICE_NotifyValue(LOCKSERVICE_DEVICESTATUS, &resp,
+                            LOCKSERVICE_APP_Context.ConnectionHandle);
+}
+
+/***************************************************************************
+ * Send_EeAck — 2-byte ACK/NACK on DEVICESTATUS for scratch-region writes
+ *   marker: RESP_EE_WRITE_ACK (success) or RESP_EE_REJECT (failure).
+ *   value : 1=ok on ACK path; 1=bounds / 2=I2C on REJECT path.
+ ***************************************************************************/
+static void Send_EeAck(uint8_t marker, uint8_t value)
+{
+    if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) return;
+
+    a_LOCKSERVICE_UpdateCharData[0] = marker;
+    a_LOCKSERVICE_UpdateCharData[1] = value;
+
+    LOCKSERVICE_Data_t resp;
+    resp.p_Payload = (uint8_t *)a_LOCKSERVICE_UpdateCharData;
+    resp.Length    = 2;
+    LOCKSERVICE_NotifyValue(LOCKSERVICE_DEVICESTATUS, &resp,
+                            LOCKSERVICE_APP_Context.ConnectionHandle);
+}
+
 /* USER CODE END PFP */
 
 /* Functions Definition ------------------------------------------------------*/
@@ -401,7 +446,9 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
         if (cmd_length >= 7 && command != CMD_REQUEST_EVENT &&
             command != CMD_REQUEST_LOG_COUNT && command != CMD_CLEAR_LOG &&
             command != CMD_ACK_EVENT && command != CMD_FIND_MY_DEVICE &&
-            command != CMD_RESET_DEVICE && command != CMD_REQUEST_DIAG) {
+            command != CMD_RESET_DEVICE && command != CMD_REQUEST_DIAG &&
+            command != CMD_DRAIN_MODE &&
+            command != CMD_EE_READ && command != CMD_EE_WRITE) {
             UpdateBootTimeFromiOS(&cmd_data[cmd_length - 6]);
         }
 
@@ -451,6 +498,49 @@ void LOCKSERVICE_Notification(LOCKSERVICE_NotificationEvt_t *p_Notification)
                 // Optional byte[1] = section_mask. Default to all sections.
                 uint8_t mask = (cmd_length >= 2) ? cmd_data[1] : 0xFF;
                 LOCKSERVICE_SendDiagnostic(mask);
+                break;
+            }
+
+            case CMD_EE_READ: {
+                // Wire: [0xE5, offset, length]
+                if (cmd_length < 3) {
+                    Send_EeAck(RESP_EE_REJECT, (uint8_t)EE_SCRATCH_OUT_OF_BOUNDS);
+                    break;
+                }
+                uint8_t offset = cmd_data[1];
+                uint8_t length = cmd_data[2];
+                if (length > EE_SCRATCH_MAX_CHUNK) {
+                    Send_EeAck(RESP_EE_REJECT, (uint8_t)EE_SCRATCH_OUT_OF_BOUNDS);
+                    break;
+                }
+                uint8_t buf[EE_SCRATCH_MAX_CHUNK];
+                EeScratchStatus_t st = EeScratch_Read(offset, length, buf);
+                if (st == EE_SCRATCH_OK) {
+                    Send_EeReadResponse(offset, length, buf);
+                } else {
+                    Send_EeAck(RESP_EE_REJECT, (uint8_t)st);
+                }
+                break;
+            }
+
+            case CMD_EE_WRITE: {
+                // Wire: [0xE6, offset, length, ...data]
+                if (cmd_length < 3) {
+                    Send_EeAck(RESP_EE_REJECT, (uint8_t)EE_SCRATCH_OUT_OF_BOUNDS);
+                    break;
+                }
+                uint8_t offset = cmd_data[1];
+                uint8_t length = cmd_data[2];
+                if (length > EE_SCRATCH_MAX_CHUNK || cmd_length < (uint8_t)(3 + length)) {
+                    Send_EeAck(RESP_EE_REJECT, (uint8_t)EE_SCRATCH_OUT_OF_BOUNDS);
+                    break;
+                }
+                EeScratchStatus_t st = EeScratch_Write(offset, length, &cmd_data[3]);
+                if (st == EE_SCRATCH_OK) {
+                    Send_EeAck(RESP_EE_WRITE_ACK, 1);
+                } else {
+                    Send_EeAck(RESP_EE_REJECT, (uint8_t)st);
+                }
                 break;
             }
 
@@ -610,22 +700,42 @@ void LOCKSERVICE_ForceStatusUpdate(void)
  *     byte 1  section_len  (N)
  *     bytes 2..N+1  payload
  *
- * Section IDs and per-section layouts are documented authoritatively in
- * FW_DIAGNOSTICS_PROMPT.md — keep that file in sync with any change to
- * struct layouts below.
+ * Section IDs (1-indexed in the mask — bit (id-1) of section_mask):
+ *   0x01 SYSTEM         — uptime, boot count, reset cause, fw ver, init bitmask,
+ *                         last-fault-present flag
+ *   0x02 BATTERY        — full BQ27427 snapshot (schema v11)
+ *   0x04 SENSOR         — cached MLC state, FSM event, transitions/int1 counters
+ *   0x06 STORAGE        — motion-log count, loyalty health, error counters
+ *   0x07 FAULT          — last hard-fault PC/LR/xPSR snapshot (see crash_forensics)
+ *   0x08 RESET_HISTORY  — count + up to 8 (cause, boot_count, uptime) entries
+ *
+ * Section IDs 0x03 (BLE) and 0x05 (POWER) were removed when iOS dropped the
+ * corresponding UI. The ID gaps are deliberate — iOS parsers are keyed by
+ * section_id, so leaving the numbers alone avoids accidentally re-using
+ * an ID for an unrelated future section.
+ *
+ * Per-section struct layouts are defined immediately below — keep the
+ * _Static_assert sizes in sync if you add/remove fields.
  *
  * `section_mask` selects which sections to include. Bit i = include section
- * (i+1). 0xFF = all. The default (and what iOS sends today) is 0xFF.
+ * (i+1). 0xFF = all current sections (mask bits 2 and 4 for the removed
+ * BLE / POWER are simply no-ops). iOS sends 0xFF by default.
+ *
+ * Each section's payload is sized for the on-wire layout with no padding;
+ * reserved[] fields zero-fill remaining bytes so iOS parsers that read
+ * fewer bytes than the section_len keep working when fields are added.
  ***************************************************************************/
 
 #define DIAG_FORMAT_VERSION   1
 
-#define DIAG_SECTION_SYSTEM   0x01
-#define DIAG_SECTION_BATTERY  0x02
-#define DIAG_SECTION_BLE      0x03
-#define DIAG_SECTION_SENSOR   0x04
-#define DIAG_SECTION_POWER    0x05
-#define DIAG_SECTION_STORAGE  0x06
+#define DIAG_SECTION_SYSTEM        0x01
+#define DIAG_SECTION_BATTERY       0x02
+/* 0x03 BLE — removed; was RSSI / connect count / disconnect reason / MTU */
+#define DIAG_SECTION_SENSOR        0x04
+/* 0x05 POWER — removed; was wake-source counters + time-in-LP */
+#define DIAG_SECTION_STORAGE       0x06
+#define DIAG_SECTION_FAULT         0x07  /* hard-fault PC/LR/xPSR snapshot */
+#define DIAG_SECTION_RESET_HISTORY 0x08  /* last 8 reset-cause ring entries */
 
 /* Per-section payload structs — packed so the on-wire layout matches the
  * struct field order exactly. Every reserved[] field is zero-filled and
@@ -672,15 +782,7 @@ typedef struct __attribute__((packed)) {
 } diag_battery_t;
 _Static_assert(sizeof(diag_battery_t) == 51, "diag_battery_t must be 51 bytes");
 
-typedef struct __attribute__((packed)) {
-    int8_t   current_rssi_dBm;          /* 0x7F = not measured */
-    uint16_t connection_count_since_boot;
-    uint8_t  last_disconnect_reason;
-    uint16_t mtu_negotiated;
-    uint16_t connection_interval_units; /* 0 = not measured */
-    uint8_t  reserved[6];
-} diag_ble_t;
-_Static_assert(sizeof(diag_ble_t) == 14, "diag_ble_t must be 14 bytes");
+/* diag_ble_t removed — section 0x03 no longer emitted. */
 
 typedef struct __attribute__((packed)) {
     uint8_t  cached_mlc_state;
@@ -692,16 +794,7 @@ typedef struct __attribute__((packed)) {
 } diag_sensor_t;
 _Static_assert(sizeof(diag_sensor_t) == 18, "diag_sensor_t must be 18 bytes");
 
-typedef struct __attribute__((packed)) {
-    uint32_t wakes_motion;
-    uint32_t wakes_cable;
-    uint32_t wakes_debug;
-    uint32_t wakes_tick;
-    uint32_t time_in_lp_seconds;
-    uint8_t  current_power_state;
-    uint8_t  reserved[3];
-} diag_power_t;
-_Static_assert(sizeof(diag_power_t) == 24, "diag_power_t must be 24 bytes");
+/* diag_power_t removed — section 0x05 no longer emitted. */
 
 typedef struct __attribute__((packed)) {
     uint16_t motion_log_count;
@@ -715,6 +808,36 @@ typedef struct __attribute__((packed)) {
     uint8_t  reserved[4];
 } diag_storage_t;
 _Static_assert(sizeof(diag_storage_t) == 26, "diag_storage_t must be 26 bytes");
+
+/* FAULT section — last hard-fault snapshot. valid=0 means no fault has ever
+ * been recorded (or it was cleared). Fields PC/LR/xPSR are from the stacked
+ * exception frame the M0+ pushed at fault time. */
+typedef struct __attribute__((packed)) {
+    uint8_t  valid;
+    uint8_t  schema_version;
+    uint16_t reserved0;
+    uint32_t pc;
+    uint32_t lr;
+    uint32_t xpsr;
+} diag_fault_t;
+_Static_assert(sizeof(diag_fault_t) == 16, "diag_fault_t must be 16 bytes");
+
+/* RESET_HISTORY — count + up to 8 entries × (cause, boot_count, uptime).
+ * count = number of entries actually populated (0..8). Each entry is 9
+ * bytes; iOS reads section_len, infers count = (section_len - 1) / 9. */
+#define DIAG_RESET_HISTORY_MAX_ENTRIES   8
+typedef struct __attribute__((packed)) {
+    uint8_t  reset_cause;
+    uint32_t boot_count;
+    uint32_t uptime_secs;
+} diag_reset_entry_t;
+_Static_assert(sizeof(diag_reset_entry_t) == 9, "diag_reset_entry_t must be 9 bytes");
+typedef struct __attribute__((packed)) {
+    uint8_t            count;
+    diag_reset_entry_t entries[DIAG_RESET_HISTORY_MAX_ENTRIES];
+} diag_reset_history_t;
+_Static_assert(sizeof(diag_reset_history_t) == 73,
+               "diag_reset_history_t must be 73 bytes");
 
 /* Append `len` bytes of section `id` payload `src` to `dst[*offset]`,
  * including the 2-byte TLV header. Caller bumps the section count.
@@ -737,10 +860,14 @@ void LOCKSERVICE_SendDiagnostic(uint8_t section_mask)
         return;
     }
 
-    /* Local staging buffer — sized to the GATT characteristic value buffer
-     * so we can never overrun it. iOS / the BLE stack copies out before we
-     * return, so a stack-allocated buffer is fine. */
-    uint8_t  buf[200];
+    /* Local staging buffer — sized to fit every TLV section in one shot.
+     * Worst-case payload (all current sections + headers, no BLE/POWER):
+     *   header 2 + SYSTEM 21 + BATTERY 53 + SENSOR 20 + STORAGE 28
+     *         + FAULT 18 + RESET_HISTORY 75 = 217
+     * Rounded up to 232 for slack. iOS / the BLE stack copies out before
+     * we return, so a stack-allocated buffer is fine on the M0+ as long
+     * as we don't approach the few-KB MSP budget. */
+    uint8_t  buf[232];
     uint16_t offset = 0;
     uint8_t  count  = 0;
 
@@ -770,7 +897,9 @@ void LOCKSERVICE_SendDiagnostic(uint8_t section_mask)
         if (Loyalty_StoreUnhealthy()) {
             sys.init_bitmask &= ~(1u << 4); /* loyalty */
         }
-        sys.last_fault_marker = 0; /* reserved for hardfault-handler write */
+        /* Promoted: 1 iff a hard-fault snapshot is sitting in EEPROM. iOS
+         * can short-circuit asking for the FAULT section when this is 0. */
+        sys.last_fault_marker = CrashForensics_GetLastFault().valid ? 1u : 0u;
         diag_append_section(buf, sizeof(buf), &offset, DIAG_SECTION_SYSTEM,
                             &sys, sizeof(sys));
         count++;
@@ -817,20 +946,7 @@ void LOCKSERVICE_SendDiagnostic(uint8_t section_mask)
         count++;
     }
 
-    /* BLE — counters not yet wired; emit zeros + sentinel RSSI. iOS will
-     * render "—". Adding counters in lockservice_app.c later just fills
-     * these fields. */
-    if (section_mask & (1u << 2)) {
-        diag_ble_t ble = {0};
-        ble.current_rssi_dBm           = 0x7F;
-        ble.connection_count_since_boot = 0;
-        ble.last_disconnect_reason     = 0;
-        ble.mtu_negotiated             = 0;
-        ble.connection_interval_units  = 0;
-        diag_append_section(buf, sizeof(buf), &offset, DIAG_SECTION_BLE,
-                            &ble, sizeof(ble));
-        count++;
-    }
+    /* BLE section (0x03) removed — iOS does not surface this data. */
 
     /* SENSOR — current MLC state is already cached. The other counters
      * are TODO; emit 0 for now. */
@@ -846,20 +962,7 @@ void LOCKSERVICE_SendDiagnostic(uint8_t section_mask)
         count++;
     }
 
-    /* POWER — wake-source attribution counters are TODO. We can at least
-     * surface current_power_state from PowerMgmt_IsLowPower(). */
-    if (section_mask & (1u << 4)) {
-        diag_power_t pwr = {0};
-        pwr.wakes_motion       = 0;
-        pwr.wakes_cable        = 0;
-        pwr.wakes_debug        = 0;
-        pwr.wakes_tick         = 0;
-        pwr.time_in_lp_seconds = 0;
-        pwr.current_power_state = PowerMgmt_IsLowPower() ? 1u : 0u;
-        diag_append_section(buf, sizeof(buf), &offset, DIAG_SECTION_POWER,
-                            &pwr, sizeof(pwr));
-        count++;
-    }
+    /* POWER section (0x05) removed — iOS does not surface this data. */
 
     /* STORAGE */
     if (section_mask & (1u << 5)) {
@@ -874,6 +977,44 @@ void LOCKSERVICE_SendDiagnostic(uint8_t section_mask)
         sto.lis2dux12_fail_count  = 0;
         diag_append_section(buf, sizeof(buf), &offset, DIAG_SECTION_STORAGE,
                             &sto, sizeof(sto));
+        count++;
+    }
+
+    /* FAULT — last hard-fault snapshot (PC/LR/xPSR). All zeros + valid=0
+     * when no fault has ever fired since the EEPROM was wiped. */
+    if (section_mask & (1u << 6)) {
+        FaultSnapshot_t snap = CrashForensics_GetLastFault();
+        diag_fault_t flt = {0};
+        flt.valid          = snap.valid;
+        flt.schema_version = snap.schema_version;
+        flt.pc             = snap.pc;
+        flt.lr             = snap.lr;
+        flt.xpsr           = snap.xpsr;
+        diag_append_section(buf, sizeof(buf), &offset, DIAG_SECTION_FAULT,
+                            &flt, sizeof(flt));
+        count++;
+    }
+
+    /* RESET_HISTORY — up to 8 most-recent reset events (oldest first).
+     * iOS reads count and iterates count × 9 bytes of entries. Unused tail
+     * slots stay zero-filled so trailing-byte ignore still works. */
+    if (section_mask & (1u << 7)) {
+        diag_reset_history_t rh = {0};
+        uint8_t n = CrashForensics_GetResetEventCount();
+        if (n > DIAG_RESET_HISTORY_MAX_ENTRIES) n = DIAG_RESET_HISTORY_MAX_ENTRIES;
+        rh.count = n;
+        for (uint8_t i = 0; i < n; i++) {
+            uint8_t  cause = 0;
+            uint32_t bc    = 0;
+            uint32_t upt   = 0;
+            if (CrashForensics_GetResetEvent(i, &cause, &bc, &upt)) {
+                rh.entries[i].reset_cause = cause;
+                rh.entries[i].boot_count  = bc;
+                rh.entries[i].uptime_secs = upt;
+            }
+        }
+        diag_append_section(buf, sizeof(buf), &offset, DIAG_SECTION_RESET_HISTORY,
+                            &rh, sizeof(rh));
         count++;
     }
 

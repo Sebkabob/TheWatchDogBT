@@ -13,10 +13,10 @@
  * each event's calendar at the moment it happened; nothing downstream can
  * corrupt it.
  *
- * EEPROM map (M24C08, 1024 B):
- *   0x000..0x03F  device info (64 B, reserved)
- *   0x040..0x047  motion-log header (8 B)
- *   0x048..0x3FF  motion event data (952 B)
+ * EEPROM layout for the motion log is defined in eeprom_map.h. Capacity is
+ * MAX_MOTION_EVENTS (= 116 in the current map). The old 169-event budget
+ * was carved back to make room for diagnostics blocks added in the same
+ * commit that introduced the central map.
  ***************************************************************************/
 
 #ifndef MOTION_LOGGER_H
@@ -24,42 +24,8 @@
 
 #include "main.h"
 #include "stm32wb0x_hal.h"
+#include "eeprom_map.h"
 
-#define MAX_MOTION_EVENTS 169
-
-#define EEPROM_DEVICE_INFO_ADDR      0x000
-
-/* Boot-time anchor (calendar + monotonic-radio-timer seconds at iOS sync).
- * Lives inside the 0x000..0x03F reserved device-info block. Layout:
- *   [0]    magic 0xB7
- *   [1..6] year (offset from 2000) / month / day / hour / minute / second
- *   [7..10] boot_monotonic_secs (uint32 LE) — seconds reported by
- *           HAL_RADIO_TIMER_GetCurrentSysTime() / 409600 at the moment
- *           iOS pushed the anchor. NOT HAL_GetTick(): SysTick is suspended
- *           in DEEPSTOP so HAL_GetTick deltas miss every sleep period.
- *
- * The anchor is RAM-only authority from iOS each session — we no longer
- * reload it at boot. EEPROM persistence is kept for diagnostic / forensic
- * inspection; MotionLogger_Init does NOT consume it. */
-#define EEPROM_BOOT_TIME_ADDR        0x00
-#define EEPROM_BOOT_TIME_LEN         11
-#define EEPROM_BOOT_TIME_MAGIC       0xB7
-
-#define EEPROM_MOTION_HEADER_ADDR    0x040
-#define EEPROM_MOTION_HEADER_SIZE    8
-
-#define EEPROM_MOTION_DATA_ADDR      0x048
-#define EEPROM_MOTION_EVENT_SIZE     5      // 4 epoch_seconds_2000 + 1 type
-
-/* Bump invalidates older EEPROMs whose per-slot layout or semantics no
- * longer match the current firmware. Old EEPROMs reload as blank. */
-#define EEPROM_MAGIC_BYTE            0xA7
-#define EEPROM_I2C_ADDRESS           0x50   // M24C08 with A2=0
-
-/* MOTION_TYPE_* values 0..4 are the firmware-emitted motion classifications
- * fed by the MLC + FSM. iOS has phantom enum cases at 5/6/7 (vestigial —
- * never emitted by firmware); leaving 5..15 unused here lets those stay
- * untouched and reserves room for future motion types. */
 typedef enum {
     MOTION_TYPE_NONE          = 0,
     MOTION_TYPE_IN_MOTION     = 1,    // MLC: general movement detected
@@ -98,8 +64,8 @@ void MotionLogger_SetBootTime(uint8_t year, uint8_t month, uint8_t day,
 /* Force-flush the in-RAM boot-time anchor to EEPROM. SetBootTime already
  * does this implicitly when iOS syncs; state_machine.c calls it again on
  * entry to STATE_LOCKED as a defensive checkpoint. No-op if the anchor
- * isn't valid. The persisted bytes are no longer consumed at boot — see
- * the comment on EEPROM_BOOT_TIME_ADDR. Kept only as a forensic record. */
+ * isn't valid. The persisted bytes are no longer consumed at boot — they
+ * remain only as a forensic record. */
 void MotionLogger_PersistAnchor(void);
 
 /* Decompose a stored seconds-since-2000 timestamp to YY/MM/DD HH:MM:SS.

@@ -74,11 +74,26 @@ typedef struct
 #define CMD_DRAIN_MODE           0xFC   // byte[1] bit 0: 1=start, 0=stop
 #define CMD_REQUEST_DIAG         0xF4   // optional byte[1] = section_mask (default 0xFF)
 
+// Generic EEPROM scratch region access — iOS-owned 128 B at EEPROM_KV_SCRATCH_ADDR.
+// Bounds-checked to the scratch region only; firmware refuses any request that
+// would read or write outside [0, EEPROM_KV_SCRATCH_LEN). This pair of opcodes
+// is the meta-fix that lets us add per-device app features post-ship without a
+// firmware update — once the firmware is locked, iOS can still claim bytes in
+// the scratch region for any future use.
+#define CMD_EE_READ              0xE5   // payload: [u8 offset, u8 length]
+#define CMD_EE_WRITE             0xE6   // payload: [u8 offset, u8 length, ...data]
+
 // Device → iOS response markers (DEVICESTATUS notify).
 #define RESP_LOG_COUNT           0xE0
 #define RESP_EVENT_DATA          0xE1
 #define RESP_NO_MORE_EVENTS      0xE2
 #define RESP_LOG_CLEARED         0xE3
+#define RESP_EE_READ             0xEA   // [0xEA, offset, length, ...data]
+#define RESP_EE_WRITE_ACK        0xEB   // [0xEB, status]  status: 1=ok, 0=rejected
+#define RESP_EE_REJECT           0xEC   // [0xEC, reason]  reason: 1=bounds, 2=I2C fail
+// Max bytes the device will read/write in a single opcode. Constrained by
+// the 19-byte DEVICESTATUS frame (3 B header + ≤16 B payload).
+#define EE_SCRATCH_MAX_CHUNK     16u
 
 // Loyalty (application-layer ownership) opcodes — self-contained writes.
 #define CMD_CLAIM_DEVICE         0xC1   // first claim

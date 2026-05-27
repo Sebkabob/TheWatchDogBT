@@ -27,6 +27,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "state_machine.h"
+#include "crash_forensics.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -85,18 +86,40 @@ void NMI_Handler(void)
 
 /**
   * @brief This function handles Hard fault interrupt.
+  *
+  * On entry to a Cortex-M exception, the hardware has already pushed
+  *   R0, R1, R2, R3, R12, LR, return-PC, xPSR
+  * onto whichever stack was active (MSP or PSP — selected via EXC_RETURN
+  * bit 2). We peek at that frame, hand the PC/LR/xPSR to the forensics
+  * module, then NVIC_SystemReset from inside CrashForensics_RecordFault.
+  *
+  * Replacing the CubeMX default while(1) here is the difference between
+  * "device froze silently" (previous behaviour) and "device reset and the
+  * diagnostic dump shows where it died." See crash_forensics.h.
   */
+__attribute__((naked))
 void HardFault_Handler(void)
 {
-  /* USER CODE BEGIN HardFault_IRQn 0 */
-
-  /* USER CODE END HardFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_HardFault_IRQn 0 */
-
-    /* USER CODE END W1_HardFault_IRQn 0 */
-  }
+    __asm volatile (
+        "movs r0, #4              \n"   /* test EXC_RETURN bit 2 */
+        "mov  r1, lr              \n"
+        "tst  r0, r1              \n"
+        "bne  use_psp             \n"
+        "mrs  r0, msp             \n"
+        "b    have_sp             \n"
+        "use_psp:                 \n"
+        "mrs  r0, psp             \n"
+        "have_sp:                 \n"
+        "ldr  r1, [r0, #24]       \n"   /* stacked PC   = SP[6] */
+        "ldr  r2, [r0, #20]       \n"   /* stacked LR   = SP[5] */
+        "ldr  r3, [r0, #28]       \n"   /* stacked xPSR = SP[7] */
+        "mov  r0, r1              \n"   /* arg0 = pc   */
+        "mov  r1, r2              \n"   /* arg1 = lr   */
+        "mov  r2, r3              \n"   /* arg2 = xpsr */
+        "bl   CrashForensics_RecordFault\n"
+        /* CrashForensics_RecordFault calls NVIC_SystemReset — never returns. */
+        "b    .                   \n"
+    );
 }
 
 /**

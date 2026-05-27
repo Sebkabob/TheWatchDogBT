@@ -63,6 +63,7 @@
 #include "sound.h"
 #include "motion_logger.h"
 #include "lights.h"
+#include "crash_forensics.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -318,9 +319,18 @@ int main(void)
   BleTxPower_Init();
 
   /* Persisted deviceState bits (alarm type / sensitivity / lights / logging /
-   * silence) and deviceInfo HIGH_PERF. ARMED is never persisted — boot
-   * always comes up disarmed. */
+   * silence, AND the ARMED bit) and deviceInfo HIGH_PERF. The ARMED bit is
+   * now persisted across resets — see the policy block in state_machine.c. */
   DeviceSettings_Init();
+
+  /* Hard-fault snapshot reload + reset-ring append. Runs after BootCount_Init
+   * so the appended entry carries the correct boot count. */
+  CrashForensics_Init();
+
+  /* If DeviceSettings_Init restored ARMED=1, snap directly to STATE_LOCKED
+   * (no STABILIZING — that's user-input semantics). A power-cycle / brownout
+   * resets a locked device into LOCKED rather than disarming it. */
+  StateMachine_RestoreArmedFromEEPROM();
 
   /* Belt-and-braces: clear any pending GPIOB IRQs and force stayAwakeFlag
    * = 0 so nothing pinned during boot blocks DEEPSTOP. */

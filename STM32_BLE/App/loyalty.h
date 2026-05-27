@@ -12,12 +12,10 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "eeprom_map.h"
 
-// Single 6-byte record at 0x10..0x15 (status + token + CRC). Sits inside
-// the reserved device-info region (0x00..0x3F), clear of the BD-address
-// bytes (0x00..0x06) and well below the motion-log header at 0x40.
-#define EEPROM_LOYALTY_ADDR         0x10
-#define EEPROM_LOYALTY_LEN          6     // status(1) + token(4) + crc(1)
+/* Loyalty record address + length live in eeprom_map.h
+ * (EEPROM_LOYALTY_ADDR / EEPROM_LOYALTY_LEN). */
 
 #define EEPROM_LOYALTY_CLAIMED      0xA7
 #define EEPROM_LOYALTY_CLEARED      0xCE

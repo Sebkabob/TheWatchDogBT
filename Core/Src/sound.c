@@ -16,7 +16,7 @@
 #include "main.h"
 #include "sound.h"
 #include "power_management.h"
-#include "motion_logger.h"   // EEPROM_I2C_ADDRESS
+#include "eeprom_map.h"      // EEPROM_I2C_ADDRESS + persistent record offsets
 #include <stdint.h>
 #include <string.h>
 

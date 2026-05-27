@@ -29,6 +29,7 @@
 #include "power_management.h"
 #include "app_ble.h"
 #include "app_common.h"
+#include "eeprom_map.h"
 
 #define M24CXX_MODEL 0
 #include "m24cxx.h"
@@ -900,21 +901,33 @@ void StateMachine_Run(void)
 
 /***************************************************************************
  * Persisted device-state record — EEPROM-backed mirror of the user-facing
- * settings byte (alarm type, sensitivity, lights, logging, silence) plus
- * deviceInfo bit 0 (HIGH_PERF). The ARMED bit is intentionally NOT
- * persisted: boot always comes up disarmed so a power glitch can't leave a
- * stolen device armed without the owner re-arming it from the app.
+ * settings byte (alarm type, sensitivity, lights, logging, silence, AND
+ * ARMED) plus deviceInfo bit 0 (HIGH_PERF). Layout:
  *
- * EEPROM record (3 bytes at 0x1E):
- *   [0] magic = 0xC6
- *   [1] deviceState (ARMED bit forced to 0 on save)
+ *   [0] magic
+ *   [1] deviceState (full byte, including ARMED — see policy note below)
  *   [2] deviceInfo HIGH_PERF (bit 0 only; bit 1 alarmDisabled lives in its
- *       own record at 0x1C, owned by sound.c)
+ *       own record, owned by sound.c)
+ *
+ * Address + length + magic live in eeprom_map.h. Magic was bumped (0xC6 →
+ * 0xCA) in the commit that introduced the central map: the record moved
+ * from 0x1E to 0x20 to clear collisions, AND the ARMED-bit policy reversed.
+ *
+ * ARMED persistence policy: the ARMED bit is now persisted across power
+ * cycles and resets. A locked device that browns out and resets comes back
+ * up in LOCKED — without this, an attacker who can induce a brownout (e.g.
+ * cable wiggling, a near-empty battery) would defeat the alarm. The prior
+ * design (force-clear ARMED on boot) was motivated by "stolen device, owner
+ * can't disarm" — weaker in practice because the loyalty token already
+ * prevents non-owners from sending the un-arm settings write.
+ *
+ * Brownout-loop caveat: if the *cause* of frequent resets is a sag during
+ * the alarm itself (high LED brightness + +8 dBm BLE + buzzer), persisting
+ * ARMED means each wake-up immediately re-arms and the alarm fires again
+ * the moment the accel triggers, potentially dragging the rail back down.
+ * Mitigate with battery health and BLE_TX_POWER_NORMAL, not by re-disabling
+ * persistence.
  ***************************************************************************/
-
-#define EEPROM_DEVICE_SETTINGS_ADDR  0x1E
-#define EEPROM_DEVICE_SETTINGS_LEN   3
-#define EEPROM_DEVICE_SETTINGS_MAGIC 0xC6
 
 static M24CXX_HandleTypeDef s_sm_eeprom;
 
@@ -932,9 +945,12 @@ void DeviceSettings_Init(void)
     if (m24cxx_read(&s_sm_eeprom, EEPROM_DEVICE_SETTINGS_ADDR, buf,
                     EEPROM_DEVICE_SETTINGS_LEN) == M24CXX_Ok) {
         if (buf[0] == EEPROM_DEVICE_SETTINGS_MAGIC) {
-            // Apply persisted bits, force ARMED clear.
+            // Apply persisted bits, ARMED bit included. If ARMED comes back
+            // true, the post-init transition in main() / StateMachine_Init's
+            // caller is responsible for entering STATE_LOCKED. We don't do
+            // it from here because the state machine prep (timers, anchors)
+            // hasn't finished yet.
             deviceState = buf[1];
-            SET_ARMED_BIT(deviceState, 0);
             // Preserve any deviceInfo bits already loaded by other inits
             // (alarmDisabled doesn't touch the RAM byte at boot, so this
             // is mostly defensive for future bits).
@@ -944,7 +960,7 @@ void DeviceSettings_Init(void)
             // defaults that already populated deviceState/deviceInfo.
             uint8_t fresh[EEPROM_DEVICE_SETTINGS_LEN];
             fresh[0] = EEPROM_DEVICE_SETTINGS_MAGIC;
-            fresh[1] = deviceState & ~0x01;   // ARMED off
+            fresh[1] = deviceState;          // ARMED persisted (defaults off)
             fresh[2] = deviceInfo  &  0x01;
             (void)m24cxx_write(&s_sm_eeprom, EEPROM_DEVICE_SETTINGS_ADDR,
                                fresh, EEPROM_DEVICE_SETTINGS_LEN);
@@ -966,7 +982,8 @@ void DeviceSettings_Persist(void)
     static uint8_t cached_state = 0xFF;   // forces first write
     static uint8_t cached_info  = 0xFF;
 
-    uint8_t to_save_state = deviceState & ~0x01;   // never persist ARMED
+    // ARMED is now persisted — see the policy block above the record def.
+    uint8_t to_save_state = deviceState;
     uint8_t to_save_info  = deviceInfo  &  0x01;
 
     if (to_save_state == cached_state && to_save_info == cached_info) {
@@ -989,4 +1006,31 @@ void DeviceSettings_Persist(void)
     }
 
     PowerMgmt_EEPROM_PowerOff();
+}
+
+/***************************************************************************
+ * StateMachine_RestoreArmedFromEEPROM — boot-time helper
+ *   If DeviceSettings_Init restored ARMED=1, jump currentState directly to
+ *   STATE_LOCKED. We skip STABILIZING because that state's whole purpose is
+ *   "user just hit arm — give the device a few seconds to settle before
+ *   trusting motion classifications." A power-cycle / reset has no such
+ *   user-input event; we just want to come back where we were.
+ *
+ *   StateMachine_ChangeState handles all the bookkeeping: ARMED-bit re-set,
+ *   forced status notify, anchor checkpoint, MLC stabilizing flag clear.
+ *
+ *   No-op when ARMED is clear, so this is always safe to call once at boot.
+ ***************************************************************************/
+void StateMachine_RestoreArmedFromEEPROM(void)
+{
+    if (!GET_ARMED_BIT(deviceState)) {
+        return;
+    }
+
+    /* Brief motion-grace window so the accel/UCF can settle after I2C init
+     * without immediately tripping the alarm on a phantom edge. Same idea
+     * as the post-connect grace window. */
+    StateMachine_StartMotionGrace(2000);
+
+    StateMachine_ChangeState(STATE_LOCKED);
 }

@@ -519,13 +519,15 @@ void PowerMgmt_EEPROM_PowerOff(void)
 
 /* ----------------------------- Boot diagnostics ---------------------------
  * Reset-cause snapshot + EEPROM-persisted boot counter, surfaced to iOS via
- * the SYSTEM section of the on-demand diagnostic dump. EEPROM offset 0x20
- * (4 bytes, LE) is inside the existing 0x000..0x03F reserved device-info
- * region (motion_logger.h), so it cannot collide with motion-log storage.
+ * the SYSTEM section of the on-demand diagnostic dump. Address + length live
+ * in eeprom_map.h (EEPROM_BOOT_COUNT_ADDR / EEPROM_BOOT_COUNT_LEN).
+ *
+ * "First flash" semantics: a virgin M24C08 reads 0xFFFFFFFF, which we treat
+ * as zero and tick to 1 on the first boot. After that the counter persists
+ * across firmware reflashes (EEPROM is external — flashing the MCU doesn't
+ * touch it). The only ways back to zero are: physically replace the EEPROM,
+ * or use a factory-tool wipe (future work).
  ***************************************************************************/
-
-#define EEPROM_BOOT_COUNT_ADDR  0x20
-#define EEPROM_BOOT_COUNT_LEN   4
 
 static uint8_t  s_reset_cause_packed = 0;
 static uint8_t  s_reset_cause_captured = 0;

@@ -77,12 +77,23 @@ void StateMachine_Run(void);
 void StateMachine_ChangeState(SystemState_t newState);
 
 // EEPROM-backed mirror of deviceState (alarm type / sensitivity / lights /
-// logging / silence) and deviceInfo bit 0 HIGH_PERF. ARMED bit is never
-// persisted — boot always comes up disarmed. Init reads from EEPROM and
-// applies on top of the StateMachine_Init defaults; Persist is called from
-// the iOS settings dispatcher after each settings write.
+// logging / silence, AND the ARMED bit) and deviceInfo bit 0 HIGH_PERF.
+// Init reads from EEPROM and applies on top of the StateMachine_Init
+// defaults; Persist is called from the iOS settings dispatcher after each
+// settings write.
+//
+// ARMED persistence: as of the central-EEPROM-map commit, ARMED is
+// persisted. A device that browns out while locked comes back up locked;
+// see the long policy block above the EEPROM record in state_machine.c.
 void DeviceSettings_Init(void);
 void DeviceSettings_Persist(void);
+
+// Called from main() after DeviceSettings_Init and the rest of system
+// init have run. If the persisted ARMED bit is set, transitions
+// currentState directly to STATE_LOCKED (skipping STABILIZING, which is
+// reserved for user-initiated arm). Safe to call when ARMED is clear —
+// it just returns. Intended to be a one-shot at boot.
+void StateMachine_RestoreArmedFromEEPROM(void);
 
 // Called from GPIOB ISR when PB4 (BQ251_PG) fires. Safe from interrupt context.
 void CablePlug_IRQCallback(void);

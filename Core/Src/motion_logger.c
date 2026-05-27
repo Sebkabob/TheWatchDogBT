@@ -140,7 +140,7 @@ static uint8_t EEPROM_LoadBootTime(void)
 static void EEPROM_WriteMotionHeader(void)
 {
     uint8_t hdr[EEPROM_MOTION_HEADER_SIZE];
-    hdr[0] = EEPROM_MAGIC_BYTE;
+    hdr[0] = EEPROM_MOTION_MAGIC;
     hdr[1] = 0;
     hdr[2] = (uint8_t)(eventCount & 0xFF);
     hdr[3] = (uint8_t)((eventCount >> 8) & 0xFF);
@@ -186,7 +186,7 @@ static uint8_t EEPROM_LoadMotionLog(void)
         return 0;
     }
 
-    if (hdr[0] != EEPROM_MAGIC_BYTE) {
+    if (hdr[0] != EEPROM_MOTION_MAGIC) {
         return 0;
     }
 

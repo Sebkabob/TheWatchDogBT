@@ -9,6 +9,7 @@
 #define INC_POWER_MANAGEMENT_H_
 
 #include <stdint.h>
+#include "eeprom_map.h"
 
 void PowerMgmt_EnterLowPower_Idle(void);   // disconnected idle, no motion wake
 void PowerMgmt_EnterLowPower_Armed(void);  // armed/locked, accel wakes from DEEPSTOP
@@ -69,9 +70,7 @@ typedef enum {
 #define BLE_TX_POWER_DEFAULT       BLE_TX_POWER_HIGH
 #define BLE_TX_POWER_COUNT         2u
 
-#define EEPROM_BLE_TX_POWER_ADDR   0x24
-#define EEPROM_BLE_TX_POWER_LEN    2
-#define EEPROM_BLE_TX_POWER_MAGIC  0xC9
+/* EEPROM_BLE_TX_POWER_ADDR / _LEN / _MAGIC live in eeprom_map.h */
 
 void         BleTxPower_Init(void);
 BleTxPower_t BleTxPower_Get(void);

@@ -18,6 +18,7 @@ extern "C" {
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "eeprom_map.h"
 
 // Animated colour cycle. ms_delay = step interval; intensity 0..255.
 void LED_Rainbow(int ms_delay, uint8_t intensity);
@@ -61,9 +62,7 @@ bool LED_PlugOut_InProgress(void);
 #define LED_BRIGHTNESS_DEFAULT      255u
 #define LED_BRIGHTNESS_MIN          1u
 #define LED_BRIGHTNESS_MAX          255u
-#define EEPROM_LED_BRIGHTNESS_ADDR  0x1A
-#define EEPROM_LED_BRIGHTNESS_LEN   2
-#define EEPROM_LED_BRIGHTNESS_MAGIC 0xC4
+/* EEPROM_LED_BRIGHTNESS_ADDR / _LEN / _MAGIC live in eeprom_map.h */
 
 void    LedBrightness_Init(void);
 uint8_t LedBrightness_Get(void);

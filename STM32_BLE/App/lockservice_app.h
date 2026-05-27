@@ -120,7 +120,11 @@ void LOCKSERVICE_APP_EvtRx(LOCKSERVICE_APP_ConnHandleNotEvt_t *p_Notification);
 /* USER CODE BEGIN EF */
 void LOCKSERVICE_SendStatusUpdate(void);
 void LOCKSERVICE_ForceStatusUpdate(void);
-void LOCKSERVICE_SendMotionAlert(uint8_t motionType);
+/* 4-byte motion alert: [0xFF, motionType, duration_ticks_250ms, battery].
+ * duration_ticks_250ms is 250 ms ticks (1..255 → 0.25..63.75 s). Pass 1
+ * for instantaneous events (FSM impact/freefall, single-sample alarm-loop
+ * notifies); pass the actual measured bout length for sustained MLC bouts. */
+void LOCKSERVICE_SendMotionAlert(uint8_t motionType, uint8_t duration_ticks_250ms);
 
 /* On-demand TLV diagnostic dump on the BATTERYDIAG characteristic.
  * section_mask is a bitmask: bit 0 = SYSTEM, bit 1 = BATTERY, bit 2 = BLE,

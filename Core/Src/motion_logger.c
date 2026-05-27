@@ -154,9 +154,10 @@ static void EEPROM_WriteMotionHeader(void)
 
 /***************************************************************************
  * EEPROM_WriteEvent — persist a single event into slot <slot>
- *   On-wire layout is unchanged from the prior firmware version (4 bytes
- *   little-endian uint32 + 1 byte motionType). What changed is the meaning
- *   of the uint32: previously HAL tick ms, now seconds-since-2000.
+ *   On-wire layout: 4 bytes LE epoch_seconds_2000 + 1 byte motionType +
+ *   1 byte duration_ticks_250ms. Grew from 5 → 6 bytes when bout tracking
+ *   was added; the EEPROM magic was bumped in the same commit so any old
+ *   ring reloads as blank.
  ***************************************************************************/
 static void EEPROM_WriteEvent(uint16_t slot, MotionEvent_t *event)
 {
@@ -167,6 +168,7 @@ static void EEPROM_WriteEvent(uint16_t slot, MotionEvent_t *event)
     buf[2] = (uint8_t)((ts >> 16) & 0xFF);
     buf[3] = (uint8_t)((ts >> 24) & 0xFF);
     buf[4] = (uint8_t)event->motionType;
+    buf[5] = event->duration_ticks_250ms;
 
     uint32_t addr = EEPROM_MOTION_DATA_ADDR + (uint32_t)slot * EEPROM_MOTION_EVENT_SIZE;
     m24cxx_write(&eeprom, addr, buf, sizeof(buf));
@@ -209,6 +211,7 @@ static uint8_t EEPROM_LoadMotionLog(void)
                 motionEvents[j].valid = 0;
                 motionEvents[j].motionType = MOTION_TYPE_NONE;
                 motionEvents[j].epoch_seconds_2000 = 0;
+                motionEvents[j].duration_ticks_250ms = 0;
             }
             return 0;
         }
@@ -218,6 +221,7 @@ static uint8_t EEPROM_LoadMotionLog(void)
                                             | ((uint32_t)buf[2] << 16)
                                             | ((uint32_t)buf[3] << 24);
         motionEvents[i].motionType = (MotionType_t)buf[4];
+        motionEvents[i].duration_ticks_250ms = buf[5];
         motionEvents[i].valid = 1;
     }
 
@@ -266,6 +270,7 @@ void MotionLogger_Init(void)
         motionEvents[i].valid = 0;
         motionEvents[i].motionType = MOTION_TYPE_NONE;
         motionEvents[i].epoch_seconds_2000 = 0;
+        motionEvents[i].duration_ticks_250ms = 0;
     }
     eventCount = 0;
     nextIndex = 0;
@@ -449,7 +454,7 @@ static uint32_t MotionLogger_NowSeconds2000(void)
  ***************************************************************************/
 extern volatile uint8_t connectionStatus;
 
-uint8_t MotionLogger_LogEvent(MotionType_t motionType)
+uint8_t MotionLogger_LogEvent(MotionType_t motionType, uint8_t duration_ticks_250ms)
 {
     // While iOS is connected, motion events are delivered live via the
     // LOCKSERVICE_SendMotionAlert path (firmware → notify → iOS), and
@@ -468,6 +473,7 @@ uint8_t MotionLogger_LogEvent(MotionType_t motionType)
 
     motionEvents[slot].epoch_seconds_2000 = MotionLogger_NowSeconds2000();
     motionEvents[slot].motionType = motionType;
+    motionEvents[slot].duration_ticks_250ms = duration_ticks_250ms;
     motionEvents[slot].valid = 1;
 
     nextIndex++;
@@ -573,6 +579,7 @@ void MotionLogger_Clear(void)
         motionEvents[i].valid = 0;
         motionEvents[i].motionType = MOTION_TYPE_NONE;
         motionEvents[i].epoch_seconds_2000 = 0;
+        motionEvents[i].duration_ticks_250ms = 0;
     }
     eventCount = 0;
     nextIndex = 0;

@@ -108,11 +108,15 @@ static void LOCKSERVICE_Devicestatus_SendNotification(void);
 /* USER CODE BEGIN PFP */
 
 /***************************************************************************
- * LOCKSERVICE_SendMotionAlert — push a 3-byte motion alert over DEVICESTATUS
- *   Payload: [0xFF, motionType, deviceBattery]. iOS uses the 0xFF marker
- *   to drive auto-sync on receipt.
+ * LOCKSERVICE_SendMotionAlert — push a 4-byte motion alert over DEVICESTATUS
+ *   Payload: [0xFF, motionType, duration_ticks_250ms, deviceBattery].
+ *   iOS uses the 0xFF marker to drive auto-sync on receipt, and the
+ *   duration field to populate MotionEvent.durationTicks250ms (rendered as
+ *   seconds in the log UI). Grew from 3 → 4 bytes when bout tracking was
+ *   added; iOS already had length-branching to tolerate either format so
+ *   no app-side change is needed for this byte addition.
  ***************************************************************************/
-void LOCKSERVICE_SendMotionAlert(uint8_t motionType)
+void LOCKSERVICE_SendMotionAlert(uint8_t motionType, uint8_t duration_ticks_250ms)
 {
     if (LOCKSERVICE_APP_Context.ConnectionHandle == 0xFFFF) {
         return;
@@ -120,11 +124,12 @@ void LOCKSERVICE_SendMotionAlert(uint8_t motionType)
 
     a_LOCKSERVICE_UpdateCharData[0] = 0xFF;
     a_LOCKSERVICE_UpdateCharData[1] = motionType;
-    a_LOCKSERVICE_UpdateCharData[2] = deviceBattery;
+    a_LOCKSERVICE_UpdateCharData[2] = duration_ticks_250ms;
+    a_LOCKSERVICE_UpdateCharData[3] = deviceBattery;
 
     LOCKSERVICE_Data_t lockservice_notification_data;
     lockservice_notification_data.p_Payload = (uint8_t*)a_LOCKSERVICE_UpdateCharData;
-    lockservice_notification_data.Length = 3;
+    lockservice_notification_data.Length = 4;
 
     LOCKSERVICE_NotifyValue(LOCKSERVICE_DEVICESTATUS, &lockservice_notification_data,
                            LOCKSERVICE_APP_Context.ConnectionHandle);
@@ -168,8 +173,13 @@ static void LOCKSERVICE_SendEventCount(void)
 
 /***************************************************************************
  * LOCKSERVICE_SendEvent — pack one event for iOS (or RESP_NO_MORE_EVENTS)
- *   Wire format on hit (11 bytes):
- *     [RESP_EVENT_DATA, idx_hi, idx_lo, YY, MM, DD, hh, mm, ss, type, batt]
+ *   Wire format on hit (12 bytes — grew from 11 when bout duration was added):
+ *     [RESP_EVENT_DATA, idx_hi, idx_lo, YY, MM, DD, hh, mm, ss, type,
+ *      duration_ticks_250ms, batt]
+ *
+ *   Old 11-byte format had no duration. iOS branches on payload length so a
+ *   stale-firmware-against-new-app pairing still works (duration defaults to
+ *   nil and is rendered as "—").
  ***************************************************************************/
 static void LOCKSERVICE_SendEvent(uint16_t index)
 {
@@ -208,6 +218,7 @@ static void LOCKSERVICE_SendEvent(uint16_t index)
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = minute;
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = second;
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = event->motionType;
+    a_LOCKSERVICE_UpdateCharData[dataIdx++] = event->duration_ticks_250ms;
     a_LOCKSERVICE_UpdateCharData[dataIdx++] = deviceBattery;
 
     LOCKSERVICE_Data_t lockservice_notification_data;

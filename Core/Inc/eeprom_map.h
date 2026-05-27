@@ -56,7 +56,9 @@
  *
  *  --- Motion log (consumes the remainder) ---------------------------------
  *  0x1B4..0x1BB  Motion ring header (8)
- *  0x1BC..0x3FF  Motion ring data (580) = 116 events x 5 bytes
+ *  0x1BC..0x3FF  Motion ring data (580) = 96 events x 6 bytes
+ *                (was 116 x 5 — added per-event duration_ticks_250ms in
+ *                 the commit that introduced bout tracking)
  *
  * Endurance budget at typical use (M24C08 cell rated ~1M write cycles):
  *   boot count — 1 write per boot. 1M boots = ~273 years at 10 reboots/day.
@@ -287,16 +289,27 @@
 #define EEPROM_MOTION_HEADER_ADDR           0x1B4
 #define EEPROM_MOTION_HEADER_SIZE           8
 
-/* ---- 0x1BC..0x3FF  Motion ring data (580 B = 116 events) ---------------- */
+/* ---- 0x1BC..0x3FF  Motion ring data (580 B = 96 events) ----------------- *
+ * Per-event layout (6 bytes):
+ *   [0..3]  epoch_seconds_2000      (uint32 LE — bout start time)
+ *   [4]     motionType              (most severe classification during bout)
+ *   [5]     duration_ticks_250ms    (uint8 — bout length, 1..255 ticks →
+ *                                    0.25..63.75 s, capped at 255)
+ *
+ * Bumped event size from 5 → 6 to add duration. MLC-style bouts (IN_MOTION
+ * / SHAKEN) get the measured sustained duration; FSM-style instantaneous
+ * events (IMPACT / FREEFALL) get duration=1 (the "happened, no measurable
+ * length" sentinel — iOS renders 1 tick as "instant"). 250 ms ticks (not
+ * seconds) matches the iOS protocol that was already in place.            */
 #define EEPROM_MOTION_DATA_ADDR             0x1BC
-#define EEPROM_MOTION_EVENT_SIZE            5      /* 4 epoch_s2000 + 1 type */
+#define EEPROM_MOTION_EVENT_SIZE            6
 #define EEPROM_MOTION_DATA_LEN              (1024 - EEPROM_MOTION_DATA_ADDR)
 #define EEPROM_MOTION_MAX_EVENTS            (EEPROM_MOTION_DATA_LEN / EEPROM_MOTION_EVENT_SIZE)
-/* MAX_MOTION_EVENTS evaluates to 116. */
+/* MAX_MOTION_EVENTS evaluates to 96. */
 
-/* Bumped magic for the motion ring: old EEPROMs reload as blank because the
- * per-slot layout, capacity, AND address all changed in this commit.        */
-#define EEPROM_MOTION_MAGIC                 0xA8   /* was 0xA7, then 0xA6 */
+/* Bumped magic again: per-slot layout changed (5→6 bytes). Old EEPROMs from
+ * the 5-byte era reload as blank — no partial parse hazard.                 */
+#define EEPROM_MOTION_MAGIC                 0xA9   /* was 0xA8, 0xA7, 0xA6 */
 
 /* Convenience aliases used by older motion_logger.{c,h} call sites. Kept
  * for diff-minimising; new code should use the EEPROM_MOTION_* names.       */

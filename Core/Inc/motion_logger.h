@@ -14,9 +14,9 @@
  * corrupt it.
  *
  * EEPROM layout for the motion log is defined in eeprom_map.h. Capacity is
- * MAX_MOTION_EVENTS (= 116 in the current map). The old 169-event budget
- * was carved back to make room for diagnostics blocks added in the same
- * commit that introduced the central map.
+ * MAX_MOTION_EVENTS (= 96 in the current map). Trajectory: 169 → 116 (room
+ * for diagnostics blocks) → 96 (5 → 6 byte slots once per-event duration
+ * was added). Each event is timestamp(4) + type(1) + duration_ticks_250ms(1).
  ***************************************************************************/
 
 #ifndef MOTION_LOGGER_H
@@ -41,11 +41,25 @@ typedef struct {
      * maps to nil. uint32 gives ~136 years headroom. */
     uint32_t epoch_seconds_2000;
     MotionType_t motionType;
+    /* Duration of the motion bout in 250 ms ticks (1..255 → 0.25..63.75 s).
+     * For MLC-style sustained motion (IN_MOTION / SHAKEN) this is the
+     * elapsed time from first-detection to MLC-return-to-stationary; for
+     * instantaneous events (FSM IMPACT/FREEFALL, alarm-loop notifies,
+     * fallback INT-without-classification) this is 1 (the "happened but
+     * unmeasured" sentinel — iOS treats 1-tick = 250 ms as "instant").
+     * 250 ms ticks (not raw seconds) to match the iOS protocol that was
+     * already in place. The state-machine bout tracker accumulates the
+     * duration in RAM and passes it here at log time. */
+    uint8_t duration_ticks_250ms;
     uint8_t valid;               // 1 if entry is valid
 } MotionEvent_t;
 
 void MotionLogger_Init(void);
-uint8_t MotionLogger_LogEvent(MotionType_t motionType);
+/* Logs a single motion event with its bout duration in 250 ms ticks.
+ * 1..255 → 0.25..63.75 s. For sustained MLC bouts, pass the actual measured
+ * length (clamped). For instantaneous events (FSM impact/freefall, alarm-
+ * loop per-sample logs, fallback wake-without-classification), pass 1. */
+uint8_t MotionLogger_LogEvent(MotionType_t motionType, uint8_t duration_ticks_250ms);
 uint16_t MotionLogger_GetEventCount(void);
 MotionEvent_t* MotionLogger_GetEvent(uint16_t index);
 void MotionLogger_Clear(void);

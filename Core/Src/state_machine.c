@@ -347,6 +347,38 @@ void State_Stabilizing_Loop(void)
  * detector can override IN_MOTION with DOOR_OPENED if rotation crossed
  * the threshold. Impact and freefall (FSM) always fire immediately.
  ***************************************************************************/
+/* Bout-end timeout. Bumped from 3 s to 60 s when duration tracking was
+ * added — a 3 s ceiling would chop every sustained shake into a string of
+ * "3 s of motion" entries and never let the user see the true bout length.
+ * 60 s × 1000 / 250 = 240 ticks of 250 ms — still inside the iOS protocol's
+ * 1-byte duration field (max 255). The alarm itself is unaffected by this
+ * timeout; it fires immediately at the qualification site below. */
+#define MOTION_BOUT_TIMEOUT_MS 60000u
+
+/* Clamp a HAL_GetTick delta (ms) to a uint8_t count of 250 ms ticks for the
+ * wire format. Floor of 1 keeps "instantaneous" bouts (FSM events, single-
+ * sample notifies) from being indistinguishable from "unknown" in iOS. */
+static uint8_t bout_ticks_250ms_from_ms(uint32_t elapsed_ms)
+{
+    uint32_t ticks = elapsed_ms / 250u;
+    if (ticks < 1)   ticks = 1;
+    if (ticks > 255) ticks = 255;
+    return (uint8_t)ticks;
+}
+
+/* Severity ordering for in-bout type promotion: a bout that begins as
+ * IN_MOTION but later sees a SHAKEN classification should log as SHAKEN.
+ * IMPACT and FREEFALL are FSM events that bypass motion_pending entirely,
+ * so they don't participate in promotion. */
+static uint8_t motion_type_severity(MotionType_t t)
+{
+    switch (t) {
+        case MOTION_TYPE_SHAKEN:   return 2;
+        case MOTION_TYPE_IN_MOTION:return 1;
+        default:                   return 0;
+    }
+}
+
 void State_Locked_Loop(void)
 {
     static uint8_t  motion_assessing = 0;
@@ -420,8 +452,10 @@ void State_Locked_Loop(void)
                 MotionType_t mt = impact ? MOTION_TYPE_IMPACT : MOTION_TYPE_FREEFALL;
                 motion_assessing = 0;
                 if (GET_LOGGING_BIT(deviceState)) {
-                    MotionLogger_LogEvent(mt);
-                    LOCKSERVICE_SendMotionAlert(mt);
+                    /* FSM events are inherently instantaneous — duration=1
+                     * tick is the "happened, no measurable length" sentinel. */
+                    MotionLogger_LogEvent(mt, 1);
+                    LOCKSERVICE_SendMotionAlert(mt, 1);
                 }
                 if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
                     StateMachine_ChangeState(STATE_ALARM_ACTIVE);
@@ -429,11 +463,15 @@ void State_Locked_Loop(void)
                 wake_handled = 1;
             } else if (mlc_out == MLC_STATE_IN_MOTION ||
                        mlc_out == MLC_STATE_SHAKEN) {
+                MotionType_t observed = (mlc_out == MLC_STATE_SHAKEN)
+                    ? MOTION_TYPE_SHAKEN : MOTION_TYPE_IN_MOTION;
                 if (!motion_pending) {
                     motion_pending      = 1;
-                    pending_type = (mlc_out == MLC_STATE_SHAKEN)
-                        ? MOTION_TYPE_SHAKEN : MOTION_TYPE_IN_MOTION;
+                    pending_type        = observed;
                     motion_pending_tick = HAL_GetTick();
+                } else if (motion_type_severity(observed) > motion_type_severity(pending_type)) {
+                    /* Promote: bout escalated mid-flight (IN_MOTION → SHAKEN). */
+                    pending_type = observed;
                 }
                 motion_assessing = 0;
                 if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
@@ -448,7 +486,7 @@ void State_Locked_Loop(void)
         // blips don't slip through. No alarm transition without a qualifying
         // classification — motion_assessing's timeout governs the decision.
         if (!wake_handled && GET_LOGGING_BIT(deviceState)) {
-            MotionLogger_LogEvent(MOTION_TYPE_IN_MOTION);
+            MotionLogger_LogEvent(MOTION_TYPE_IN_MOTION, 1);
         }
     }
 
@@ -474,8 +512,8 @@ void State_Locked_Loop(void)
                 stayAwakeFlag = 1;
                 motion_assessing = 0;
                 if (GET_LOGGING_BIT(deviceState)) {
-                    MotionLogger_LogEvent(mt);
-                    LOCKSERVICE_SendMotionAlert(mt);
+                    MotionLogger_LogEvent(mt, 1);
+                    LOCKSERVICE_SendMotionAlert(mt, 1);
                 }
                 if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
                     StateMachine_ChangeState(STATE_ALARM_ACTIVE);
@@ -483,11 +521,14 @@ void State_Locked_Loop(void)
             }
 
             if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN) {
+                MotionType_t observed = (mlc_out == MLC_STATE_SHAKEN)
+                    ? MOTION_TYPE_SHAKEN : MOTION_TYPE_IN_MOTION;
                 if (!motion_pending) {
                     motion_pending = 1;
-                    pending_type = (mlc_out == MLC_STATE_SHAKEN)
-                        ? MOTION_TYPE_SHAKEN : MOTION_TYPE_IN_MOTION;
+                    pending_type = observed;
                     motion_pending_tick = HAL_GetTick();
+                } else if (motion_type_severity(observed) > motion_type_severity(pending_type)) {
+                    pending_type = observed;
                 }
                 stayAwakeFlag = 1;
                 motion_assessing = 0;
@@ -500,19 +541,25 @@ void State_Locked_Loop(void)
                 mlc_out == MLC_STATE_STATIONARY_NOT_UPRIGHT) {
                 if (motion_pending) {
                     if (GET_LOGGING_BIT(deviceState)) {
-                        MotionLogger_LogEvent(pending_type);
-                        LOCKSERVICE_SendMotionAlert(pending_type);
+                        uint8_t dur = bout_ticks_250ms_from_ms(
+                            HAL_GetTick() - motion_pending_tick);
+                        MotionLogger_LogEvent(pending_type, dur);
+                        LOCKSERVICE_SendMotionAlert(pending_type, dur);
                     }
                     motion_pending = 0;
                 }
             }
         }
 
-        // 3 s safety timeout — flush a deferred alert that never settled.
-        if (motion_pending && (HAL_GetTick() - motion_pending_tick > 3000)) {
+        /* 60 s bout cap. Was 3 s — bumped to give duration tracking room to
+         * actually measure sustained bouts. Flushes the pending bout when
+         * MLC never settles (e.g. continuous carrying / sustained shake). */
+        if (motion_pending && (HAL_GetTick() - motion_pending_tick > MOTION_BOUT_TIMEOUT_MS)) {
             if (GET_LOGGING_BIT(deviceState)) {
-                MotionLogger_LogEvent(pending_type);
-                LOCKSERVICE_SendMotionAlert(pending_type);
+                uint8_t dur = bout_ticks_250ms_from_ms(
+                    HAL_GetTick() - motion_pending_tick);
+                MotionLogger_LogEvent(pending_type, dur);
+                LOCKSERVICE_SendMotionAlert(pending_type, dur);
             }
             motion_pending = 0;
         }
@@ -537,17 +584,37 @@ void State_Locked_Loop(void)
                 lis2dux12_app_update_cached_state(mlc_out);
                 if (mlc_out == MLC_STATE_IN_MOTION ||
                     mlc_out == MLC_STATE_SHAKEN) {
+                    MotionType_t observed = (mlc_out == MLC_STATE_SHAKEN)
+                        ? MOTION_TYPE_SHAKEN : MOTION_TYPE_IN_MOTION;
                     if (!motion_pending) {
                         motion_pending = 1;
-                        pending_type = (mlc_out == MLC_STATE_SHAKEN)
-                            ? MOTION_TYPE_SHAKEN : MOTION_TYPE_IN_MOTION;
+                        pending_type = observed;
                         motion_pending_tick = HAL_GetTick();
+                    } else if (motion_type_severity(observed) > motion_type_severity(pending_type)) {
+                        pending_type = observed;
                     }
                     stayAwakeFlag = 1;
                     motion_assessing = 0;
                     if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
                         StateMachine_ChangeState(STATE_ALARM_ACTIVE);
                     }
+                } else if (motion_pending &&
+                           (mlc_out == MLC_STATE_STATIONARY_UPRIGHT ||
+                            mlc_out == MLC_STATE_STATIONARY_NOT_UPRIGHT)) {
+                    /* Settle detection in the poll loop, not just on INT.
+                     * Many UCFs only fire INT1 on motion-onset transitions,
+                     * not on the return to STATIONARY. Without this check,
+                     * a brief bout would sit unflushed until the 60 s safety
+                     * timeout — which the user perceives as "events don't
+                     * show up." Catching the settle in the 100 ms poll flushes
+                     * the bout within ~100-200 ms of motion actually ending. */
+                    if (GET_LOGGING_BIT(deviceState)) {
+                        uint8_t dur = bout_ticks_250ms_from_ms(
+                            HAL_GetTick() - motion_pending_tick);
+                        MotionLogger_LogEvent(pending_type, dur);
+                        LOCKSERVICE_SendMotionAlert(pending_type, dur);
+                    }
+                    motion_pending = 0;
                 }
             }
 
@@ -558,8 +625,8 @@ void State_Locked_Loop(void)
                 stayAwakeFlag = 1;
                 motion_assessing = 0;
                 if (GET_LOGGING_BIT(deviceState)) {
-                    MotionLogger_LogEvent(mt);
-                    LOCKSERVICE_SendMotionAlert(mt);
+                    MotionLogger_LogEvent(mt, 1);
+                    LOCKSERVICE_SendMotionAlert(mt, 1);
                 }
                 if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
                     StateMachine_ChangeState(STATE_ALARM_ACTIVE);
@@ -713,9 +780,15 @@ void State_Alarm_Active_Loop(void)
             // (MLC still STATIONARY, no FSM event) would land as a spurious
             // MOTION_TYPE_IN_MOTION entry — visible to the user as junk
             // events during long alarms.
+            //
+            // Alarm-loop logging stays per-classification (one event per
+            // INT) rather than bout-collapsed, so each entry carries the
+            // instantaneous duration sentinel (1 tick = 250 ms). Bout
+            // tracking is a LOCKED-state concept; once we're in the alarm
+            // the user already knows motion is happening continuously.
             if (GET_LOGGING_BIT(deviceState)) {
-                MotionLogger_LogEvent(motionType);
-                LOCKSERVICE_SendMotionAlert(motionType);
+                MotionLogger_LogEvent(motionType, 1);
+                LOCKSERVICE_SendMotionAlert(motionType, 1);
             }
         }
     }
@@ -740,8 +813,8 @@ void State_Alarm_Active_Loop(void)
             motion_this_iter = 1;
             if (GET_LOGGING_BIT(deviceState)) {
                 MotionType_t mt = impact ? MOTION_TYPE_IMPACT : MOTION_TYPE_FREEFALL;
-                MotionLogger_LogEvent(mt);
-                LOCKSERVICE_SendMotionAlert(mt);
+                MotionLogger_LogEvent(mt, 1);
+                LOCKSERVICE_SendMotionAlert(mt, 1);
             }
         }
     }

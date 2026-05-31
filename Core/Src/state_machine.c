@@ -944,27 +944,31 @@ void State_Alarm_Active_Loop(void)
             last_motion_time = HAL_GetTick();
             motion_this_iter = 1;
 
-            /* One log entry per bout. The alarm-loop used to write a fresh
-             * MotionLogger_LogEvent on every INT, which produced multiple
-             * entries with overlapping timestamps for a single physical
-             * motion event — visually rendered in iOS as one log
-             * "rewriting" another. The bout-settle path in State_Locked_Loop
-             * already logs the full bout (correct type + duration) once
-             * the alarm exits and MLC settles, so per-INT logging here is
-             * redundant and harmful.
+            /* One alert + one log per bout. The alarm loop used to fire
+             * BOTH MotionLogger_LogEvent AND LOCKSERVICE_SendMotionAlert
+             * on every MLC IN_MOTION INT during the bout, then the final
+             * bout-settle path (in State_Locked_Loop after the alarm exits)
+             * fired ONE MORE alert carrying the full bout duration. The live
+             * alert wire format ([0xFF, type, duration_ticks, battery]) has
+             * no timestamp — iOS stamps each alert with its own wall clock
+             * at receive time and computes the displayed "start time" as
+             * (receive_time - duration). So a 30 s bout would land in iOS
+             * as ~6 per-INT entries with duration=1, plus a final entry
+             * whose computed start backdates to the beginning of the bout
+             * — visually "rewriting" the earlier entries.
              *
-             * FSM impact / freefall are distinct sharp events worth their
-             * own entry; keep those logged immediately. MLC IN_MOTION /
-             * SHAKEN INTs during a bout do NOT get their own log.
+             * Now: during the alarm, MLC IN_MOTION / SHAKEN INTs fire
+             * neither a log nor an alert. iOS already knows the alarm
+             * is in progress from DEVICESTATUS (currentState updates).
+             * The single bout-settle alert/log on return to LOCKED is
+             * the canonical record.
              *
-             * The live BLE alert (LOCKSERVICE_SendMotionAlert) still fires
-             * for every classification so a connected iOS keeps getting
-             * the realtime stream — that path is independent of the log
-             * and doesn't suffer from duplicate-timestamp deduplication. */
-            if (GET_LOGGING_BIT(deviceState)) {
-                if (impact || freefall) {
-                    MotionLogger_LogEvent(motionType, 1);
-                }
+             * FSM impact and freefall stay logged + alerted at the INT
+             * because each is a distinct sharp event worth its own entry.
+             * Their duration sentinel is always 1 (250 ms instantaneous),
+             * so iOS doesn't backdate them past their receive time. */
+            if (GET_LOGGING_BIT(deviceState) && (impact || freefall)) {
+                MotionLogger_LogEvent(motionType, 1);
                 LOCKSERVICE_SendMotionAlert(motionType, 1);
             }
         }

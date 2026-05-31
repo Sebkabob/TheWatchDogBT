@@ -379,6 +379,100 @@ static uint8_t motion_type_severity(MotionType_t t)
     }
 }
 
+/* -------- Per-sensitivity magnitude debounce (N-of-M filtering) ----------
+ * Two filters make the LOW / MEDIUM / HIGH tiers feel meaningfully different:
+ *
+ *   1. Per-tier magnitude threshold (mg_threshold). A sample only counts as
+ *      a "hit" when ||a|| deviates from 1 g by more than this many mg.
+ *        LOW    500 mg  (vigorous lift / drop / shake)
+ *        MED    250 mg  (moderate disturbance)
+ *        HIGH   100 mg  (gentle bump)
+ *
+ *   2. Per-tier N-of-M debounce (required_hits / window_size). The alarm
+ *      only fires when the last M sample slots contain ≥ K hits. At the
+ *      100 ms poll cadence this gives:
+ *        LOW    K=8 / M=10  → ~800 ms of sustained motion to fire
+ *        MED    K=4 / M=10  → ~400 ms
+ *        HIGH   K=1 / M=1   → single-sample, effectively instant
+ *
+ * SHAKEN, IMPACT and FREEFALL bypass the debounce — those are unambiguous
+ * physical events and waiting for K-of-M would defeat the point.
+ *
+ * Ring storage is a 16-bit sliding window. push() shifts left, popcount()
+ * over the configured window_size bits decides the trigger. Reset on entry
+ * to STATE_LOCKED, on alarm-loop completion (re-entry to LOCKED), and on
+ * motion_assessing timeout so a near-miss bout can't carry stale hits into
+ * the next wake.
+ ***************************************************************************/
+
+typedef struct {
+    int16_t mg_threshold;
+    uint8_t required_hits;
+    uint8_t window_size;
+} sens_motion_config_t;
+
+static const sens_motion_config_t SENS_CFG[3] = {
+    /* [SENSITIVITY_LOW]    */ { 500, 8, 10 },
+    /* [SENSITIVITY_MEDIUM] */ { 250, 4, 10 },
+    /* [SENSITIVITY_HIGH]   */ { 100, 1,  1 },
+};
+
+static uint16_t motion_sample_ring = 0;
+
+static uint8_t motion_magnitude_hit(int16_t threshold_mg)
+{
+    int16_t ax = 0, ay = 0, az = 0;
+    if (lis2dux12_app_read_accel_mg(&ax, &ay, &az) != 0) return 0;
+    int32_t mag2 = (int32_t)ax * ax + (int32_t)ay * ay + (int32_t)az * az;
+    int32_t lo  = 1000 - threshold_mg; if (lo < 0) lo = 0;
+    int32_t hi  = 1000 + threshold_mg;
+    int32_t lo2 = lo * lo;
+    int32_t hi2 = hi * hi;
+    return (mag2 > hi2 || mag2 < lo2) ? 1u : 0u;
+}
+
+static void motion_ring_push(uint8_t hit)
+{
+    motion_sample_ring = (uint16_t)((motion_sample_ring << 1) | (hit & 1u));
+}
+
+static uint8_t motion_ring_popcount(uint8_t window)
+{
+    uint16_t mask = (window >= 16) ? 0xFFFFu : (uint16_t)((1u << window) - 1u);
+    uint16_t v = (uint16_t)(motion_sample_ring & mask);
+    uint8_t count = 0;
+    while (v) { count = (uint8_t)(count + (v & 1u)); v >>= 1; }
+    return count;
+}
+
+static void motion_ring_reset(void)
+{
+    motion_sample_ring = 0;
+}
+
+/* Take a fresh accel sample with the current tier's threshold, push the
+ * hit/miss bit, and return 1 iff the ring now satisfies K-of-M. */
+static uint8_t motion_sample_and_check(void)
+{
+    uint8_t sens = GET_SENSITIVITY(deviceState);
+    if (sens > SENSITIVITY_HIGH) sens = SENSITIVITY_HIGH;
+    const sens_motion_config_t *cfg = &SENS_CFG[sens];
+    motion_ring_push(motion_magnitude_hit(cfg->mg_threshold));
+    return (motion_ring_popcount(cfg->window_size) >= cfg->required_hits) ? 1u : 0u;
+}
+
+/* Force-push a hit (e.g. MLC IN_MOTION INT outside the 100 ms poll). On HIGH
+ * a single MLC IN_MOTION INT already satisfies K=1/M=1; on MED/LOW it just
+ * primes the ring and the next polls have to confirm with magnitude. */
+static uint8_t motion_force_hit_and_check(void)
+{
+    uint8_t sens = GET_SENSITIVITY(deviceState);
+    if (sens > SENSITIVITY_HIGH) sens = SENSITIVITY_HIGH;
+    const sens_motion_config_t *cfg = &SENS_CFG[sens];
+    motion_ring_push(1);
+    return (motion_ring_popcount(cfg->window_size) >= cfg->required_hits) ? 1u : 0u;
+}
+
 void State_Locked_Loop(void)
 {
     static uint8_t  motion_assessing = 0;
@@ -412,34 +506,26 @@ void State_Locked_Loop(void)
         // IN_MOTION at the end if it did not.
         uint8_t wake_handled = 0;
 
-        // Significant-motion fast-path (MEDIUM + HIGH only): if |a| deviates
-        // from 1 g by more than 250 mg, fire the alarm without waiting for
-        // MLC. Compared in mg² to avoid a sqrt.
+        // Per-tier significant-motion fast-path. The wake itself is one
+        // sample for the debounce ring; on HIGH (K=1/M=1) a single hit over
+        // the 100 mg threshold fires immediately, on MED/LOW one sample is
+        // never enough on its own (K=4/8 of M=10) so the device just stays
+        // in motion_assessing and lets the 100 ms poll loop accumulate more
+        // samples.
+        motion_ring_reset();
         uint8_t fast_fired = 0;
-        if (GET_SENSITIVITY(deviceState) != SENSITIVITY_LOW) {
-            int16_t ax_mg = 0, ay_mg = 0, az_mg = 0;
-            if (lis2dux12_app_read_accel_mg(&ax_mg, &ay_mg, &az_mg) == 0) {
-                int32_t mag2 = (int32_t)ax_mg * ax_mg
-                             + (int32_t)ay_mg * ay_mg
-                             + (int32_t)az_mg * az_mg;
-                const int32_t hi2 = 1250L * 1250L;   // 1 g + 250 mg
-                const int32_t lo2 =  750L *  750L;   // 1 g - 250 mg
-                if (mag2 > hi2 || mag2 < lo2) {
-                    if (!motion_pending) {
-                        motion_pending      = 1;
-                        pending_type        = MOTION_TYPE_IN_MOTION;
-                        motion_pending_tick = HAL_GetTick();
-                    }
-                    motion_assessing = 0;
-                    if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
-                        StateMachine_ChangeState(STATE_ALARM_ACTIVE);
-                    }
-                    fast_fired = 1;
-                    // The pending_type path will log on settle (or via the
-                    // 3-s safety timeout). Don't fall back to a generic log.
-                    wake_handled = 1;
-                }
+        if (motion_sample_and_check()) {
+            if (!motion_pending) {
+                motion_pending      = 1;
+                pending_type        = MOTION_TYPE_IN_MOTION;
+                motion_pending_tick = HAL_GetTick();
             }
+            motion_assessing = 0;
+            if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
+                StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+            }
+            fast_fired = 1;
+            wake_handled = 1;
         }
 
         uint8_t mlc_out;
@@ -473,10 +559,20 @@ void State_Locked_Loop(void)
                     /* Promote: bout escalated mid-flight (IN_MOTION → SHAKEN). */
                     pending_type = observed;
                 }
-                motion_assessing = 0;
-                if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
-                    StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+                /* SHAKEN bypasses the debounce — it's an unambiguous
+                 * vigorous-motion classification. IN_MOTION runs through
+                 * the per-tier N-of-M filter so LOW requires sustained
+                 * motion before firing instead of one transient INT. */
+                uint8_t should_fire = (mlc_out == MLC_STATE_SHAKEN)
+                                          ? 1u : motion_force_hit_and_check();
+                if (should_fire) {
+                    motion_assessing = 0;
+                    if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
+                        StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+                    }
                 }
+                /* Bout is being tracked via motion_pending whether or not
+                 * the alarm fired this iteration; skip the fallback log. */
                 wake_handled = 1;
             }
         }
@@ -531,9 +627,13 @@ void State_Locked_Loop(void)
                     pending_type = observed;
                 }
                 stayAwakeFlag = 1;
-                motion_assessing = 0;
-                if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
-                    StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+                uint8_t should_fire = (mlc_out == MLC_STATE_SHAKEN)
+                                          ? 1u : motion_force_hit_and_check();
+                if (should_fire) {
+                    motion_assessing = 0;
+                    if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
+                        StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+                    }
                 }
             }
 
@@ -582,6 +682,27 @@ void State_Locked_Loop(void)
             uint8_t mlc_out;
             if (lis2dux12_app_get_mlc_output(&mlc_out) == 0) {
                 lis2dux12_app_update_cached_state(mlc_out);
+
+                /* Feed the debounce ring every poll. A "hit" is either a
+                 * magnitude sample over the per-tier mg threshold OR an
+                 * MLC class of IN_MOTION/SHAKEN this tick (both sources
+                 * are OR'd so vibration noise that the MLC misses can
+                 * still trip LOW, and an MLC IN_MOTION classification
+                 * that the magnitude reading just barely fails on the
+                 * given tick still accumulates). One push per 100 ms keeps
+                 * the M window's time meaning consistent: at K=8/M=10 LOW
+                 * fires only after ~800 ms of sustained motion. */
+                uint8_t sens = GET_SENSITIVITY(deviceState);
+                if (sens > SENSITIVITY_HIGH) sens = SENSITIVITY_HIGH;
+                const sens_motion_config_t *cfg = &SENS_CFG[sens];
+                uint8_t mlc_moving = (mlc_out == MLC_STATE_IN_MOTION ||
+                                      mlc_out == MLC_STATE_SHAKEN);
+                uint8_t mag_hit    = motion_magnitude_hit(cfg->mg_threshold);
+                motion_ring_push((mlc_moving || mag_hit) ? 1u : 0u);
+                uint8_t debounce_satisfied =
+                    (motion_ring_popcount(cfg->window_size) >= cfg->required_hits)
+                        ? 1u : 0u;
+
                 if (mlc_out == MLC_STATE_IN_MOTION ||
                     mlc_out == MLC_STATE_SHAKEN) {
                     MotionType_t observed = (mlc_out == MLC_STATE_SHAKEN)
@@ -592,6 +713,26 @@ void State_Locked_Loop(void)
                         motion_pending_tick = HAL_GetTick();
                     } else if (motion_type_severity(observed) > motion_type_severity(pending_type)) {
                         pending_type = observed;
+                    }
+                    stayAwakeFlag = 1;
+                    /* SHAKEN bypasses debounce; IN_MOTION must pass K-of-M. */
+                    uint8_t should_fire =
+                        (mlc_out == MLC_STATE_SHAKEN) ? 1u : debounce_satisfied;
+                    if (should_fire) {
+                        motion_assessing = 0;
+                        if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
+                            StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+                        }
+                    }
+                } else if (debounce_satisfied) {
+                    /* Magnitude-only fire: MLC hasn't classified IN_MOTION
+                     * (could be lag, a noise pattern outside its training,
+                     * or MLC wiped in MED/LOW LP wake) but K-of-M over the
+                     * raw accel says we're moving. Treat as IN_MOTION. */
+                    if (!motion_pending) {
+                        motion_pending = 1;
+                        pending_type = MOTION_TYPE_IN_MOTION;
+                        motion_pending_tick = HAL_GetTick();
                     }
                     stayAwakeFlag = 1;
                     motion_assessing = 0;
@@ -656,6 +797,10 @@ void State_Locked_Loop(void)
             if (HAL_GetTick() - motion_assess_start >= MOTION_ASSESS_TIMEOUT_MS) {
                 motion_assessing = 0;
                 stayAwakeFlag = 0;
+                /* Clear the debounce ring so stale near-miss hits from this
+                 * bout don't carry into the next wake — would otherwise let
+                 * a second mild bout cross K-of-M faster than it should. */
+                motion_ring_reset();
             }
         } else {
             if (cableUnplugTime == 0 && !IS_CABLE_PLUGGED()) {
@@ -891,6 +1036,12 @@ void StateMachine_ChangeState(SystemState_t newState)
         // iOS hasn't synced the time yet.
         if (newState == STATE_LOCKED) {
             MotionLogger_PersistAnchor();
+            /* Fresh debounce ring on every entry to LOCKED — covers user
+             * arming, post-stabilize entry, and the alarm-loop returning
+             * here after the duration timer expires. Without the reset a
+             * just-finished alarm bout's tail of hits would re-trigger
+             * the alarm before motion fully settled. */
+            motion_ring_reset();
         }
 
         lis2dux12_app_set_stabilizing(newState == STATE_STABILIZING ? 1 : 0);

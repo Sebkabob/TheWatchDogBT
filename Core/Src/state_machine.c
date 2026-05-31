@@ -663,7 +663,17 @@ void State_Locked_Loop(void)
             }
         }
 
-        if (!stayAwakeFlag && !PowerMgmt_IsLowPower()) {
+        // Guard LP re-entry on currentState still being LOCKED. Without this,
+        // a transition to STATE_ALARM_ACTIVE earlier in this same call (LP-
+        // wake classify path or active-polling path) falls through to here
+        // and re-gates TIM16/LEDs. The chip then DEEPSTOPs while currentState
+        // is ALARM_ACTIVE; the next motion INT wakes Alarm_Active_Loop, which
+        // RestoreAll's, starts the buzzer for a few ms, then exits to LOCKED
+        // because the freshly-reloaded MLC reports STATIONARY (hasn't had
+        // time to classify yet) and alarm_duration_ms gates accept the exit.
+        // Result: ~5 ms click on every accel INT (~ once per 2 s), no real
+        // alarm, no motion log past the wake's fallback IN_MOTION entry.
+        if (!stayAwakeFlag && !PowerMgmt_IsLowPower() && currentState == STATE_LOCKED) {
             motion_pending = 0;
             PowerMgmt_EnterLowPower_Armed();
         }

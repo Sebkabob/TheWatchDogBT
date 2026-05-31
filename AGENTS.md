@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ONLY EDIT CODE WITHIN THE USER EDITABLE SECTIONS!!!
 
@@ -8,7 +8,7 @@ ONLY EDIT CODE WITHIN THE USER EDITABLE SECTIONS!!!
 
 **Current: V1.12.15**  (last reconciled at commit `ddc5972`)
 
-Format: `V<MAJOR>.<MAIN>.<V2>` — single source of truth lives in `Core/Inc/firmware_version.h` (`FW_VERSION_MAJOR/MAIN/V2`, plus `FW_VERSION_STRING`). This line in CLAUDE.md and the macros in the header **must stay in sync**.
+Format: `V<MAJOR>.<MAIN>.<V2>` — single source of truth lives in `Core/Inc/firmware_version.h` (`FW_VERSION_MAJOR/MAIN/V2`, plus `FW_VERSION_STRING`). This line in AGENTS.md and the macros in the header **must stay in sync**.
 
 ### Bump rules
 
@@ -43,7 +43,7 @@ This makes the rule self-correcting: if a `main` commit ever lands while you wer
 
 `MAJOR` is never derived from history — it only changes when Sebastian says so.
 
-### Claude — do this every session, before any other work
+### Codex — do this every session, before any other work
 
 1. Run `git rev-list --count --first-parent main` → that's the new `MAIN`.
 2. Run `git rev-list --count main..V2` → that's the new `V2`.

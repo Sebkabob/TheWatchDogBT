@@ -515,13 +515,16 @@ void State_Locked_Loop(void)
         motion_ring_reset();
         uint8_t fast_fired = 0;
         if (motion_sample_and_check()) {
-            if (!motion_pending) {
-                motion_pending      = 1;
-                pending_type        = MOTION_TYPE_IN_MOTION;
-                motion_pending_tick = HAL_GetTick();
-            }
             motion_assessing = 0;
+            /* motion_pending drives the bout-settle log on return to LOCKED.
+             * Only arm it when the alarm actually transitions — silent or
+             * filtered detections must NOT produce a log entry. */
             if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
+                if (!motion_pending) {
+                    motion_pending      = 1;
+                    pending_type        = MOTION_TYPE_IN_MOTION;
+                    motion_pending_tick = HAL_GetTick();
+                }
                 StateMachine_ChangeState(STATE_ALARM_ACTIVE);
             }
             fast_fired = 1;
@@ -551,14 +554,6 @@ void State_Locked_Loop(void)
                        mlc_out == MLC_STATE_SHAKEN) {
                 MotionType_t observed = (mlc_out == MLC_STATE_SHAKEN)
                     ? MOTION_TYPE_SHAKEN : MOTION_TYPE_IN_MOTION;
-                if (!motion_pending) {
-                    motion_pending      = 1;
-                    pending_type        = observed;
-                    motion_pending_tick = HAL_GetTick();
-                } else if (motion_type_severity(observed) > motion_type_severity(pending_type)) {
-                    /* Promote: bout escalated mid-flight (IN_MOTION → SHAKEN). */
-                    pending_type = observed;
-                }
                 /* SHAKEN bypasses the debounce — it's an unambiguous
                  * vigorous-motion classification. IN_MOTION runs through
                  * the per-tier N-of-M filter so LOW requires sustained
@@ -566,24 +561,37 @@ void State_Locked_Loop(void)
                 uint8_t should_fire = (mlc_out == MLC_STATE_SHAKEN)
                                           ? 1u : motion_force_hit_and_check();
                 if (should_fire) {
+                    /* Bout tracking + log only when the alarm actually fires.
+                     * Without this gate, every MLC IN_MOTION INT that the
+                     * debounce filtered out would still seed motion_pending
+                     * and produce a "log says alarm went off" entry on settle. */
+                    if (!motion_pending) {
+                        motion_pending      = 1;
+                        pending_type        = observed;
+                        motion_pending_tick = HAL_GetTick();
+                    } else if (motion_type_severity(observed) > motion_type_severity(pending_type)) {
+                        /* Promote: bout escalated mid-flight (IN_MOTION → SHAKEN). */
+                        pending_type = observed;
+                    }
                     motion_assessing = 0;
                     if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
                         StateMachine_ChangeState(STATE_ALARM_ACTIVE);
                     }
                 }
-                /* Bout is being tracked via motion_pending whether or not
-                 * the alarm fired this iteration; skip the fallback log. */
                 wake_handled = 1;
             }
         }
 
-        // Fallback: INT latched but neither FSM nor MLC qualified. The wake
-        // itself is evidence of motion, so log a generic IN_MOTION so brief
-        // blips don't slip through. No alarm transition without a qualifying
-        // classification — motion_assessing's timeout governs the decision.
-        if (!wake_handled && GET_LOGGING_BIT(deviceState)) {
-            MotionLogger_LogEvent(MOTION_TYPE_IN_MOTION, 1);
-        }
+        /* No fallback log on bare LP wake. Under the per-tier debounce
+         * (MED/LOW), most LP wakes intentionally don't qualify — the
+         * single sample available at wake time can't reach K-of-M. The
+         * old "wake is evidence of motion" log produced a spurious
+         * IN_MOTION entry for every accel INT, which iOS rendered as
+         * "the alarm went off" even though nothing fired. If the motion
+         * is real and sustained, the 100 ms poll loop will reach K-of-M
+         * and the bout-settle path will log it correctly with full
+         * duration. */
+        (void)wake_handled;
     }
 
     if (!findMyActive) {
@@ -619,17 +627,20 @@ void State_Locked_Loop(void)
             if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN) {
                 MotionType_t observed = (mlc_out == MLC_STATE_SHAKEN)
                     ? MOTION_TYPE_SHAKEN : MOTION_TYPE_IN_MOTION;
-                if (!motion_pending) {
-                    motion_pending = 1;
-                    pending_type = observed;
-                    motion_pending_tick = HAL_GetTick();
-                } else if (motion_type_severity(observed) > motion_type_severity(pending_type)) {
-                    pending_type = observed;
-                }
                 stayAwakeFlag = 1;
                 uint8_t should_fire = (mlc_out == MLC_STATE_SHAKEN)
                                           ? 1u : motion_force_hit_and_check();
                 if (should_fire) {
+                    /* Only arm motion_pending (the bout-settle log driver)
+                     * when the alarm actually fires. Filtered INTs must NOT
+                     * leave a log entry behind. */
+                    if (!motion_pending) {
+                        motion_pending = 1;
+                        pending_type = observed;
+                        motion_pending_tick = HAL_GetTick();
+                    } else if (motion_type_severity(observed) > motion_type_severity(pending_type)) {
+                        pending_type = observed;
+                    }
                     motion_assessing = 0;
                     if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
                         StateMachine_ChangeState(STATE_ALARM_ACTIVE);
@@ -707,18 +718,21 @@ void State_Locked_Loop(void)
                     mlc_out == MLC_STATE_SHAKEN) {
                     MotionType_t observed = (mlc_out == MLC_STATE_SHAKEN)
                         ? MOTION_TYPE_SHAKEN : MOTION_TYPE_IN_MOTION;
-                    if (!motion_pending) {
-                        motion_pending = 1;
-                        pending_type = observed;
-                        motion_pending_tick = HAL_GetTick();
-                    } else if (motion_type_severity(observed) > motion_type_severity(pending_type)) {
-                        pending_type = observed;
-                    }
                     stayAwakeFlag = 1;
                     /* SHAKEN bypasses debounce; IN_MOTION must pass K-of-M. */
                     uint8_t should_fire =
                         (mlc_out == MLC_STATE_SHAKEN) ? 1u : debounce_satisfied;
                     if (should_fire) {
+                        /* Only seed motion_pending when the alarm fires,
+                         * so the eventual bout-settle log corresponds to
+                         * an actual alarm event. */
+                        if (!motion_pending) {
+                            motion_pending = 1;
+                            pending_type = observed;
+                            motion_pending_tick = HAL_GetTick();
+                        } else if (motion_type_severity(observed) > motion_type_severity(pending_type)) {
+                            pending_type = observed;
+                        }
                         motion_assessing = 0;
                         if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
                             StateMachine_ChangeState(STATE_ALARM_ACTIVE);
@@ -729,14 +743,14 @@ void State_Locked_Loop(void)
                      * (could be lag, a noise pattern outside its training,
                      * or MLC wiped in MED/LOW LP wake) but K-of-M over the
                      * raw accel says we're moving. Treat as IN_MOTION. */
-                    if (!motion_pending) {
-                        motion_pending = 1;
-                        pending_type = MOTION_TYPE_IN_MOTION;
-                        motion_pending_tick = HAL_GetTick();
-                    }
                     stayAwakeFlag = 1;
                     motion_assessing = 0;
                     if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
+                        if (!motion_pending) {
+                            motion_pending = 1;
+                            pending_type = MOTION_TYPE_IN_MOTION;
+                            motion_pending_tick = HAL_GetTick();
+                        }
                         StateMachine_ChangeState(STATE_ALARM_ACTIVE);
                     }
                 } else if (motion_pending &&
@@ -930,19 +944,27 @@ void State_Alarm_Active_Loop(void)
             last_motion_time = HAL_GetTick();
             motion_this_iter = 1;
 
-            // Gate the log+alert on a real classification. Previously the
-            // log was outside this if-block and a stationary→stationary INT
-            // (MLC still STATIONARY, no FSM event) would land as a spurious
-            // MOTION_TYPE_IN_MOTION entry — visible to the user as junk
-            // events during long alarms.
-            //
-            // Alarm-loop logging stays per-classification (one event per
-            // INT) rather than bout-collapsed, so each entry carries the
-            // instantaneous duration sentinel (1 tick = 250 ms). Bout
-            // tracking is a LOCKED-state concept; once we're in the alarm
-            // the user already knows motion is happening continuously.
+            /* One log entry per bout. The alarm-loop used to write a fresh
+             * MotionLogger_LogEvent on every INT, which produced multiple
+             * entries with overlapping timestamps for a single physical
+             * motion event — visually rendered in iOS as one log
+             * "rewriting" another. The bout-settle path in State_Locked_Loop
+             * already logs the full bout (correct type + duration) once
+             * the alarm exits and MLC settles, so per-INT logging here is
+             * redundant and harmful.
+             *
+             * FSM impact / freefall are distinct sharp events worth their
+             * own entry; keep those logged immediately. MLC IN_MOTION /
+             * SHAKEN INTs during a bout do NOT get their own log.
+             *
+             * The live BLE alert (LOCKSERVICE_SendMotionAlert) still fires
+             * for every classification so a connected iOS keeps getting
+             * the realtime stream — that path is independent of the log
+             * and doesn't suffer from duplicate-timestamp deduplication. */
             if (GET_LOGGING_BIT(deviceState)) {
-                MotionLogger_LogEvent(motionType, 1);
+                if (impact || freefall) {
+                    MotionLogger_LogEvent(motionType, 1);
+                }
                 LOCKSERVICE_SendMotionAlert(motionType, 1);
             }
         }

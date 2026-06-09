@@ -16,7 +16,7 @@
 
 #define FW_VERSION_MAJOR    1
 #define FW_VERSION_MAIN     12
-#define FW_VERSION_V2       15
+#define FW_VERSION_V2       22
 
 #define FW_STRINGIFY_(x)    #x
 #define FW_STRINGIFY(x)     FW_STRINGIFY_(x)

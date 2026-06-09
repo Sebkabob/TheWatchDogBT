@@ -492,6 +492,109 @@ static uint8_t motion_force_hit_and_check(void)
     return (motion_ring_popcount(cfg->window_size) >= cfg->required_hits) ? 1u : 0u;
 }
 
+/* -------- XYZ-range verifier (anti-buzzer-feedback) ----------------------
+ * The MLC alone can be fooled by the loud-alarm pattern's own vibration
+ * coupling back through the chassis: the buzzer is loud enough that the
+ * accelerometer reads IN_MOTION continuously, which keeps refreshing
+ * last_motion_time in ALARM_ACTIVE and locks the alarm on forever. The
+ * MLC also misfires on table-bumps the user doesn't consider real motion.
+ *
+ * The verifier tracks raw X/Y/Z samples over a sliding window (8 samples
+ * at the 100 ms poll cadence = ~800 ms of history) and reports the max
+ * per-axis range (max - min) over that window. Real motion shifts the
+ * gravity vector (pickup, tilt, walk) → large range. Buzzer-induced
+ * vibration oscillates symmetrically around a fixed equilibrium → small
+ * range. Per-sensitivity threshold:
+ *
+ *   LOW    600 mg of axis range — only vigorous motion counts
+ *   MED    350 mg
+ *   HIGH   150 mg — gentle moves still count
+ *
+ * The verifier confirms iff any axis range >= threshold AND the window
+ * holds at least RING_SIZE/2 samples (so a single sample right after a
+ * reset can't claim confirmation — its range is structurally 0). Used
+ * as an AND gate alongside the MLC classification at both:
+ *   - the alarm-trigger sites in LOCKED (so a MLC misfire on a table-bump
+ *     won't fire the alarm without sustained XYZ displacement), and
+ *   - the alarm-refresh path in ALARM_ACTIVE (so the buzzer's own
+ *     coupling-feedback can't keep refreshing last_motion_time).
+ *
+ * FSM impact/freefall are NOT gated — those are unambiguous instantaneous
+ * physical events worth honouring directly. Only MLC-class-driven paths
+ * route through this verifier.
+ ***************************************************************************/
+#define MOTION_VERIFIER_RING_SIZE 8u
+
+typedef struct {
+    int16_t x_mg;
+    int16_t y_mg;
+    int16_t z_mg;
+} verifier_sample_t;
+
+static const int16_t SENS_VERIFY_RANGE_MG[3] = {
+    /* [SENSITIVITY_LOW]    */ 600,
+    /* [SENSITIVITY_MEDIUM] */ 350,
+    /* [SENSITIVITY_HIGH]   */ 150,
+};
+
+static verifier_sample_t s_verifier_ring[MOTION_VERIFIER_RING_SIZE];
+static uint8_t           s_verifier_count = 0;
+static uint8_t           s_verifier_idx   = 0;
+
+static void motion_verifier_reset(void)
+{
+    s_verifier_count = 0;
+    s_verifier_idx   = 0;
+}
+
+/* Read raw X/Y/Z mg and push into the ring. Returns 1 on success, 0 if the
+ * I2C read failed (the caller can retry on the next poll). */
+static uint8_t motion_verifier_sample(void)
+{
+    int16_t ax = 0, ay = 0, az = 0;
+    if (lis2dux12_app_read_accel_mg(&ax, &ay, &az) != 0) {
+        return 0;
+    }
+    s_verifier_ring[s_verifier_idx].x_mg = ax;
+    s_verifier_ring[s_verifier_idx].y_mg = ay;
+    s_verifier_ring[s_verifier_idx].z_mg = az;
+    s_verifier_idx = (uint8_t)((s_verifier_idx + 1u) % MOTION_VERIFIER_RING_SIZE);
+    if (s_verifier_count < MOTION_VERIFIER_RING_SIZE) {
+        s_verifier_count++;
+    }
+    return 1u;
+}
+
+/* Returns 1 iff any axis (max - min) over the ring meets the per-sensitivity
+ * threshold AND the ring holds at least RING_SIZE/2 samples. */
+static uint8_t motion_verifier_confirms(void)
+{
+    if (s_verifier_count < (MOTION_VERIFIER_RING_SIZE / 2u)) {
+        return 0u;
+    }
+    int16_t xmin = s_verifier_ring[0].x_mg, xmax = xmin;
+    int16_t ymin = s_verifier_ring[0].y_mg, ymax = ymin;
+    int16_t zmin = s_verifier_ring[0].z_mg, zmax = zmin;
+    for (uint8_t i = 1; i < s_verifier_count; i++) {
+        int16_t x = s_verifier_ring[i].x_mg;
+        int16_t y = s_verifier_ring[i].y_mg;
+        int16_t z = s_verifier_ring[i].z_mg;
+        if (x < xmin) xmin = x; if (x > xmax) xmax = x;
+        if (y < ymin) ymin = y; if (y > ymax) ymax = y;
+        if (z < zmin) zmin = z; if (z > zmax) zmax = z;
+    }
+    int32_t rx = (int32_t)xmax - (int32_t)xmin;
+    int32_t ry = (int32_t)ymax - (int32_t)ymin;
+    int32_t rz = (int32_t)zmax - (int32_t)zmin;
+    int32_t rmax = rx;
+    if (ry > rmax) rmax = ry;
+    if (rz > rmax) rmax = rz;
+
+    uint8_t sens = GET_SENSITIVITY(deviceState);
+    if (sens > SENSITIVITY_HIGH) sens = SENSITIVITY_HIGH;
+    return (rmax >= (int32_t)SENS_VERIFY_RANGE_MG[sens]) ? 1u : 0u;
+}
+
 void State_Locked_Loop(void)
 {
     static uint8_t  motion_assessing = 0;
@@ -532,24 +635,34 @@ void State_Locked_Loop(void)
         // the 100 mg threshold fires immediately, on MED/LOW one sample is
         // never enough on its own (K=4/8 of M=10) so the device just stays
         // in motion_assessing and lets the 100 ms poll loop accumulate more
-        // samples.
+        // samples. The XYZ-range verifier is also reset here — its ring
+        // fills over the 100 ms poll that follows; the wake's single
+        // sample structurally can't confirm on its own.
         motion_ring_reset();
+        motion_verifier_reset();
         uint8_t fast_fired = 0;
         if (motion_sample_and_check()) {
-            motion_assessing = 0;
-            /* motion_pending drives the bout-settle log on return to LOCKED.
-             * Only arm it when the alarm actually transitions — silent or
-             * filtered detections must NOT produce a log entry. */
-            if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
-                if (!motion_pending) {
-                    motion_pending      = 1;
-                    pending_type        = MOTION_TYPE_IN_MOTION;
-                    motion_pending_tick = HAL_GetTick();
+            /* Magnitude debounce passed; verifier may not yet have enough
+             * samples (just reset) to confirm. If it can't confirm, keep
+             * motion_assessing alive so the 100 ms poll path can fill the
+             * verifier ring and fire then if motion is real and sustained. */
+            (void)motion_verifier_sample();
+            if (motion_verifier_confirms()) {
+                motion_assessing = 0;
+                /* motion_pending drives the bout-settle log on return to LOCKED.
+                 * Only arm it when the alarm actually transitions — silent or
+                 * filtered detections must NOT produce a log entry. */
+                if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
+                    if (!motion_pending) {
+                        motion_pending      = 1;
+                        pending_type        = MOTION_TYPE_IN_MOTION;
+                        motion_pending_tick = HAL_GetTick();
+                    }
+                    StateMachine_ChangeState(STATE_ALARM_ACTIVE);
                 }
-                StateMachine_ChangeState(STATE_ALARM_ACTIVE);
+                fast_fired = 1;
+                wake_handled = 1;
             }
-            fast_fired = 1;
-            wake_handled = 1;
         }
 
         uint8_t mlc_out;
@@ -575,12 +688,21 @@ void State_Locked_Loop(void)
                        mlc_out == MLC_STATE_SHAKEN) {
                 MotionType_t observed = (mlc_out == MLC_STATE_SHAKEN)
                     ? MOTION_TYPE_SHAKEN : MOTION_TYPE_IN_MOTION;
-                /* SHAKEN bypasses the debounce — it's an unambiguous
-                 * vigorous-motion classification. IN_MOTION runs through
-                 * the per-tier N-of-M filter so LOW requires sustained
-                 * motion before firing instead of one transient INT. */
-                uint8_t should_fire = (mlc_out == MLC_STATE_SHAKEN)
+                /* MLC says motion — but the verifier still has to agree.
+                 * SHAKEN no longer bypasses: the buzzer's own vibration can
+                 * trip MLC SHAKEN during ALARM_ACTIVE feedback, and a hard
+                 * table-thump can pop SHAKEN in LOCKED without the device
+                 * actually moving. Both must show sustained XYZ
+                 * displacement to fire. IN_MOTION additionally runs through
+                 * the existing per-tier debounce. At wake time the
+                 * verifier ring is fresh and won't confirm yet — that's
+                 * intentional; motion_assessing keeps the device awake and
+                 * the 100 ms poll path takes over. */
+                (void)motion_verifier_sample();
+                uint8_t verified = motion_verifier_confirms();
+                uint8_t debounce = (mlc_out == MLC_STATE_SHAKEN)
                                           ? 1u : motion_force_hit_and_check();
+                uint8_t should_fire = verified && debounce;
                 if (should_fire) {
                     /* Bout tracking + log only when the alarm actually fires.
                      * Without this gate, every MLC IN_MOTION INT that the
@@ -649,8 +771,17 @@ void State_Locked_Loop(void)
                 MotionType_t observed = (mlc_out == MLC_STATE_SHAKEN)
                     ? MOTION_TYPE_SHAKEN : MOTION_TYPE_IN_MOTION;
                 stayAwakeFlag = 1;
-                uint8_t should_fire = (mlc_out == MLC_STATE_SHAKEN)
+                /* MLC class change INT — verify with the XYZ-range tracker.
+                 * The 100 ms poll below keeps the verifier ring filled with
+                 * recent samples, so an INT that lands during active LOCKED
+                 * usually has a populated window to consult. If the verifier
+                 * doesn't confirm (table bump, MLC false positive), the
+                 * alarm stays silent. */
+                (void)motion_verifier_sample();
+                uint8_t verified = motion_verifier_confirms();
+                uint8_t debounce = (mlc_out == MLC_STATE_SHAKEN)
                                           ? 1u : motion_force_hit_and_check();
+                uint8_t should_fire = verified && debounce;
                 if (should_fire) {
                     /* Only arm motion_pending (the bout-settle log driver)
                      * when the alarm actually fires. Filtered INTs must NOT
@@ -735,14 +866,30 @@ void State_Locked_Loop(void)
                     (motion_ring_popcount(cfg->window_size) >= cfg->required_hits)
                         ? 1u : 0u;
 
+                /* Feed the XYZ-range verifier every poll. Sampling
+                 * continuously keeps the window fresh so an INT that
+                 * lands between polls has populated history to consult.
+                 * The reads themselves are cheap (~1 ms I2C). */
+                (void)motion_verifier_sample();
+                uint8_t verified = motion_verifier_confirms();
+
                 if (mlc_out == MLC_STATE_IN_MOTION ||
                     mlc_out == MLC_STATE_SHAKEN) {
                     MotionType_t observed = (mlc_out == MLC_STATE_SHAKEN)
                         ? MOTION_TYPE_SHAKEN : MOTION_TYPE_IN_MOTION;
                     stayAwakeFlag = 1;
-                    /* SHAKEN bypasses debounce; IN_MOTION must pass K-of-M. */
-                    uint8_t should_fire =
+                    /* MLC must be confirmed by XYZ displacement. SHAKEN
+                     * still bypasses the per-tier K-of-M (it's an
+                     * unambiguous classification on its own) but the
+                     * verifier gate is now non-negotiable for both
+                     * classes — buzzer feedback can paint SHAKEN
+                     * continuously during ALARM_ACTIVE, and we don't
+                     * want LOCKED → ALARM_ACTIVE bounce on a
+                     * shake-shaped table thump that didn't move the
+                     * device. */
+                    uint8_t debounce_pass =
                         (mlc_out == MLC_STATE_SHAKEN) ? 1u : debounce_satisfied;
+                    uint8_t should_fire = verified && debounce_pass;
                     if (should_fire) {
                         /* Only seed motion_pending when the alarm fires,
                          * so the eventual bout-settle log corresponds to
@@ -759,11 +906,12 @@ void State_Locked_Loop(void)
                             StateMachine_ChangeState(STATE_ALARM_ACTIVE);
                         }
                     }
-                } else if (debounce_satisfied) {
+                } else if (debounce_satisfied && verified) {
                     /* Magnitude-only fire: MLC hasn't classified IN_MOTION
                      * (could be lag, a noise pattern outside its training,
                      * or MLC wiped in MED/LOW LP wake) but K-of-M over the
-                     * raw accel says we're moving. Treat as IN_MOTION. */
+                     * raw accel + the XYZ-range verifier both agree we're
+                     * moving. Treat as IN_MOTION. */
                     stayAwakeFlag = 1;
                     motion_assessing = 0;
                     if (!GET_SILENCE_BIT(deviceState) || !connectionStatus) {
@@ -834,8 +982,10 @@ void State_Locked_Loop(void)
                 stayAwakeFlag = 0;
                 /* Clear the debounce ring so stale near-miss hits from this
                  * bout don't carry into the next wake — would otherwise let
-                 * a second mild bout cross K-of-M faster than it should. */
+                 * a second mild bout cross K-of-M faster than it should.
+                 * Same reasoning for the XYZ-range verifier. */
                 motion_ring_reset();
+                motion_verifier_reset();
             }
         } else {
             if (cableUnplugTime == 0 && !IS_CABLE_PLUGGED()) {
@@ -902,12 +1052,15 @@ void State_Locked_Loop(void)
  *   does not log here — the bout-settle log fires once on exit with the
  *   full motion duration.
  *
- *   Note on ALARM_LOUD: the SUPER_LOUD pattern's 4 kHz vibration couples
+ *   ALARM_LOUD self-feedback: the SUPER_LOUD pattern's vibration couples
  *   back into the LIS2DUX12 and the MLC reads it as continuous IN_MOTION,
- *   which keeps refreshing last_motion_time. With this simple logic the
- *   loud alarm may run as long as it can self-trigger via that feedback;
- *   that's a known limitation to be addressed separately (it does not
- *   affect CALM/NORMAL alarms).
+ *   which used to keep refreshing last_motion_time and lock the alarm on
+ *   forever. MLC-driven refreshes now go through motion_verifier_confirms:
+ *   the buzzer's vibration oscillates symmetrically around a fixed
+ *   equilibrium so the X/Y/Z min/max range over the verifier window stays
+ *   below the per-tier threshold, and the alarm tail expires normally.
+ *   FSM impact/freefall still refresh unconditionally — those are real
+ *   shock events the buzzer can't fake at the FSM's calibrated levels.
  ***************************************************************************/
 void State_Alarm_Active_Loop(void)
 {
@@ -955,10 +1108,33 @@ void State_Alarm_Active_Loop(void)
         }
         alarm_started    = 1;
         last_motion_time = HAL_GetTick();
+        /* Fresh verifier ring on alarm entry. The motion that triggered the
+         * alarm has already happened; we want the verifier to characterise
+         * what's happening DURING the alarm, not before. Without the reset,
+         * the trigger sample(s) would carry a large-range hit into the
+         * alarm loop and the first verifier check inside the alarm would
+         * spuriously confirm even on a still device. */
+        motion_verifier_reset();
     }
 
-    /* INT-driven motion: any qualifying signal refreshes last_motion_time.
-     * FSM impact/freefall additionally log + alert at the INT. */
+    /* 100 ms verifier sampler — independent of the MLC/FSM poll cadence,
+     * so the verifier ring stays populated regardless of when an INT
+     * lands. The alarm has to run for ~RING_SIZE/2 * 100 ms = 400 ms
+     * before the verifier can confirm; until then MLC-driven refreshes
+     * are suppressed and only FSM impact/freefall can hold the alarm on.
+     * That's intentional — the user's bug is "buzzer alone keeps alarm
+     * forever"; suppressing MLC-driven refresh during the first 400 ms
+     * doesn't matter because real motion is still being held in
+     * last_motion_time from the trigger-entry assignment above. */
+    static uint32_t last_verifier_sample = 0;
+    if (HAL_GetTick() - last_verifier_sample >= 100) {
+        last_verifier_sample = HAL_GetTick();
+        (void)motion_verifier_sample();
+    }
+
+    /* INT-driven motion: MLC IN_MOTION/SHAKEN only refreshes
+     * last_motion_time when the XYZ-range verifier also confirms.
+     * FSM impact/freefall refresh + log unconditionally. */
     if (LIS2DUX12_IsMotionDetected()) {
         uint8_t mlc_out;
         lis2dux12_app_get_mlc_output(&mlc_out);
@@ -967,8 +1143,9 @@ void State_Alarm_Active_Loop(void)
         uint8_t impact, freefall;
         lis2dux12_app_check_fsm_events(&impact, &freefall);
 
-        if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN
-            || impact || freefall) {
+        uint8_t mlc_moving = (mlc_out == MLC_STATE_IN_MOTION ||
+                              mlc_out == MLC_STATE_SHAKEN);
+        if ((mlc_moving && motion_verifier_confirms()) || impact || freefall) {
             last_motion_time = HAL_GetTick();
         }
 
@@ -982,7 +1159,9 @@ void State_Alarm_Active_Loop(void)
     }
 
     /* 500 ms polled fallback for MLC class changes and FSM events that
-     * didn't latch an INT (chip glitch, brief EXTI masking). */
+     * didn't latch an INT (chip glitch, brief EXTI masking). MLC-driven
+     * refresh here is also gated by motion_verifier_confirms — same
+     * reason as the INT branch above. */
     static uint32_t last_mlc_poll = 0;
     if (HAL_GetTick() - last_mlc_poll > 500) {
         last_mlc_poll = HAL_GetTick();
@@ -990,7 +1169,8 @@ void State_Alarm_Active_Loop(void)
         uint8_t mlc_out;
         if (lis2dux12_app_get_mlc_output(&mlc_out) == 0) {
             lis2dux12_app_update_cached_state(mlc_out);
-            if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN) {
+            if ((mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN)
+                && motion_verifier_confirms()) {
                 last_motion_time = HAL_GetTick();
             }
         }
@@ -1105,12 +1285,13 @@ void StateMachine_ChangeState(SystemState_t newState)
         // iOS hasn't synced the time yet.
         if (newState == STATE_LOCKED) {
             MotionLogger_PersistAnchor();
-            /* Fresh debounce ring on every entry to LOCKED — covers user
-             * arming, post-stabilize entry, and the alarm-loop returning
-             * here after the duration timer expires. Without the reset a
-             * just-finished alarm bout's tail of hits would re-trigger
-             * the alarm before motion fully settled. */
+            /* Fresh debounce ring + XYZ verifier on every entry to LOCKED —
+             * covers user arming, post-stabilize entry, and the alarm-loop
+             * returning here after the duration timer expires. Without the
+             * reset a just-finished alarm bout's tail of hits / XYZ history
+             * would re-trigger the alarm before motion fully settled. */
             motion_ring_reset();
+            motion_verifier_reset();
         }
 
         lis2dux12_app_set_stabilizing(newState == STATE_STABILIZING ? 1 : 0);

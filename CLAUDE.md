@@ -128,7 +128,7 @@ The central control loop. `StateMachine_Run()` is called every iteration of `mai
 ```
 DISCONNECTED_IDLE → (BLE connect) → CONNECTED_IDLE
 CONNECTED_IDLE    → (armed)       → STABILIZING
-STABILIZING       → (3s still)    → LOCKED
+STABILIZING       → (1.75s still)  → LOCKED
 STABILIZING       → (15s elapsed) → CONNECTED_IDLE
 LOCKED            → (motion)      → ALARM_ACTIVE
 ALARM_ACTIVE      → (alarm_duration_seconds elapsed with no motion) → LOCKED
@@ -136,7 +136,7 @@ ALARM_ACTIVE      → (alarm_duration_seconds elapsed with no motion) → LOCKED
 
 `StateMachine_ChangeState()` automatically sets/clears the ARMED bit when entering STABILIZING/LOCKED/ALARM_ACTIVE vs. any other state, then pushes a status notification.
 
-STABILIZING is bounded by `STABILIZE_TIMEOUT_MS` (15 s). If the device never settles into 3 s of stillness within that window the loop bails to `CONNECTED_IDLE`, which clears ARMED and pushes a status update so iOS sees the device fall back to unlocked. This makes a permanent stuck blue pulse impossible.
+STABILIZING is bounded by `STABILIZE_TIMEOUT_MS` (15 s). If the device never settles into 1.75 s of stillness within that window the loop bails to `CONNECTED_IDLE`, which clears ARMED and pushes a status update so iOS sees the device fall back to unlocked. This makes a permanent stuck blue pulse impossible.
 
 The `deviceState` byte packs all user-configurable settings:
 

@@ -6,7 +6,7 @@
  *
  *   DISCONNECTED_IDLE → (BLE connect) → CONNECTED_IDLE
  *   CONNECTED_IDLE    → (armed)       → STABILIZING
- *   STABILIZING       → (3 s still)   → LOCKED
+ *   STABILIZING       → (1.75 s still)→ LOCKED
  *   STABILIZING       → (15 s elapsed) → CONNECTED_IDLE
  *   LOCKED            → (motion)      → ALARM_ACTIVE
  *   ALARM_ACTIVE      → (melody done + no motion) → LOCKED
@@ -276,7 +276,7 @@ void State_Connected_Idle_Loop(void)
 }
 
 /***************************************************************************
- * State_Stabilizing_Loop — wait for 3 s of stillness before locking
+ * State_Stabilizing_Loop — wait for 1.75 s of stillness before locking
  *   Pulsing blue LED while waiting; both the MLC interrupt and a 10 Hz
  *   poll reset the still-timer when motion is detected. Bails to
  *   CONNECTED_IDLE after STABILIZE_TIMEOUT_MS so a never-settling device
@@ -337,7 +337,7 @@ void State_Stabilizing_Loop(void)
         }
     }
 
-    if (HAL_GetTick() - last_still_time >= 3000) {
+    if (HAL_GetTick() - last_still_time >= 1750) {
         stabilize_started = 0;
         StateMachine_ChangeState(STATE_LOCKED);
         return;

@@ -156,8 +156,15 @@ void StateMachine_Init(void)
 // still log + alert as before because each is a distinct event worth its
 // own record. Motion observed during OFF triggers another ON cycle. No
 // motion during OFF → exit to LOCKED.
-#define ALARM_ON_EXTRA_MS   1000u
-#define ALARM_OFF_MS        2000u
+#define ALARM_ON_EXTRA_MS    1000u
+#define ALARM_OFF_MS         2000u
+// First slice of the OFF window where motion signals are ignored. When the
+// buzzer stops, the LIS2DUX12 MLC takes a few hundred ms to age the recent
+// buzzer-vibration samples out of its classifier and re-report STATIONARY.
+// Set-down impacts also produce a real transient right after the user puts
+// the device down. Both would otherwise re-trigger one bonus ON cycle. We
+// only count motion in the (ALARM_OFF_MS - ALARM_OFF_SETTLE_MS) tail.
+#define ALARM_OFF_SETTLE_MS  1000u
 
 static void CablePlug_UpdateState(void)
 {
@@ -1014,10 +1021,12 @@ void State_Alarm_Active_Loop(void)
             motion_seen_off = 0;
         }
     } else {
-        /* OFF phase. Buzzer is silent so MLC/FSM are trustworthy. Any motion
-         * input observed here flags us to start another ON cycle when the
-         * OFF window expires. */
-        if (had_motion_input) {
+        /* OFF phase. Buzzer is silent so MLC/FSM are nominally trustworthy,
+         * but the MLC's classifier and any set-down impact need
+         * ALARM_OFF_SETTLE_MS to clear. Motion in the settle slice is
+         * ignored; only motion in the tail counts toward another cycle. */
+        if (had_motion_input
+            && (HAL_GetTick() - phase_start) >= ALARM_OFF_SETTLE_MS) {
             motion_seen_off = 1;
         }
 

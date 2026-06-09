@@ -82,7 +82,7 @@
 /* Set to 1 to force the code-defined CFG_PUBLIC_BD_ADDRESS to overwrite
  * whatever is stored in EEPROM. Leave 0 for normal boots — EEPROM wins.
  * Consumed by app_ble.c via the extern below. */
-#define BD_ADDRESS_OVERRIDE 1
+#define BD_ADDRESS_OVERRIDE 0
 const uint8_t bd_address_override = BD_ADDRESS_OVERRIDE;
 
 /* Set to 1 to bypass the BQ27427 fuel gauge by sending it into SHUTDOWN

@@ -139,6 +139,26 @@ void StateMachine_Init(void)
 // StateMachine_ChangeState.
 #define STABILIZE_TIMEOUT_MS    15000u
 
+// --- Alarm bout cycle ---------------------------------------------------
+// The SUPER_LOUD pattern's mechanical vibration couples back into the
+// LIS2DUX12 strongly enough that the MLC is unreliable while the buzzer
+// is playing. Rather than fight that, the alarm runs in fixed-length
+// cycles:
+//
+//   ON  phase: ALARM_ON_EXTRA_MS + (alarm_duration_seconds * 1000) ms
+//              of buzzer + alarm lights.
+//   OFF phase: ALARM_OFF_MS of total silence. With the buzzer off the
+//              accel is trustworthy; this is when we decide whether to
+//              start another cycle or fall back to LOCKED.
+//
+// Motion observed during ON is intentionally ignored for cycle-extension
+// purposes (the buzzer self-fools the MLC); FSM impact/freefall during ON
+// still log + alert as before because each is a distinct event worth its
+// own record. Motion observed during OFF triggers another ON cycle. No
+// motion during OFF → exit to LOCKED.
+#define ALARM_ON_EXTRA_MS   1000u
+#define ALARM_OFF_MS        2000u
+
 static void CablePlug_UpdateState(void)
 {
     static uint32_t last_edge_ms = 0;
@@ -863,13 +883,16 @@ void State_Locked_Loop(void)
 }
 
 /***************************************************************************
- * State_Alarm_Active_Loop — drive alarm sound/lights, exit when motion stops
- *   Sounds the looping alarm pattern until alarm_duration_seconds elapses
- *   with no motion. Every qualifying motion event (MLC IN_MOTION/SHAKEN,
- *   FSM impact/freefall) HARD-RESETS the countdown to the full duration —
- *   the timer never extends, never partially drains. Duration 0 means stop
- *   the instant motion stops; a fresh motion event re-triggers from LOCKED.
- *   MLC INTs only fire on state changes, so MLC+FSM are also polled at 2 Hz.
+ * State_Alarm_Active_Loop — fixed ON/OFF cycle, listen for motion in OFF
+ *   Cycle: ALARM_ON_EXTRA_MS + (alarm_duration_s * 1000) ms of buzzer +
+ *   alarm LEDs, then ALARM_OFF_MS of total silence. During OFF we sample
+ *   the accelerometer; if any motion is seen we start another ON cycle,
+ *   otherwise we fall back to LOCKED. Motion during ON is ignored for
+ *   cycle-extension purposes — the buzzer's 4 kHz mechanical vibration
+ *   self-fools the MLC, and the OFF phase is the only window where we
+ *   can honestly answer "is the device still being moved?". FSM impact /
+ *   freefall during ON still log + alert at the INT because each is a
+ *   distinct event worth its own record.
  ***************************************************************************/
 void State_Alarm_Active_Loop(void)
 {
@@ -879,26 +902,31 @@ void State_Alarm_Active_Loop(void)
         PowerMgmt_RestoreAll();
     }
 
-    static uint32_t last_motion_time = 0;
-    static uint8_t  alarm_started    = 0;
-    uint8_t motion_this_iter = 0;
+    static uint8_t  alarm_started   = 0;
+    static uint8_t  in_off_phase    = 0;  /* 0 = ON (buzzer+LEDs), 1 = OFF */
+    static uint32_t phase_start     = 0;
+    static uint8_t  motion_seen_off = 0;
 
     if (!GET_ARMED_BIT(deviceState)) {
         BUZZER_Stop();
-        alarm_started = 0;
+        LED_Off();
+        alarm_started   = 0;
+        in_off_phase    = 0;
+        motion_seen_off = 0;
         StateMachine_ChangeState(STATE_CONNECTED_IDLE);
         return;
     }
 
     // Read once per iteration so a mid-alarm setting change from iOS takes
-    // effect immediately and the log line never lags the actual countdown.
-    uint8_t  alarm_duration_s  = AlarmDuration_Get();
-    uint32_t alarm_duration_ms = (uint32_t)alarm_duration_s * 1000u;
+    // effect immediately.
+    uint8_t  alarm_duration_s = AlarmDuration_Get();
+    uint32_t on_phase_ms      = ALARM_ON_EXTRA_MS +
+                                (uint32_t)alarm_duration_s * 1000u;
+    uint8_t  alarmType        = GET_ALARM_TYPE(deviceState);
+    uint8_t  showLights       = GET_LIGHTS_BIT(deviceState);
+    uint8_t  led_b            = LedBrightness_Get();
 
     if (!alarm_started) {
-        uint8_t alarmType  = GET_ALARM_TYPE(deviceState);
-        uint8_t showLights = GET_LIGHTS_BIT(deviceState);
-        uint8_t led_b      = LedBrightness_Get();
         switch (alarmType) {
             case ALARM_NONE:
                 break;
@@ -917,63 +945,38 @@ void State_Alarm_Active_Loop(void)
             default:
                 break;
         }
-
-        alarm_started     = 1;
-        last_motion_time  = HAL_GetTick();
-        // Treat the entry tick as "fresh motion" so a duration-of-0 alarm
-        // doesn't immediately satisfy the exit check on its first iteration.
-        motion_this_iter  = 1;
+        alarm_started   = 1;
+        in_off_phase    = 0;
+        phase_start     = HAL_GetTick();
+        motion_seen_off = 0;
     }
+
+    /* FSM impact / freefall: always log + alert at the INT, regardless of
+     * phase. These are distinct sharp events worth their own record. */
+    uint8_t impact = 0, freefall = 0;
+    uint8_t had_motion_input = 0;
 
     if (LIS2DUX12_IsMotionDetected()) {
         uint8_t mlc_out;
         lis2dux12_app_get_mlc_output(&mlc_out);
         lis2dux12_app_update_cached_state(mlc_out);
-
-        MotionType_t motionType = MOTION_TYPE_IN_MOTION;
-        if (mlc_out == MLC_STATE_SHAKEN) motionType = MOTION_TYPE_SHAKEN;
-
-        uint8_t impact, freefall;
         lis2dux12_app_check_fsm_events(&impact, &freefall);
-        if (impact)   motionType = MOTION_TYPE_IMPACT;
-        if (freefall) motionType = MOTION_TYPE_FREEFALL;
 
-        uint8_t qualifying = (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN
-                              || impact || freefall);
-        if (qualifying) {
-            last_motion_time = HAL_GetTick();
-            motion_this_iter = 1;
+        if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN
+            || impact || freefall) {
+            had_motion_input = 1;
+        }
 
-            /* One alert + one log per bout. The alarm loop used to fire
-             * BOTH MotionLogger_LogEvent AND LOCKSERVICE_SendMotionAlert
-             * on every MLC IN_MOTION INT during the bout, then the final
-             * bout-settle path (in State_Locked_Loop after the alarm exits)
-             * fired ONE MORE alert carrying the full bout duration. The live
-             * alert wire format ([0xFF, type, duration_ticks, battery]) has
-             * no timestamp — iOS stamps each alert with its own wall clock
-             * at receive time and computes the displayed "start time" as
-             * (receive_time - duration). So a 30 s bout would land in iOS
-             * as ~6 per-INT entries with duration=1, plus a final entry
-             * whose computed start backdates to the beginning of the bout
-             * — visually "rewriting" the earlier entries.
-             *
-             * Now: during the alarm, MLC IN_MOTION / SHAKEN INTs fire
-             * neither a log nor an alert. iOS already knows the alarm
-             * is in progress from DEVICESTATUS (currentState updates).
-             * The single bout-settle alert/log on return to LOCKED is
-             * the canonical record.
-             *
-             * FSM impact and freefall stay logged + alerted at the INT
-             * because each is a distinct sharp event worth its own entry.
-             * Their duration sentinel is always 1 (250 ms instantaneous),
-             * so iOS doesn't backdate them past their receive time. */
-            if (GET_LOGGING_BIT(deviceState) && (impact || freefall)) {
-                MotionLogger_LogEvent(motionType, 1);
-                LOCKSERVICE_SendMotionAlert(motionType, 1);
+        if (impact || freefall) {
+            MotionType_t mt = impact ? MOTION_TYPE_IMPACT : MOTION_TYPE_FREEFALL;
+            if (GET_LOGGING_BIT(deviceState)) {
+                MotionLogger_LogEvent(mt, 1);
+                LOCKSERVICE_SendMotionAlert(mt, 1);
             }
         }
     }
 
+    /* 500 ms polled fallback for FSM and MLC events that didn't latch INT. */
     static uint32_t last_mlc_poll = 0;
     if (HAL_GetTick() - last_mlc_poll > 500) {
         last_mlc_poll = HAL_GetTick();
@@ -982,38 +985,75 @@ void State_Alarm_Active_Loop(void)
         if (lis2dux12_app_get_mlc_output(&mlc_out) == 0) {
             lis2dux12_app_update_cached_state(mlc_out);
             if (mlc_out == MLC_STATE_IN_MOTION || mlc_out == MLC_STATE_SHAKEN) {
-                last_motion_time = HAL_GetTick();
-                motion_this_iter = 1;
+                had_motion_input = 1;
             }
         }
 
-        uint8_t impact, freefall;
-        lis2dux12_app_check_fsm_events(&impact, &freefall);
-        if (impact || freefall) {
-            last_motion_time = HAL_GetTick();
-            motion_this_iter = 1;
+        uint8_t p_impact, p_freefall;
+        lis2dux12_app_check_fsm_events(&p_impact, &p_freefall);
+        if (p_impact || p_freefall) {
+            had_motion_input = 1;
             if (GET_LOGGING_BIT(deviceState)) {
-                MotionType_t mt = impact ? MOTION_TYPE_IMPACT : MOTION_TYPE_FREEFALL;
+                MotionType_t mt = p_impact ? MOTION_TYPE_IMPACT
+                                           : MOTION_TYPE_FREEFALL;
                 MotionLogger_LogEvent(mt, 1);
                 LOCKSERVICE_SendMotionAlert(mt, 1);
             }
         }
     }
 
-    // Final gate: the cached MLC state. INT-driven and 500 ms poll updates
-    // can leave gaps where motion is physically continuous but no fresh
-    // event was seen this iteration. Without this check, duration = 0 +
-    // sustained motion would chatter between LOCKED and ALARM_ACTIVE every
-    // few ms. Cached states 2/3 = IN_MOTION/SHAKEN.
-    uint8_t cached_mlc = lis2dux12_app_get_cached_mlc_state();
-    uint8_t still_in_motion = (cached_mlc == 2 || cached_mlc == 3);
+    if (!in_off_phase) {
+        /* ON phase. Fixed-length: alarm runs for on_phase_ms regardless of
+         * motion (the buzzer self-fools MLC, so we can't trust extension
+         * decisions while it's playing). When elapsed, mute and enter OFF. */
+        if ((HAL_GetTick() - phase_start) >= on_phase_ms) {
+            BUZZER_Stop();
+            LED_Off();
+            in_off_phase    = 1;
+            phase_start     = HAL_GetTick();
+            motion_seen_off = 0;
+        }
+    } else {
+        /* OFF phase. Buzzer is silent so MLC/FSM are trustworthy. Any motion
+         * input observed here flags us to start another ON cycle when the
+         * OFF window expires. */
+        if (had_motion_input) {
+            motion_seen_off = 1;
+        }
 
-    if (!motion_this_iter && !still_in_motion
-        && (HAL_GetTick() - last_motion_time) >= alarm_duration_ms) {
-        BUZZER_Stop();
-        alarm_started = 0;
-        StateMachine_ChangeState(STATE_LOCKED);
-        return;
+        if ((HAL_GetTick() - phase_start) >= ALARM_OFF_MS) {
+            if (motion_seen_off) {
+                /* Restart cycle: re-arm LEDs + buzzer, back to ON. */
+                switch (alarmType) {
+                    case ALARM_CALM:
+                        if (showLights) LED_Alarm(300, 255, 0, 0, led_b);
+                        BUZZER_StartCalmAlarm();
+                        break;
+                    case ALARM_NORMAL:
+                        if (showLights) LED_Alarm(300, 255, 0, 0, led_b);
+                        BUZZER_StartNormalAlarm();
+                        break;
+                    case ALARM_LOUD:
+                        if (showLights) LED_Alarm(125, 255, 225, 0, led_b);
+                        BUZZER_StartSuperLoudAlarm();
+                        break;
+                    case ALARM_NONE:
+                    default:                                  break;
+                }
+                in_off_phase    = 0;
+                phase_start     = HAL_GetTick();
+                motion_seen_off = 0;
+            } else {
+                /* No motion during the OFF window — alarm done. */
+                BUZZER_Stop();
+                LED_Off();
+                alarm_started   = 0;
+                in_off_phase    = 0;
+                motion_seen_off = 0;
+                StateMachine_ChangeState(STATE_LOCKED);
+                return;
+            }
+        }
     }
 }
 
